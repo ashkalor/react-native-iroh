@@ -1,12 +1,90 @@
 # react-native-iroh
 
-Peer-to-peer blob sharing for React Native, powered by [iroh](https://github.com/n0-computer/iroh).
+iroh for React Native: direct Rust bindings to the
+[iroh](https://github.com/n0-computer/iroh) peer-to-peer networking stack.
 
-Share a file from one device and download it on another — directly, over
-QUIC, with no server in the data path. The native core is written in Rust and
-bound to JavaScript through [Nitro](https://github.com/mrousavy/nitro) with
-direct Rust-to-C++ bindings: no JSON bridge, no codegen at the consumer's
-install time, and synchronous access where the API allows it.
+iroh lets any device dial any other device on the planet by its node id:
+QUIC connections that hole-punch through NATs when a direct path exists and
+fall back to relays when it does not. This package puts the real thing
+inside your React Native app: the actual iroh 1.x Rust crates (`iroh`
+1.0.2, `iroh-blobs` 0.103.0) compiled into your build and bound to
+JavaScript through [Nitro](https://github.com/mrousavy/nitro) with direct
+Rust-to-C++ bindings, not a JS reimplementation.
+
+```bash
+npm install react-native-iroh react-native-nitro-modules
+```
+
+A few things worth knowing up front:
+
+- This is the only React Native binding for iroh. The official
+  [iroh-ffi](https://github.com/n0-computer/iroh-ffi) bindings' 1.x line
+  currently ships no blobs support and has no React Native path.
+- The runtime rides Nitro/JSI directly: calls go JS to C++ to Rust in
+  process, with no JSON serialization bridge and synchronous access where
+  the API allows it. Consumers never run codegen: all generated bindings
+  ship committed in the package.
+- The v0.1 surface is deliberately small and honest: an `Endpoint` (the
+  iroh node) plus the first protocol, `iroh-blobs`. More protocols land as
+  the binding surface grows; see [Protocols](#protocols).
+
+## The Endpoint
+
+Everything in iroh hangs off an `Endpoint`, and so does everything in this
+package. An endpoint is an iroh node running inside your app:
+
+- **Identity**: every endpoint has a `nodeId`, the public key other
+  devices use to reach it. It is stable for the endpoint's lifetime and
+  cached at creation, so reading it never touches native code.
+- **Lifecycle**: `Endpoint.create()` binds sockets and loads the blob
+  store; `close()` shuts down the router, sockets, and store with
+  well-defined one-shot semantics. `isOpen` tells you where you are in
+  between.
+- **Network profiles**: `standard` uses n0's relay servers and address
+  lookup (the production default); `isolated` uses neither, for tests and
+  LAN-only setups where peers are reachable only via direct addresses
+  embedded in tickets.
+- **Storage**: pass `blobStoreDir` for a persistent on-disk blob store,
+  or omit it to keep blobs in memory for the endpoint's lifetime.
+
+The full option and method reference is under
+[API reference](#api-reference).
+
+## Protocols
+
+iroh itself is the connection layer; what runs over a connection is a
+protocol. This package ships protocols as their bindings mature.
+
+### iroh-blobs (available now)
+
+Content-addressed blob transfer with BLAKE3-verified streaming. The
+complete v0.1 protocol surface:
+
+- `shareBlob(path)` imports a file into the endpoint's blob store and
+  returns a ticket string (hash plus dialable addresses) that any other
+  endpoint can download from while the sharer is open.
+- `downloadBlob(ticket, destPath)` returns a `Transfer` handle
+  synchronously: a settlement `promise`, live progress as either a
+  callback subscription or an async iterable, and idempotent `cancel()`.
+- Downloads are capped per endpoint (default 4) and queued FIFO beyond the
+  cap; progress events are coalesced natively so slow consumers never
+  buffer unboundedly.
+- Every failure (sync throw or rejection) is a typed `IrohError` with a
+  stable numeric `code` and discriminated `kind`.
+
+### Roadmap
+
+Planned protocol work, honestly labeled: none of this exists in v0.1, and
+no dates are attached.
+
+- **Collections** (iroh-blobs hash sequences): share a set of files under
+  a single ticket.
+- **Gossip** (`iroh-gossip`): epidemic pub/sub broadcast overlays.
+- **Docs** (`iroh-docs`): multi-writer replicated key-value documents.
+
+Raw QUIC connections and custom ALPN protocols are likewise not exposed in
+v0.1: today's API is `Endpoint` plus `iroh-blobs`. If a protocol matters
+to you, open an issue.
 
 ## Status
 
@@ -49,7 +127,7 @@ built. The machine (or CI runner) that compiles your app therefore needs:
 CMake glue and the iOS build phase both add it to `PATH` themselves. The
 first build compiles the whole iroh dependency tree and takes a while;
 afterwards Cargo's incremental cache makes rebuilds cheap. Devices running
-the app do not need Rust — only the build machine does.
+the app do not need Rust; only the build machine does.
 
 ## Installation
 
@@ -128,8 +206,8 @@ while the sharing endpoint is open.
 
 ## API reference
 
-Everything below is exported from `react-native-iroh`. All failures — sync
-throws and Promise rejections — are `IrohError` instances.
+Everything below is exported from `react-native-iroh`. All failures (sync
+throws and Promise rejections) are `IrohError` instances.
 
 ### Endpoint
 
@@ -141,14 +219,14 @@ Creates an endpoint: binds sockets and loads the blob store.
 
 `EndpointOptions` (all fields optional):
 
-| Option                   | Type                       | Default      | Meaning                                                                                                                                                                                                                                         |
-| ------------------------ | -------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `profile`                | `"standard" \| "isolated"` | `"standard"` | Network infrastructure profile. `standard` uses n0 relay servers and address lookup (production). `isolated` uses no relays and no address lookup — peers are only reachable via direct addresses embedded in tickets (tests, LAN-only setups). |
-| `blobStoreDir`           | `string`                   | in-memory    | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                    |
-| `maxConcurrentDownloads` | `number`                   | `4`          | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored.                                                                                      |
+| Option                   | Type                       | Default      | Meaning                                                                                                                                                                                                                                        |
+| ------------------------ | -------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profile`                | `"standard" \| "isolated"` | `"standard"` | Network infrastructure profile. `standard` uses n0 relay servers and address lookup (production). `isolated` uses no relays and no address lookup: peers are only reachable via direct addresses embedded in tickets (tests, LAN-only setups). |
+| `blobStoreDir`           | `string`                   | in-memory    | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                   |
+| `maxConcurrentDownloads` | `number`                   | `4`          | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored.                                                                                     |
 
 `create` also accepts a second, advanced `binding` parameter (an
-`IrohBinding`) that substitutes the native module — primarily for tests.
+`IrohBinding`) that substitutes the native module, primarily for tests.
 
 #### `endpoint.nodeId: string`
 
@@ -178,9 +256,9 @@ wait in a FIFO queue.
 
 Closes the endpoint: shuts down its router, sockets and blob store.
 One-shot: the native side invalidates the handle at the first close call, so
-the first call's outcome — success or failure — is final. Concurrent and
+the first call's outcome (success or failure) is final. Concurrent and
 repeated calls all return the same promise; the native close runs at most
-once. When the native close settles (regardless of outcome — the endpoint
+once. When the native close settles (regardless of outcome: the endpoint
 is unusable either way), downloads still waiting in the queue are cancelled
 (their promises reject with kind `"cancelled"`); actively running downloads
 are settled by the native shutdown. On failure the promise rejects with an
@@ -259,9 +337,15 @@ discriminated `code`/`kind` pairing).
   they should stay cheap.
 - The `progress` async iterable additionally conflates to the latest value
   per iterator: a slow consumer sees fewer, fresher events instead of a
-  growing buffer — memory use is O(1) regardless of consumer speed.
+  growing buffer, and memory use is O(1) regardless of consumer speed.
 - `nodeId` and `isOpen` are synchronous; `nodeId` never crosses into native
   code after creation.
+
+For a sense of scale: the repo's benchmark harness (`bun run bench`, two
+Android emulators on one host) completes a full share/download roundtrip of
+100 files in under 2 seconds, and sustains 50-67 MiB/s on large blobs.
+Those are loopback numbers (real networks are dominated by path quality),
+but they bound the overhead of the binding itself.
 
 ## Platform support
 
@@ -309,12 +393,11 @@ bun run build:rust:ios
 
 `build:rust:android` needs the four Android rustup targets listed under
 Requirements. `build:rust:ios` (macOS only) packages an XCFramework and
-needs all three Apple targets — `aarch64-apple-ios`,
-`aarch64-apple-ios-sim`, and `x86_64-apple-ios` — regardless of the host
-Mac's architecture.
+needs all three Apple targets (`aarch64-apple-ios`, `aarch64-apple-ios-sim`,
+and `x86_64-apple-ios`), regardless of the host Mac's architecture.
 
 Nitrogen codegen: the Rust binding codegen lives in a fork of nitrogen and
-is a dev-time-only concern — all generated output under
+is a dev-time-only concern. All generated output under
 `nitrogen/generated/` is committed, so consumers and CI never run it. To
 regenerate after editing `src/specs/iroh.nitro.ts`, point `NITROGEN_FORK`
 at a checkout of the fork and run:
@@ -330,8 +413,8 @@ with Maestro (share on A, download on B, integrity check via re-share):
 bun run e2e
 ```
 
-The harness takes `adb` from `PATH`; when it is not there — typical on WSL,
-where the Android platform tools live on the Windows side — set
+The harness takes `adb` from `PATH`; when it is not there (typical on WSL,
+where the Android platform tools live on the Windows side), set
 `ADB=/path/to/adb` (a Windows `adb.exe` under `/mnt/c` works from WSL; APK
 paths are converted for it automatically):
 
@@ -351,11 +434,11 @@ workflow using semantic-release with conventional commits.
 
 ## Acknowledgements
 
-- [iroh](https://github.com/n0-computer/iroh) by n0-computer — the
-  peer-to-peer engine this package wraps.
-- [Nitro](https://github.com/mrousavy/nitro) by Marc Rousavy (mrousavy) —
+- [iroh](https://github.com/n0-computer/iroh) by n0-computer: the
+  networking stack this package binds.
+- [Nitro](https://github.com/mrousavy/nitro) by Marc Rousavy (mrousavy):
   the native-module framework powering the bindings.
-- Rust codegen for Nitro by boorad — this package's Rust binding layer is
+- Rust codegen for Nitro by boorad: this package's Rust binding layer is
   generated with the Rust support proposed upstream in
   [nitro PR #1229](https://github.com/mrousavy/nitro/pull/1229).
 - Bootstrapped with
@@ -367,7 +450,7 @@ are listed in `THIRD-PARTY-NOTICES.md`.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT. See `LICENSE`.
 
 ## Contributing
 

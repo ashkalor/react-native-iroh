@@ -1,11 +1,14 @@
 {
   "name": "react-native-iroh",
   "version": "0.1.0",
-  "description": "Peer-to-peer blob sharing for React Native, powered by iroh through direct Rust-to-C++ Nitro bindings",
+  "description": "iroh for React Native: direct Rust bindings to the iroh peer-to-peer networking stack (QUIC, hole punching, relays) and iroh-blobs, via Nitro Modules",
   "keywords": [
     "blobs",
     "file-transfer",
+    "hole-punching",
     "iroh",
+    "iroh-blobs",
+    "networking",
     "nitro",
     "nitro-module",
     "p2p",
