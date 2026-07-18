@@ -20,7 +20,7 @@
 # ```
 
 def add_nitrogen_files(spec)
-  Pod::UI.puts "[NitroModules] Iroh is boosted by nitro!"
+  Pod::UI.puts "[NitroModules] 🔥 Iroh is boosted by nitro!"
 
   spec.dependency "NitroModules"
 

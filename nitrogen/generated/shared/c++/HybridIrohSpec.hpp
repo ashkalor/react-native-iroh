@@ -13,9 +13,13 @@
 #error NitroModules cannot be found! Are you sure you installed NitroModules properly?
 #endif
 
+// Forward declaration of `EndpointConfig` to properly resolve imports.
+namespace margelo::nitro::iroh { struct EndpointConfig; }
 
-
+#include <NitroModules/Promise.hpp>
+#include "EndpointConfig.hpp"
 #include <string>
+#include <functional>
 
 namespace margelo::nitro::iroh {
 
@@ -48,7 +52,13 @@ namespace margelo::nitro::iroh {
 
     public:
       // Methods
-      virtual std::string nodeId() = 0;
+      virtual std::shared_ptr<Promise<double>> createEndpoint(const EndpointConfig& config) = 0;
+      virtual std::string nodeId(double endpoint) = 0;
+      virtual bool isEndpointOpen(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<void>> closeEndpoint(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<std::string>> shareBlob(double endpoint, const std::string& path) = 0;
+      virtual std::shared_ptr<Promise<void>> downloadBlob(double endpoint, const std::string& ticket, const std::string& destPath, const std::function<void(double /* transferId */)>& onStart, const std::function<void(double /* bytesReceived */)>& onProgress) = 0;
+      virtual void cancelDownload(double transferId) = 0;
 
     protected:
       // Hybrid Setup

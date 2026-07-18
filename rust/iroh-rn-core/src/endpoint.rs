@@ -84,6 +84,7 @@ impl BlobStore {
 pub(crate) struct EndpointState {
     pub(crate) endpoint: Endpoint,
     pub(crate) store: BlobStore,
+    pub(crate) profile: NetworkProfile,
     router: Router,
 }
 
@@ -133,9 +134,17 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
+        profile: config.profile,
         router,
     });
     Ok(EndpointHandle(handle))
+}
+
+/// Whether `handle` refers to a live (not yet closed) endpoint.
+///
+/// Cheap and synchronous — a registry lookup.
+pub fn endpoint_is_open(handle: EndpointHandle) -> bool {
+    endpoint_state(handle).is_ok()
 }
 
 /// Returns the endpoint's node id (its public key) as a string.

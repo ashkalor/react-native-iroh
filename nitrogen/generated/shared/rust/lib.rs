@@ -15,7 +15,10 @@
     clippy::useless_conversion
 )]
 
+pub mod endpoint_config;
+pub mod func_void_double;
 pub mod hybrid_iroh_spec;
+pub mod network_profile;
 pub mod nitro_buffer;
 
 /// Free a Rust-allocated CString from C++.

@@ -13,17 +13,38 @@
 #include <stdexcept>
 #include "HybridIrohSpec.hpp"
 
+#include <NitroModules/Promise.hpp>
+#include "EndpointConfig.hpp"
 #include <string>
+#include <functional>
 
 // FFI result structs for error propagation from Rust
+#ifndef NITRO___FFIRESULT_BOOL_DEFINED
+#define NITRO___FFIRESULT_BOOL_DEFINED
+struct __FfiResult_bool { uint8_t is_ok; char* error; bool value; };
+#endif
 #ifndef NITRO___FFIRESULT_CSTR_DEFINED
 #define NITRO___FFIRESULT_CSTR_DEFINED
 struct __FfiResult_cstr { uint8_t is_ok; char* error; const char* value; };
 #endif
+#ifndef NITRO___FFIRESULT_F64_DEFINED
+#define NITRO___FFIRESULT_F64_DEFINED
+struct __FfiResult_f64 { uint8_t is_ok; char* error; double value; };
+#endif
+#ifndef NITRO___FFIRESULT_VOID_DEFINED
+#define NITRO___FFIRESULT_VOID_DEFINED
+struct __FfiResult_void { uint8_t is_ok; char* error; };
+#endif
 
 // Forward declarations for Rust FFI functions
 extern "C" {
-  __FfiResult_cstr HybridIrohSpec_node_id(void* rustPtr);
+  __FfiResult_f64 HybridIrohSpec_create_endpoint(void* rustPtr, void* config);
+  __FfiResult_cstr HybridIrohSpec_node_id(void* rustPtr, double endpoint);
+  __FfiResult_bool HybridIrohSpec_is_endpoint_open(void* rustPtr, double endpoint);
+  __FfiResult_void HybridIrohSpec_close_endpoint(void* rustPtr, double endpoint);
+  __FfiResult_cstr HybridIrohSpec_share_blob(void* rustPtr, double endpoint, const char* path);
+  __FfiResult_void HybridIrohSpec_download_blob(void* rustPtr, double endpoint, const char* ticket, const char* destPath, void* onStart, void* onProgress);
+  __FfiResult_void HybridIrohSpec_cancel_download(void* rustPtr, double transferId);
   size_t HybridIrohSpec_memory_size(void* rustPtr);
   void HybridIrohSpec_destroy(void* rustPtr);
   void __nitrogen_free_cstring(char* ptr);
@@ -56,7 +77,35 @@ namespace margelo::nitro::iroh {
 
   public:
     // Methods
-    inline std::string nodeId() override { auto __ffi = HybridIrohSpec_node_id(_rustPtr); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value); }
+    inline std::shared_ptr<Promise<double>> createEndpoint(const EndpointConfig& config) override {
+          return Promise<double>::async([=]() -> double {
+            auto __ffi = HybridIrohSpec_create_endpoint(_rustPtr, [&]() -> void* { struct __Struct_0 { int32_t profile; void* blobStoreDir; }; const auto& __f0_0 = config.profile; const auto& __f0_1 = config.blobStoreDir; auto __s_0 = new __Struct_0(); __s_0->profile = static_cast<int32_t>(__f0_0); __s_0->blobStoreDir = [&]() -> void* { struct __Opt_1 { uint8_t has_value; const char* value; }; auto __opt_1 = new __Opt_1(); if (__f0_1.has_value()) { const auto& __inner_1 = __f0_1.value(); __opt_1->has_value = 1; __opt_1->value = __inner_1.c_str(); } else { __opt_1->has_value = 0; __opt_1->value = {}; } return static_cast<void*>(__opt_1); }(); return static_cast<void*>(__s_0); }());
+            if (!__ffi.is_ok) { __throwRustError(__ffi.error); }
+            return __ffi.value;
+          });
+        }
+    inline std::string nodeId(double endpoint) override { auto __ffi = HybridIrohSpec_node_id(_rustPtr, endpoint); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value); }
+    inline bool isEndpointOpen(double endpoint) override { auto __ffi = HybridIrohSpec_is_endpoint_open(_rustPtr, endpoint); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return __ffi.value; }
+    inline std::shared_ptr<Promise<void>> closeEndpoint(double endpoint) override {
+          return Promise<void>::async([=]() {
+            auto __ffi = HybridIrohSpec_close_endpoint(_rustPtr, endpoint);
+            if (!__ffi.is_ok) { __throwRustError(__ffi.error); }
+          });
+        }
+    inline std::shared_ptr<Promise<std::string>> shareBlob(double endpoint, const std::string& path) override {
+          return Promise<std::string>::async([=]() -> std::string {
+            auto __ffi = HybridIrohSpec_share_blob(_rustPtr, endpoint, path.c_str());
+            if (!__ffi.is_ok) { __throwRustError(__ffi.error); }
+            return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value);
+          });
+        }
+    inline std::shared_ptr<Promise<void>> downloadBlob(double endpoint, const std::string& ticket, const std::string& destPath, const std::function<void(double /* transferId */)>& onStart, const std::function<void(double /* bytesReceived */)>& onProgress) override {
+          return Promise<void>::async([=]() {
+            auto __ffi = HybridIrohSpec_download_blob(_rustPtr, endpoint, ticket.c_str(), destPath.c_str(), [&]() -> void* { struct __W { void(*fn_ptr)(void*, double); void* userdata; void(*destroy_fn)(void*); }; return static_cast<void*>(new __W { [](void* __ud, double __a0) { try { (*static_cast<std::function<void(double /* transferId */)>*>(__ud))(__a0); } catch (const std::exception& __e) { fprintf(stderr, "Unhandled C++ exception in callback: %s\n", __e.what()); std::abort(); } catch (...) { fprintf(stderr, "Unhandled C++ exception in callback\n"); std::abort(); } }, static_cast<void*>(new std::function<void(double /* transferId */)>(std::move(onStart))), [](void* __ud) { delete static_cast<std::function<void(double /* transferId */)>*>(__ud); } }); }(), [&]() -> void* { struct __W { void(*fn_ptr)(void*, double); void* userdata; void(*destroy_fn)(void*); }; return static_cast<void*>(new __W { [](void* __ud, double __a0) { try { (*static_cast<std::function<void(double /* bytesReceived */)>*>(__ud))(__a0); } catch (const std::exception& __e) { fprintf(stderr, "Unhandled C++ exception in callback: %s\n", __e.what()); std::abort(); } catch (...) { fprintf(stderr, "Unhandled C++ exception in callback\n"); std::abort(); } }, static_cast<void*>(new std::function<void(double /* bytesReceived */)>(std::move(onProgress))), [](void* __ud) { delete static_cast<std::function<void(double /* bytesReceived */)>*>(__ud); } }); }());
+            if (!__ffi.is_ok) { __throwRustError(__ffi.error); }
+          });
+        }
+    inline void cancelDownload(double transferId) override { auto __ffi = HybridIrohSpec_cancel_download(_rustPtr, transferId); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } }
 
   public:
     inline size_t getExternalMemorySize() noexcept override {

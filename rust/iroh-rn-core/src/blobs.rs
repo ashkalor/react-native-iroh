@@ -19,12 +19,16 @@ use n0_future::StreamExt;
 use tokio::sync::oneshot;
 
 use crate::{
-    endpoint::{endpoint_state, EndpointHandle},
+    endpoint::{endpoint_state, EndpointHandle, NetworkProfile},
     error::{IrohError, Result},
     guarded_callback,
     registry::Registry,
     runtime::runtime,
 };
+
+/// How long [`blob_share`] waits for a `Standard`-profile endpoint to come
+/// online (home relay + addresses known) before minting a ticket anyway.
+const ONLINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Opaque handle to an in-flight download. `0` is never a valid handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,6 +96,15 @@ async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> 
         })
         .await
         .map_err(|e| IrohError::BlobImport(e.to_string()))?;
+    // On the Standard profile a ticket minted right after bind may not carry
+    // dialable addresses yet (no home relay, no confirmed direct addresses).
+    // Wait — bounded — for the endpoint to come online first; on timeout the
+    // ticket is still produced with whatever addresses are known (best effort).
+    // Isolated endpoints skip this: their only addresses are the locally bound
+    // sockets, which are known immediately.
+    if state.profile == NetworkProfile::Standard {
+        let _ = tokio::time::timeout(ONLINE_TIMEOUT, state.endpoint.online()).await;
+    }
     let ticket = BlobTicket::new(state.endpoint.addr(), tag.hash, tag.format);
     Ok(ticket.to_string())
 }

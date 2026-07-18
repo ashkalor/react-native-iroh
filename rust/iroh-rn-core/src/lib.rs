@@ -17,6 +17,7 @@
 #![warn(missing_docs)]
 
 pub mod blobs;
+mod coalesce;
 pub mod endpoint;
 pub mod error;
 mod ffi;

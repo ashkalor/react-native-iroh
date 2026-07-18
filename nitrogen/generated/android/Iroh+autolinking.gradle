@@ -13,7 +13,7 @@
 /// apply from: '../nitrogen/generated/android/Iroh+autolinking.gradle'
 /// ```
 
-logger.warn("[NitroModules] Iroh is boosted by nitro!")
+logger.warn("[NitroModules] 🔥 Iroh is boosted by nitro!")
 
 android {
   sourceSets {
