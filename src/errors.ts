@@ -95,6 +95,11 @@ interface IrohErrorConstructor {
   from(error: unknown): IrohError;
 }
 
+/**
+ * The {@link IrohError} class value: construct with a known stable code,
+ * convert unknown thrown values with `IrohError.from`, and narrow `unknown`
+ * with `instanceof IrohError`.
+ */
 export const IrohError = IrohErrorImpl as unknown as IrohErrorConstructor;
 
 /**

@@ -74,8 +74,16 @@ required on either platform.
 
 A complete share/download roundtrip between two devices:
 
+<!-- The snippets below are type-checked verbatim by
+     src/__tests__/quickstart.test-d.ts (part of `bun run typecheck`);
+     update both together. -->
+
 ```ts
 import { Endpoint } from "react-native-iroh";
+
+// Any absolute directory inside your app's sandbox, e.g.
+// RNFS.DocumentDirectoryPath (react-native-fs) or an expo-file-system path.
+declare const DocumentDir: string;
 
 // Device A: share a file
 const a = await Endpoint.create({ blobStoreDir: `${DocumentDir}/iroh` });
@@ -169,11 +177,14 @@ wait in a FIFO queue.
 #### `endpoint.close(): Promise<void>`
 
 Closes the endpoint: shuts down its router, sockets and blob store.
-Idempotent — concurrent and repeated calls share one close operation, and a
-failed close is retryable. Once the native close succeeds, downloads still
-waiting in the queue are cancelled (their promises reject with kind
-`"cancelled"`); actively running downloads are settled by the native
-shutdown.
+One-shot: the native side invalidates the handle at the first close call, so
+the first call's outcome — success or failure — is final. Concurrent and
+repeated calls all return the same promise; the native close runs at most
+once. When the native close settles (regardless of outcome — the endpoint
+is unusable either way), downloads still waiting in the queue are cancelled
+(their promises reject with kind `"cancelled"`); actively running downloads
+are settled by the native shutdown. On failure the promise rejects with an
+`IrohError`.
 
 ### Transfer
 
@@ -296,6 +307,12 @@ bun run build:rust:android
 bun run build:rust:ios
 ```
 
+`build:rust:android` needs the four Android rustup targets listed under
+Requirements. `build:rust:ios` (macOS only) packages an XCFramework and
+needs all three Apple targets — `aarch64-apple-ios`,
+`aarch64-apple-ios-sim`, and `x86_64-apple-ios` — regardless of the host
+Mac's architecture.
+
 Nitrogen codegen: the Rust binding codegen lives in a fork of nitrogen and
 is a dev-time-only concern — all generated output under
 `nitrogen/generated/` is committed, so consumers and CI never run it. To
@@ -313,7 +330,17 @@ with Maestro (share on A, download on B, integrity check via re-share):
 bun run e2e
 ```
 
-See `e2e/run-e2e.sh` for requirements and environment overrides.
+The harness takes `adb` from `PATH`; when it is not there — typical on WSL,
+where the Android platform tools live on the Windows side — set
+`ADB=/path/to/adb` (a Windows `adb.exe` under `/mnt/c` works from WSL; APK
+paths are converted for it automatically):
+
+```bash
+ADB=/mnt/c/Android/platform-tools/adb.exe bun run e2e
+```
+
+See `e2e/run-e2e.sh` for the full requirements and environment overrides
+(`ADB`, `MAESTRO`, `APK`, `FILE_MB`, `E2E_ARTIFACTS`, `SKIP_INSTALL`).
 
 ## Versioning
 
