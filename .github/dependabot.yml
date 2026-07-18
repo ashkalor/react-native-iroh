@@ -4,7 +4,11 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
     labels:
       - "dependencies"
 
@@ -13,33 +17,53 @@ updates:
       - "/android/"
       - "/example/android/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      gradle:
+        patterns:
+          - "*"
     labels:
-      - "nitro-core"
-      - "nitrogen"
       - "dependencies"
       - "kotlin"
 
   - package-ecosystem: "bundler"
     directory: "/example/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      ruby:
+        patterns:
+          - "*"
     labels:
       - "dependencies"
       - "ruby"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      rust:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "rust"
 
   - package-ecosystem: "npm"
     directories:
       - "/example/"
       - "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
     labels:
-      - "nitro-core"
       - "dependencies"
       - "typescript"
-      - "nitrogen"
-
+    # The nitro runtime and codegen pins are deliberate (0.36.1); upgrades
+    # are a manual decision with an iOS Release re-test each bump.
+    ignore:
+      - dependency-name: "react-native-nitro-modules"
+      - dependency-name: "nitrogen"
     groups:
       react-native-cli:
         patterns:
@@ -50,7 +74,10 @@ updates:
       react-native:
         patterns:
           - "@react-native/*"
-      nitro:
+      npm-misc:
         patterns:
-          - "nitrogen"
-          - "react-native-nitro-modules"
+          - "*"
+        exclude-patterns:
+          - "@react-native-community/cli*"
+          - "@babel/*"
+          - "@react-native/*"

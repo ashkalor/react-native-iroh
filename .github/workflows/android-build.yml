@@ -22,22 +22,9 @@ on:
       - "**/bun.lock"
       - "**/react-native.config.js"
       - "**/nitro.json"
-  pull_request:
-    paths:
-      - ".github/workflows/android-build.yml"
-      - "example/android/**"
-      - "**/nitrogen/generated/shared/**"
-      - "**/nitrogen/generated/android/**"
-      - "cpp/**"
-      - "android/**"
-      - "rust/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "scripts/**"
-      - "**/bun.lock"
-      - "**/react-native.config.js"
-      - "**/nitro.json"
+  # No pull_request trigger: the full 4-ABI build is ~35 runner-minutes and
+  # local builds cover PR-time verification. Runs on main pushes (path-
+  # filtered above) or manually.
   workflow_dispatch:
 
 concurrency:

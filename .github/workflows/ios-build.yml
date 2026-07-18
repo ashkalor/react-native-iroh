@@ -4,48 +4,11 @@ permissions:
   contents: read
 
 on:
+  # macOS runners bill at 10x: no per-push or per-PR runs. Triggered
+  # manually at milestones and automatically on release tags.
   push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/ios-build.yml"
-      - "example/ios/**"
-      - "example/Gemfile"
-      - "example/Gemfile.lock"
-      - "**/nitrogen/generated/shared/**"
-      - "**/nitrogen/generated/ios/**"
-      - "cpp/**"
-      - "ios/**"
-      - "rust/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "scripts/**"
-      - "**/Podfile.lock"
-      - "**/bun.lock"
-      - "**/*.podspec"
-      - "**/react-native.config.js"
-      - "**/nitro.json"
-  pull_request:
-    paths:
-      - ".github/workflows/ios-build.yml"
-      - "example/ios/**"
-      - "example/Gemfile"
-      - "example/Gemfile.lock"
-      - "**/nitrogen/generated/shared/**"
-      - "**/nitrogen/generated/ios/**"
-      - "cpp/**"
-      - "ios/**"
-      - "rust/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "scripts/**"
-      - "**/Podfile.lock"
-      - "**/bun.lock"
-      - "**/*.podspec"
-      - "**/react-native.config.js"
-      - "**/nitro.json"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 env:
