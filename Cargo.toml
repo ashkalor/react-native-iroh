@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["rust/iroh-rn-core"]
+# The nitrogen-generated bridge crate is a path dependency, not a workspace
+# member: it is generated code (DO NOT MODIFY), so fmt/clippy/test must not
+# run over it. It still builds as a dependency of iroh-rn-core.
+exclude = ["nitrogen/generated/shared/rust"]

@@ -1,0 +1,60 @@
+# cargo-deny configuration for the Rust workspace (rust/iroh-rn-core).
+# Run from the repo root: `cargo deny check`
+
+[graph]
+# The staticlib ships on Android/iOS; check the host graph plus the mobile
+# targets we actually build for.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+]
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # Unmaintained (not vulnerable) proc-macro crates pulled in transitively
+    # by iroh-blobs (via bao-tree -> genawaiter) with no upstream fix
+    # available. Revisit when bumping iroh-blobs.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; transitive via iroh-blobs -> bao-tree -> genawaiter" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via the iroh dependency tree" },
+]
+
+[licenses]
+# Permissive licenses covering the iroh/iroh-blobs dependency tree.
+# Dual-licensed copyleft crates (e.g. `self_cell` Apache-2.0 OR GPL-2.0-only)
+# are satisfied through their permissive branch.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# Workspace crates are publish = false; they carry the repository's MIT license.
+private = { ignore = true }
+
+# The nitrogen-generated bridge crate has no license field in its generated
+# Cargo.toml; it is part of this MIT-licensed repository.
+[[licenses.clarify]]
+crate = "iroh_rust"
+expression = "MIT"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

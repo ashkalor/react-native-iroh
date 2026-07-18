@@ -1,0 +1,20 @@
+# Android cross-compilation support.
+#
+# Some dependencies (iroh, irpc) declare a `cdylib` crate-type, so cargo links
+# real shared objects while building them. The Android build (see the
+# nitrogen-generated CMake) passes the NDK's bare `clang` as the linker, which
+# needs an explicit `--target` to select the Android sysroot (API 24 = the
+# app's minSdkVersion). These flags are target-scoped and do not affect host
+# builds or CI.
+
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=--target=aarch64-linux-android24"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=--target=armv7a-linux-androideabi24"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=--target=x86_64-linux-android24"]
+
+[target.i686-linux-android]
+rustflags = ["-C", "link-arg=--target=i686-linux-android24"]
