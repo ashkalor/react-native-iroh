@@ -1,6 +1,6 @@
 //! Native-side coalescing of progress events.
 //!
-//! The core emits one progress value per transfer chunk — far more than JS
+//! The core emits one progress value per transfer chunk, far more than JS
 //! can usefully render. A [`Coalescer`] rate-limits that stream *before* it
 //! crosses the bridge: the first value passes through immediately, later
 //! values are suppressed until `min_interval` has elapsed, and the most

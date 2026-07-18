@@ -46,7 +46,7 @@ fail() {
 # --- Tool discovery -------------------------------------------------------
 
 # adb is taken from PATH; override with ADB=/path/to/adb (an adb.exe under
-# /mnt/c works from WSL — APK paths are converted for it automatically).
+# /mnt/c works from WSL: APK paths are converted for it automatically).
 if [ -z "${ADB:-}" ]; then
   if command -v adb >/dev/null 2>&1; then
     ADB=adb

@@ -39,7 +39,7 @@ const PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(34);
 pub struct HybridIroh;
 
 impl HybridIroh {
-    /// Creates the hybrid object. Cheap — no sockets, no threads.
+    /// Creates the hybrid object. Cheap: no sockets, no threads.
     pub fn new() -> Self {
         Self
     }
@@ -52,7 +52,7 @@ impl Default for HybridIroh {
 }
 
 /// Encodes an [`IrohError`] for the bridge boundary as
-/// `"[iroh:<code>] <message>"` — the one format JS parses (`/\[iroh:(\d+)\]/`).
+/// `"[iroh:<code>] <message>"`, the one format JS parses (`/\[iroh:(\d+)\]/`).
 fn encode_error(err: IrohError) -> String {
     format!("[iroh:{}] {err}", err.code())
 }
@@ -162,7 +162,7 @@ impl HybridIrohSpec for HybridIroh {
     }
 
     fn cancel_download(&self, transfer_id: f64) -> Result<(), String> {
-        // Idempotent: cancelling a finished or unknown transfer is a no-op —
+        // Idempotent: cancelling a finished or unknown transfer is a no-op:
         // completion already won the race, which is indistinguishable (and
         // harmless) from the caller's point of view.
         match blob_download_cancel(TransferHandle::from_raw(transfer_id as u64)) {
@@ -287,8 +287,8 @@ mod tests {
         assert_eq!(hybrid.cancel_download(transfer_id), Ok(()));
 
         // Re-sharing the downloaded file on the *same* provider endpoint must
-        // reproduce the identical ticket (same addresses, same content hash) —
-        // this is the string-side integrity check the example app relies on.
+        // reproduce the identical ticket (same addresses, same content hash).
+        // This is the string-side integrity check the example app relies on.
         let ticket2 = hybrid
             .share_blob(provider, dest_path.to_string_lossy().into_owned())
             .expect("re-share produced a ticket");

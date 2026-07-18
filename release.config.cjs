@@ -1,6 +1,6 @@
 // 0ver policy (binding): this package stays on 0.x. While major is 0,
 // breaking changes release a MINOR and features release a PATCH. No rule
-// below may ever say "major" — commit-analyzer only falls back to its
+// below may ever say "major": commit-analyzer only falls back to its
 // default rules (which contain major) when NO custom rule matches, and the
 // `breaking: true` rule in `releaseRules` matches every breaking commit
 // first, so a 1.0.0 auto-bump is impossible with this configuration.

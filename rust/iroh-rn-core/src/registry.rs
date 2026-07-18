@@ -1,6 +1,6 @@
 //! Handle registry: maps opaque `u64` handles to live objects.
 //!
-//! The FFI boundary never passes Rust objects to the host language — it passes
+//! The FFI boundary never passes Rust objects to the host language: it passes
 //! numeric handles allocated by a [`Registry`]. Handles start at `1` (so `0`
 //! can safely mean "no handle" on the JS side) and are never reused.
 

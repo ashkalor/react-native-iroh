@@ -9,7 +9,7 @@ export type { EndpointConfig, Iroh as IrohSpec, NetworkProfile } from "./specs/i
 export type { ProgressEvent, Transfer } from "./transfer";
 
 /**
- * Unstable escape hatch: the raw `Iroh` hybrid object — the full native
+ * Unstable escape hatch: the raw `Iroh` hybrid object: the full native
  * bridge surface, without the queueing, error typing, or lifecycle handling
  * of the {@link Endpoint} class API.
  *

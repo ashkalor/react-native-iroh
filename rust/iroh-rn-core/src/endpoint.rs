@@ -156,14 +156,14 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
 
 /// Whether `handle` refers to a live (not yet closed) endpoint.
 ///
-/// Cheap and synchronous — a registry lookup.
+/// Cheap and synchronous: a registry lookup.
 pub fn endpoint_is_open(handle: EndpointHandle) -> bool {
     endpoint_state(handle).is_ok()
 }
 
 /// Returns the endpoint's node id (its public key) as a string.
 ///
-/// Cheap and synchronous — no network involved.
+/// Cheap and synchronous: no network involved.
 pub fn endpoint_node_id(handle: EndpointHandle) -> Result<String> {
     Ok(endpoint_state(handle)?.endpoint.id().to_string())
 }

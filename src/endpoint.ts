@@ -135,7 +135,7 @@ export class Endpoint {
    *
    * At most {@link EndpointOptions.maxConcurrentDownloads} downloads run
    * natively at once; additional ones wait in a FIFO queue (a queued
-   * transfer's `promise` settles once it has run — or immediately if it is
+   * transfer's `promise` settles once it has run, or immediately if it is
    * cancelled while queued).
    */
   downloadBlob(ticket: string, destPath: string): Transfer {
@@ -159,10 +159,10 @@ export class Endpoint {
    * Closes the endpoint: shuts down its router, sockets and blob store.
    *
    * One-shot: the native side invalidates the handle at the first close
-   * call, so the first call's outcome — success or failure — is final.
+   * call, so the first call's outcome (success or failure) is final.
    * Concurrent and repeated calls all return the same promise; the native
    * close runs at most once. When the native close settles (regardless of
-   * outcome — the endpoint is unusable either way), downloads still waiting
+   * outcome: the endpoint is unusable either way), downloads still waiting
    * in the queue are cancelled (their promises reject with kind
    * `"cancelled"`); actively running downloads are settled by the native
    * shutdown. On failure the promise rejects with an {@link IrohError}.

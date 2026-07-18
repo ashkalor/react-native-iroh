@@ -11,7 +11,7 @@
  * specifier consumers use.
  *
  * If this file needs a change to keep compiling, update README.md's
- * Quickstart section to match — and vice versa.
+ * Quickstart section to match, and vice versa.
  */
 import { Endpoint } from "react-native-iroh";
 

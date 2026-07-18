@@ -18,7 +18,7 @@ export interface ProgressEvent {
  *
  * - Callback subscription: {@link Transfer.onProgress}.
  * - `for await (const event of transfer.progress)`: each iteration of
- *   {@link Transfer.progress} yields conflated {@link ProgressEvent}s — if
+ *   {@link Transfer.progress} yields conflated {@link ProgressEvent}s: if
  *   the consumer is slower than the (already native-side throttled) event
  *   stream, intermediate values are dropped and only the latest is delivered,
  *   so memory use is O(1) regardless of consumer speed.

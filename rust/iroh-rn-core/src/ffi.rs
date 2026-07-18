@@ -14,7 +14,7 @@ use crate::HybridIroh;
 /// Factory called by the nitrogen-generated C++ bridge (`IrohOnLoad.cpp`) to
 /// instantiate the Rust-backed `Iroh` HybridObject.
 ///
-/// Returns a `Box<Arc<dyn HybridIrohSpec>>` — the outer Box provides a stable
+/// Returns a `Box<Arc<dyn HybridIrohSpec>>`: the outer Box provides a stable
 /// thin pointer for C++, the inner Arc enables shared ownership. Returns null
 /// if construction panics; the C++ side treats null as a failed registration.
 // SAFETY: `unsafe(no_mangle)` only asserts the symbol name is unique in the

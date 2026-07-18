@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     /// The FFI contract: these exact codes are stable. If this test fails,
-    /// a code was changed or reused — both are breaking changes.
+    /// a code was changed or reused (both are breaking changes).
     #[test]
     fn error_codes_are_stable() {
         let cases: Vec<(IrohError, u32)> = vec![

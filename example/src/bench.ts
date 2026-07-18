@@ -8,9 +8,9 @@
  * each sit behind their own virtual NAT, so isolated (relay-less) endpoints
  * on different emulators cannot dial each other, and the standard profile
  * would benchmark public relay infrastructure instead of this library.
- * Loopback exercises the full shipped stack — file import, BLAKE3 hashing,
+ * Loopback exercises the full shipped stack (file import, BLAKE3 hashing,
  * QUIC transfer, blob store, export to disk, the native thread pool, and the
- * TS download queue — without network variance.
+ * TS download queue) without network variance.
  *
  * All measurements are emitted as `BENCH:` logcat markers (see markers.ts);
  * the harness greps them and prints a summary table.

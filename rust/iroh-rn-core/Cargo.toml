@@ -1,4 +1,4 @@
-# The staticlib must be named `libIroh_rust.a` — that exact file name is what
+# The staticlib must be named `libIroh_rust.a`: that exact file name is what
 # the nitrogen-generated `Iroh+autolinking.cmake` links against.
 [package]
 name = "iroh-rn-core"

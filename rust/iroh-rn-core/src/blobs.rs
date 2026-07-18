@@ -96,7 +96,7 @@ async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> 
     };
     // On the Standard profile a ticket minted right after bind may not carry
     // dialable addresses yet (no home relay, no confirmed direct addresses).
-    // Wait — bounded — for the endpoint to come online; on timeout the ticket
+    // Wait (bounded) for the endpoint to come online; on timeout the ticket
     // is still produced with whatever addresses are known (best effort).
     // Isolated endpoints skip this: their only addresses are the locally bound
     // sockets, which are known immediately.
@@ -105,7 +105,7 @@ async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> 
             let _ = tokio::time::timeout(ONLINE_TIMEOUT, state.endpoint.online()).await;
         }
     };
-    // The import and the online wait are independent — overlap them and mint
+    // The import and the online wait are independent: overlap them and mint
     // the ticket once both are done.
     let (tag, ()) = tokio::join!(import, wait_online);
     let tag = tag?;
@@ -117,7 +117,7 @@ async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> 
 ///
 /// Returns a [`TransferHandle`] immediately (or an error if the ticket or
 /// destination path is invalid). While the transfer runs, `on_progress`
-/// receives the cumulative number of payload bytes fetched — values are
+/// receives the cumulative number of payload bytes fetched: values are
 /// non-decreasing and unthrottled (the bridge coalesces). `on_complete` fires
 /// exactly once with the terminal result, after which the handle is invalid.
 pub fn blob_download(
@@ -172,7 +172,7 @@ pub fn blob_download_cancel(transfer: TransferHandle) -> Result<()> {
         .unwrap_or_else(|e| e.into_inner())
         .take();
     if let Some(sender) = sender {
-        // If the transfer just completed, the receiver is gone; that's fine —
+        // If the transfer just completed, the receiver is gone; that's fine:
         // completion already won the race.
         sender.send(()).ok();
     }
