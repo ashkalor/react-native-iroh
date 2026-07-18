@@ -22,7 +22,9 @@ jobs:
     name: Two-emulator E2E file transfer (50MB)
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    timeout-minutes: 90
+    # Build+install take ~9 min and every boot/wait below is bounded, so a
+    # healthy run fits comfortably; a hang must die fast (billed minutes).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,9 +54,23 @@ jobs:
       # /dev/kvm but it is root-only by default.
       - name: Enable KVM group perms
         run: |
+          set -euo pipefail
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          # Preflight: fail fast (with a clear reason) if hardware
+          # acceleration is unavailable - the emulators are launched with
+          # "-accel on" and would otherwise die at startup.
+          if [ ! -e /dev/kvm ]; then
+            echo "error: /dev/kvm does not exist on this runner; KVM acceleration unavailable" >&2
+            exit 1
+          fi
+          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "error: /dev/kvm exists but is not readable/writable after udev rule" >&2
+            ls -l /dev/kvm >&2
+            exit 1
+          fi
+          echo "KVM preflight OK: $(ls -l /dev/kvm)"
 
       - uses: oven-sh/setup-bun@v2
 
@@ -107,21 +123,74 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
 
+      # Boots are STAGGERED (second launch only after the first is fully
+      # booted): two cold emulators plus gradle/metro on a 4-core runner
+      # contend badly, and one-at-a-time failures are far easier to
+      # diagnose. Every wait is bounded and every failure path tails the
+      # emulator logs into the step output before exiting nonzero.
       - name: Create and boot two emulators
         run: |
           set -euo pipefail
           AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
           EMULATOR="$ANDROID_HOME/emulator/emulator"
+
+          dump_emulator_logs() {
+            for f in /tmp/emulator-*.log; do
+              [ -f "$f" ] || continue
+              echo "===== tail of $f ====="
+              tail -n 100 "$f" || true
+            done
+          }
+
+          boot_one() { # boot_one <avd-name> <port> <logfile>
+            local name="$1" port="$2" logfile="$3" serial pid waited
+            serial="emulator-$port"
+            nohup "$EMULATOR" -avd "$name" -port "$port" \
+              -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim \
+              -no-snapshot -accel on -memory 2048 -cores 2 -partition-size 4096 \
+              > "$logfile" 2>&1 &
+            pid=$!
+            # Phase 1 (bounded, max 300s): serial visible to adb. Detects an
+            # instantly-dying emulator within seconds via the process check.
+            waited=0
+            until adb -s "$serial" get-state >/dev/null 2>&1; do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "error: emulator process for $serial exited during startup" >&2
+                dump_emulator_logs
+                exit 1
+              fi
+              if [ "$waited" -ge 300 ]; then
+                echo "error: $serial not visible to adb after 300s" >&2
+                dump_emulator_logs
+                exit 1
+              fi
+              sleep 5
+              waited=$((waited + 5))
+            done
+            # Phase 2 (bounded, max 600s): full Android boot.
+            waited=0
+            until [ "$(adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "error: emulator process for $serial died while booting" >&2
+                dump_emulator_logs
+                exit 1
+              fi
+              if [ "$waited" -ge 600 ]; then
+                echo "error: $serial did not finish booting within 600s" >&2
+                dump_emulator_logs
+                exit 1
+              fi
+              sleep 5
+              waited=$((waited + 5))
+            done
+            echo "$serial booted"
+          }
+
           for name in e2e_a e2e_b; do
             echo no | "$AVDMANAGER" create avd -n "$name" -k "system-images;android-35;google_apis;x86_64" -d medium_phone --force
           done
-          nohup "$EMULATOR" -avd e2e_a -port 5554 -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -accel on > /tmp/emulator-a.log 2>&1 &
-          nohup "$EMULATOR" -avd e2e_b -port 5556 -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -accel on > /tmp/emulator-b.log 2>&1 &
-          for serial in emulator-5554 emulator-5556; do
-            adb -s "$serial" wait-for-device
-            timeout 600 bash -c "until [ \"\$(adb -s $serial shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')\" = \"1\" ]; do sleep 5; done"
-            echo "$serial booted"
-          done
+          boot_one e2e_a 5554 /tmp/emulator-a.log
+          boot_one e2e_b 5556 /tmp/emulator-b.log
           adb devices
 
       # Debug builds load their JS bundle from Metro; the harness wires
@@ -151,18 +220,23 @@ jobs:
           MAESTRO_CLI_NO_ANALYTICS: "1"
         run: bun run e2e
 
-      - name: Collect logs on failure
-        if: failure()
+      # failure() alone is NOT enough: a job that hits timeout-minutes is
+      # cancelled, and failure()-guarded steps are skipped, losing exactly
+      # the logs that explain the hang. cancelled() keeps them running.
+      - name: Collect logs on failure or cancellation
+        if: failure() || cancelled()
         run: |
           set -uo pipefail
           mkdir -p /tmp/e2e-logs
           adb -s emulator-5554 logcat -d > /tmp/e2e-logs/logcat-emulator-5554.txt 2>/dev/null || true
           adb -s emulator-5556 logcat -d > /tmp/e2e-logs/logcat-emulator-5556.txt 2>/dev/null || true
-          cp /tmp/emulator-a.log /tmp/emulator-b.log /tmp/metro.log /tmp/e2e-logs/ 2>/dev/null || true
+          cp /tmp/emulator-*.log /tmp/e2e-logs/ 2>/dev/null || true
+          cp /tmp/metro.log /tmp/e2e-logs/ 2>/dev/null || true
           cp -r "$HOME"/.maestro/tests /tmp/e2e-logs/maestro-tests 2>/dev/null || true
+          ls -la /tmp/e2e-logs
 
       - name: Upload failure logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-failure-logs
