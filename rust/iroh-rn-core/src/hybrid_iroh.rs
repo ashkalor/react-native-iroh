@@ -57,9 +57,22 @@ fn encode_error(err: IrohError) -> String {
     format!("[iroh:{}] {err}", err.code())
 }
 
-/// Blocks until the core's completion callback delivers a result, mapping
-/// both the error and a dropped-callback failure to the bridge encoding.
-fn wait_for<T>(rx: mpsc::Receiver<crate::error::Result<T>>) -> Result<T, String> {
+/// The completion callback [`run_blocking`] hands to a core operation.
+type Completion<T> = Box<dyn FnOnce(crate::error::Result<T>) + Send>;
+
+/// Runs a callback-based core operation and blocks until its completion
+/// callback delivers a result, mapping both the error and a dropped-callback
+/// failure to the bridge encoding.
+///
+/// `start` kicks off the operation, handing the provided completion callback
+/// to the core; it may fail synchronously with an already-encoded error.
+fn run_blocking<T: Send + 'static>(
+    start: impl FnOnce(Completion<T>) -> Result<(), String>,
+) -> Result<T, String> {
+    let (tx, rx) = mpsc::channel();
+    start(Box::new(move |result| {
+        tx.send(result).ok();
+    }))?;
     rx.recv()
         .map_err(|_| {
             encode_error(IrohError::Internal(
@@ -75,30 +88,19 @@ impl HybridIrohSpec for HybridIroh {
             BridgeNetworkProfile::Standard => NetworkProfile::Standard,
             BridgeNetworkProfile::Isolated => NetworkProfile::Isolated,
         };
-        let blob_store_dir = match config.blob_store_dir {
-            Some(dir) => {
-                let dir = PathBuf::from(dir);
-                if !dir.is_absolute() {
-                    return Err(encode_error(IrohError::InvalidPath(format!(
-                        "blob store dir must be absolute: {}",
-                        dir.display()
-                    ))));
-                }
-                Some(dir)
-            }
-            None => None,
-        };
-        let (tx, rx) = mpsc::channel();
-        endpoint_create(
-            EndpointConfig {
-                profile,
-                blob_store_dir,
-            },
-            move |result| {
-                tx.send(result).ok();
-            },
-        );
-        wait_for(rx).map(|handle| handle.raw() as f64)
+        // Path validation (absolute blob store dir) happens in the core.
+        let blob_store_dir = config.blob_store_dir.map(PathBuf::from);
+        run_blocking(|done| {
+            endpoint_create(
+                EndpointConfig {
+                    profile,
+                    blob_store_dir,
+                },
+                done,
+            );
+            Ok(())
+        })
+        .map(|handle| handle.raw() as f64)
     }
 
     fn node_id(&self, endpoint: f64) -> Result<String, String> {
@@ -110,23 +112,21 @@ impl HybridIrohSpec for HybridIroh {
     }
 
     fn close_endpoint(&self, endpoint: f64) -> Result<(), String> {
-        let (tx, rx) = mpsc::channel();
-        endpoint_close(EndpointHandle::from_raw(endpoint as u64), move |result| {
-            tx.send(result).ok();
-        });
-        wait_for(rx)
+        run_blocking(|done| {
+            endpoint_close(EndpointHandle::from_raw(endpoint as u64), done);
+            Ok(())
+        })
     }
 
     fn share_blob(&self, endpoint: f64, path: String) -> Result<String, String> {
-        let (tx, rx) = mpsc::channel();
-        blob_share(
-            EndpointHandle::from_raw(endpoint as u64),
-            PathBuf::from(path),
-            move |result| {
-                tx.send(result).ok();
-            },
-        );
-        wait_for(rx)
+        run_blocking(|done| {
+            blob_share(
+                EndpointHandle::from_raw(endpoint as u64),
+                PathBuf::from(path),
+                done,
+            );
+            Ok(())
+        })
     }
 
     fn download_blob(
@@ -144,20 +144,21 @@ impl HybridIrohSpec for HybridIroh {
             on_progress(bytes as f64)
         }));
         let progress = Arc::clone(&coalescer);
-        let (tx, rx) = mpsc::channel();
-        let transfer = blob_download(
-            EndpointHandle::from_raw(endpoint as u64),
-            &ticket,
-            PathBuf::from(dest_path),
-            move |bytes| progress.offer(bytes),
-            move |result| {
-                coalescer.flush();
-                tx.send(result).ok();
-            },
-        )
-        .map_err(encode_error)?;
-        on_start(transfer.raw() as f64);
-        wait_for(rx)
+        run_blocking(|done| {
+            let transfer = blob_download(
+                EndpointHandle::from_raw(endpoint as u64),
+                &ticket,
+                PathBuf::from(dest_path),
+                move |bytes| progress.offer(bytes),
+                move |result| {
+                    coalescer.flush();
+                    done(result);
+                },
+            )
+            .map_err(encode_error)?;
+            on_start(transfer.raw() as f64);
+            Ok(())
+        })
     }
 
     fn cancel_download(&self, transfer_id: f64) -> Result<(), String> {

@@ -45,12 +45,11 @@ fail() {
 
 # --- Tool discovery -------------------------------------------------------
 
+# adb is taken from PATH; override with ADB=/path/to/adb (an adb.exe under
+# /mnt/c works from WSL — APK paths are converted for it automatically).
 if [ -z "${ADB:-}" ]; then
   if command -v adb >/dev/null 2>&1; then
     ADB=adb
-  elif [ -x "/mnt/c/Users/akhik/AppData/Local/Android/Sdk/platform-tools/adb.exe" ]; then
-    # WSL on this dev machine drives the Windows-side adb server.
-    ADB=/mnt/c/Users/akhik/AppData/Local/Android/Sdk/platform-tools/adb.exe
   else
     fail "adb not found; set ADB=/path/to/adb"
   fi
@@ -78,12 +77,11 @@ relaunch_app() { # relaunch_app <device>
   "$ADB" -s "$device" shell am force-stop dev.mobile.maestro >/dev/null 2>&1
   "$ADB" -s "$device" logcat -c
   "$ADB" -s "$device" shell am start -n "$APP_ID/.MainActivity" >/dev/null 2>&1
-  for _ in $(seq 1 60); do
-    if "$ADB" -s "$device" logcat -d | grep -q "E2E: READY"; then
-      return 0
-    fi
-    sleep 2
-  done
+  # Let logcat do the matching: stream (buffer contents first, then follow)
+  # and exit at the first READY marker instead of re-dumping every 2s.
+  if timeout 120 "$ADB" -s "$device" logcat -e "E2E: READY" -m 1 >/dev/null 2>&1; then
+    return 0
+  fi
   log "WARNING: app on $device did not emit E2E: READY within 120s of relaunch"
   return 1
 }
@@ -193,12 +191,14 @@ log "test file ready ($size bytes)"
 log "driving share flow on $DEVICE_A"
 run_flow "$DEVICE_A" share "$E2E_DIR/flows/share.yaml" || fail "share flow failed on $DEVICE_A"
 
-TICKET="$("$ADB" -s "$DEVICE_A" logcat -d | grep "E2E: TICKET " | tail -1 | sed 's/.*E2E: TICKET //' | tr -d '\r')"
+# One logcat dump serves both the ticket and the share marker extraction.
+SHARE_LOG="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r')"
+TICKET="$(printf '%s\n' "$SHARE_LOG" | grep "E2E: TICKET " | tail -1 | sed 's/.*E2E: TICKET //')"
 case "$TICKET" in
   blob*) log "ticket extracted (${#TICKET} chars)" ;;
   *) fail "could not extract ticket from $DEVICE_A logcat" ;;
 esac
-SHARE_MARKER="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' | grep -oE "E2E: (PASS|FAIL) share.*" | tail -1)"
+SHARE_MARKER="$(printf '%s\n' "$SHARE_LOG" | grep -oE "E2E: (PASS|FAIL) share.*" | tail -1)"
 case "$SHARE_MARKER" in
   "E2E: PASS share"*) ;;
   *) fail "share marker missing or failed: $SHARE_MARKER" ;;

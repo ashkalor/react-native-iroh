@@ -24,8 +24,28 @@ mod ffi;
 mod hybrid_iroh;
 pub mod registry;
 mod runtime;
+#[doc(hidden)]
+pub mod test_support;
 
 pub use hybrid_iroh::HybridIroh;
+
+/// Validates that `path` is absolute, returning it unchanged.
+///
+/// `what` names the path's role in the [`error::IrohError::InvalidPath`]
+/// message (e.g. `"share path"`, `"blob store dir"`).
+pub(crate) fn require_absolute(
+    path: std::path::PathBuf,
+    what: &str,
+) -> error::Result<std::path::PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(error::IrohError::InvalidPath(format!(
+            "{what} must be absolute: {}",
+            path.display()
+        )))
+    }
+}
 
 /// Runs a host-supplied callback, catching any panic so it can never unwind
 /// across the FFI boundary or kill a runtime worker thread.

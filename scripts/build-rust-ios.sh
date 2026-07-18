@@ -28,9 +28,10 @@ XCFRAMEWORK="$OUT_DIR/Iroh_rust.xcframework"
 
 TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios)
 
+INSTALLED_TARGETS="$(rustup target list --installed)"
 MISSING=""
 for triple in "${TARGETS[@]}"; do
-  rustup target list --installed | grep -qx "$triple" || MISSING="$MISSING $triple"
+  printf '%s\n' "$INSTALLED_TARGETS" | grep -qx "$triple" || MISSING="$MISSING $triple"
 done
 if [ -n "$MISSING" ]; then
   echo "error: missing rustup targets:$MISSING" >&2

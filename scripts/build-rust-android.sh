@@ -62,10 +62,11 @@ TARGETS=(
   "x86 i686-linux-android"
 )
 
+INSTALLED_TARGETS="$(rustup target list --installed)"
 MISSING=""
 for entry in "${TARGETS[@]}"; do
   read -r _abi triple <<<"$entry"
-  rustup target list --installed | grep -qx "$triple" || MISSING="$MISSING $triple"
+  printf '%s\n' "$INSTALLED_TARGETS" | grep -qx "$triple" || MISSING="$MISSING $triple"
 done
 if [ -n "$MISSING" ]; then
   echo "error: missing rustup targets:$MISSING" >&2

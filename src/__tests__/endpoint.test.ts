@@ -73,15 +73,20 @@ describe("Endpoint identity and lifecycle", () => {
     expect(wrapped.kind).toBe("invalid-handle");
   });
 
-  it("wraps close failures in IrohError and allows a retry", async () => {
+  it("wraps close failures in IrohError and memoizes them: no second native call", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
     mock.failures.closeEndpoint = new Error("[iroh:1001] stale handle");
-    const error = expectIrohError(await captureRejection(endpoint.close()));
+    const first = endpoint.close();
+    const error = expectIrohError(await captureRejection(first));
     expect(error.kind).toBe("invalid-handle");
+    // close is one-shot: even after a failure, repeated calls return the
+    // same settled promise and never retry natively.
     mock.failures.closeEndpoint = undefined;
-    await endpoint.close();
-    expect(mock.closeCalls).toEqual([1, 1]);
+    const second = endpoint.close();
+    expect(second).toBe(first);
+    expectIrohError(await captureRejection(second));
+    expect(mock.closeCalls).toEqual([1]);
   });
 });
 
@@ -280,24 +285,26 @@ describe("Endpoint download queue", () => {
     await third.promise;
   });
 
-  it("a failed close leaves queued transfers intact; the retry cancels them", async () => {
+  it("a failed close still cancels queued transfers (the endpoint is unusable)", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 1 }, mock.binding);
     endpoint.downloadBlob("ticket-a", "/dest/a");
     const queued = endpoint.downloadBlob("ticket-b", "/dest/b");
     await flush();
     mock.failures.closeEndpoint = new Error("[iroh:1000] close failed");
-    const error = expectIrohError(await captureRejection(endpoint.close()));
+    const first = endpoint.close();
+    const error = expectIrohError(await captureRejection(first));
     expect(error.kind).toBe("internal");
-    // The queued transfer survived the failed close untouched.
-    expect(queued.isSettled).toBe(false);
-    mock.failures.closeEndpoint = undefined;
-    const retried = endpoint.close();
+    // The native handle is invalidated at the first close call, so a failed
+    // close still cancels everything waiting in the queue.
     const cancelled = expectIrohError(await captureRejection(queued.promise));
     expect(cancelled.code).toBe(3003);
     expect(cancelled.kind).toBe("cancelled");
-    await retried;
-    expect(mock.closeCalls).toEqual([1, 1]);
+    // Second close() returns the same settled promise; no second native call.
+    const second = endpoint.close();
+    expect(second).toBe(first);
+    await captureRejection(second);
+    expect(mock.closeCalls).toEqual([1]);
     expect(mock.downloads).toHaveLength(1);
   });
 

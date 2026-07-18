@@ -2,7 +2,8 @@ import React, { useCallback, useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import type { Endpoint } from "react-native-iroh";
-import { SHARE_CANDIDATES } from "./paths";
+import { e2eReport, e2eTicket } from "./markers";
+import { SHARE_CANDIDATES, shareFirstReadable } from "./paths";
 import { sectionStyles } from "./theme";
 
 interface ShareState {
@@ -25,20 +26,15 @@ function ShareSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Element {
 
   const onShare = useCallback(async () => {
     setState({ ...IDLE, phase: "sharing" });
-    let lastError = "no readable share candidate found";
-    for (const candidate of SHARE_CANDIDATES) {
-      try {
-        const ticket = await endpoint.shareBlob(candidate);
-        console.log(`E2E: TICKET ${ticket}`);
-        console.log(`E2E: PASS share source=${candidate}`);
-        setState({ phase: "shared", ticket, source: candidate, error: "" });
-        return;
-      } catch (error) {
-        lastError = String(error);
-      }
+    const attempt = await shareFirstReadable(endpoint, SHARE_CANDIDATES);
+    if (attempt.ok) {
+      e2eTicket(attempt.ticket);
+      e2eReport("share", true, `source=${attempt.source}`);
+      setState({ phase: "shared", ticket: attempt.ticket, source: attempt.source, error: "" });
+      return;
     }
-    console.log(`E2E: FAIL share ${lastError}`);
-    setState({ phase: "error", ticket: "", source: "", error: lastError });
+    e2eReport("share", false, attempt.lastError);
+    setState({ phase: "error", ticket: "", source: "", error: attempt.lastError });
   }, [endpoint]);
 
   return (

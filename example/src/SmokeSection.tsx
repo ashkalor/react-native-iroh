@@ -1,7 +1,8 @@
 import React, { useCallback, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { Endpoint, IrohError } from "react-native-iroh";
-import { FILES_DIR, SYSTEM_FILE_CANDIDATES } from "./paths";
+import { smokeAborted, smokeReport, smokeResult } from "./markers";
+import { FILES_DIR, SYSTEM_FILE_CANDIDATES, shareFirstReadable } from "./paths";
 import { extractTicketHash } from "./ticketHash";
 import { sectionStyles } from "./theme";
 
@@ -19,7 +20,7 @@ interface CheckResult {
 async function runSmokeSuite(report: (result: CheckResult) => void): Promise<void> {
   const check = (name: string, pass: boolean, detail: string) => {
     report({ name, pass, detail });
-    console.log(`SMOKE: ${pass ? "PASS" : "FAIL"} ${name} - ${detail}`);
+    smokeReport(name, pass, detail);
     if (!pass) {
       throw new Error(`check failed: ${name}: ${detail}`);
     }
@@ -42,17 +43,9 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
     `provider=${provider.nodeId.slice(0, 12)}... receiver=${receiver.nodeId.slice(0, 12)}...`,
   );
 
-  let ticket = "";
-  let sourceFile = "";
-  for (const candidate of SYSTEM_FILE_CANDIDATES) {
-    try {
-      ticket = await provider.shareBlob(candidate);
-      sourceFile = candidate;
-      break;
-    } catch {
-      // Candidate missing/unreadable on this device; try the next one.
-    }
-  }
+  const attempt = await shareFirstReadable(provider, SYSTEM_FILE_CANDIDATES);
+  const ticket = attempt.ok ? attempt.ticket : "";
+  const sourceFile = attempt.ok ? attempt.source : "";
   check("shareBlob", ticket.length > 0, `${sourceFile} -> ticket[${ticket.length} chars]`);
 
   const contentHash = extractTicketHash(ticket);
@@ -171,15 +164,10 @@ function SmokeSection(): React.JSX.Element {
       });
     } catch (error) {
       failed = true;
-      console.log(`SMOKE: SUITE ABORTED - ${String(error)}`);
+      smokeAborted(String(error));
     }
-    if (failed) {
-      setStatus("failed");
-      console.log("SMOKE: RESULT FAILED");
-    } else {
-      setStatus("all-pass");
-      console.log("SMOKE: RESULT ALL PASS");
-    }
+    setStatus(failed ? "failed" : "all-pass");
+    smokeResult(!failed);
   }, []);
 
   return (

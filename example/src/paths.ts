@@ -27,6 +27,32 @@ export const SYSTEM_FILE_CANDIDATES = [
 /** Share source candidates: harness file first, then system fallbacks. */
 export const SHARE_CANDIDATES = [E2E_SHARE_FILE, ...SYSTEM_FILE_CANDIDATES];
 
+/** Outcome of {@link shareFirstReadable}. */
+export type ShareAttempt =
+  | { ok: true; ticket: string; source: string }
+  | { ok: false; lastError: string };
+
+/**
+ * Tries the share candidates in order; the first readable one wins. Returns
+ * the ticket plus the winning source path, or (when every candidate fails)
+ * the last failure rendered as a string.
+ */
+export async function shareFirstReadable(
+  endpoint: { shareBlob(path: string): Promise<string> },
+  candidates: readonly string[],
+): Promise<ShareAttempt> {
+  let lastError = "no readable share candidate found";
+  for (const candidate of candidates) {
+    try {
+      return { ok: true, ticket: await endpoint.shareBlob(candidate), source: candidate };
+    } catch (error) {
+      // Candidate missing/unreadable on this device; try the next one.
+      lastError = String(error);
+    }
+  }
+  return { ok: false, lastError };
+}
+
 /**
  * Where downloads land. Directly inside FILES_DIR (which always exists)
  * because the native layer does not create missing parent directories.

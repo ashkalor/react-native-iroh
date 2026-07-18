@@ -17,6 +17,7 @@ use crate::{
     error::{IrohError, Result},
     guarded_callback,
     registry::Registry,
+    require_absolute,
     runtime::runtime,
 };
 
@@ -109,22 +110,35 @@ pub fn endpoint_create(
 }
 
 async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
-    let endpoint = match config.profile {
-        NetworkProfile::Standard => Endpoint::bind(presets::N0).await,
-        // `Minimal` sets only the mandatory crypto provider: relays stay
-        // disabled and no address lookup services are configured.
-        NetworkProfile::Isolated => Endpoint::bind(presets::Minimal).await,
-    }
-    .map_err(|e| IrohError::EndpointBind(e.to_string()))?;
+    // Validate before doing any work: a relative store dir would silently
+    // resolve against an arbitrary process working directory.
+    let blob_store_dir = config
+        .blob_store_dir
+        .map(|dir| require_absolute(dir, "blob store dir"))
+        .transpose()?;
 
-    let store = match config.blob_store_dir {
-        Some(dir) => BlobStore::Fs(
-            FsStore::load(dir)
-                .await
-                .map_err(|e| IrohError::EndpointBind(format!("blob store: {e}")))?,
-        ),
-        None => BlobStore::Mem(MemStore::new()),
+    let bind = async {
+        match config.profile {
+            NetworkProfile::Standard => Endpoint::bind(presets::N0).await,
+            // `Minimal` sets only the mandatory crypto provider: relays stay
+            // disabled and no address lookup services are configured.
+            NetworkProfile::Isolated => Endpoint::bind(presets::Minimal).await,
+        }
+        .map_err(|e| IrohError::EndpointBind(e.to_string()))
     };
+    let load_store = async {
+        Ok(match blob_store_dir {
+            Some(dir) => BlobStore::Fs(
+                FsStore::load(dir)
+                    .await
+                    .map_err(|e| IrohError::EndpointBind(format!("blob store: {e}")))?,
+            ),
+            None => BlobStore::Mem(MemStore::new()),
+        })
+    };
+    // Socket binding and blob-store loading are independent; run them
+    // concurrently and fail fast if either errors.
+    let (endpoint, store) = tokio::try_join!(bind, load_store)?;
 
     let blobs = BlobsProtocol::new(store.api(), None);
     let router = Router::builder(endpoint.clone())
@@ -189,67 +203,45 @@ async fn close_inner(state: Arc<EndpointState>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, time::Duration};
-
     use super::*;
-
-    const TIMEOUT: Duration = Duration::from_secs(30);
-
-    fn create_blocking(config: EndpointConfig) -> Result<EndpointHandle> {
-        let (tx, rx) = mpsc::channel();
-        endpoint_create(config, move |result| {
-            tx.send(result).ok();
-        });
-        rx.recv_timeout(TIMEOUT).expect("create callback fired")
-    }
+    use crate::test_support::{
+        close_endpoint_blocking, create_endpoint_blocking, create_isolated_endpoint,
+    };
 
     #[test]
     fn create_isolated_endpoint_yields_valid_node_id() {
-        let handle = create_blocking(EndpointConfig {
-            profile: NetworkProfile::Isolated,
-            blob_store_dir: None,
-        })
-        .expect("endpoint created");
+        let handle = create_isolated_endpoint(None);
 
         let node_id = endpoint_node_id(handle).expect("node id");
         node_id
             .parse::<iroh::EndpointId>()
             .expect("node id is a valid iroh EndpointId");
 
-        let (tx, rx) = mpsc::channel();
-        endpoint_close(handle, move |result| {
-            tx.send(result).ok();
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    #[test]
+    fn create_rejects_relative_blob_store_dir() {
+        let result = create_endpoint_blocking(EndpointConfig {
+            profile: NetworkProfile::Isolated,
+            blob_store_dir: Some(PathBuf::from("relative/store")),
         });
-        rx.recv_timeout(TIMEOUT)
-            .expect("close callback fired")
-            .expect("close succeeded");
+        assert!(matches!(result, Err(IrohError::InvalidPath(_))));
     }
 
     #[test]
     fn closed_handle_becomes_invalid() {
-        let handle = create_blocking(EndpointConfig {
-            profile: NetworkProfile::Isolated,
-            blob_store_dir: None,
-        })
-        .expect("endpoint created");
+        let handle = create_isolated_endpoint(None);
 
-        let (tx, rx) = mpsc::channel();
-        endpoint_close(handle, move |result| {
-            tx.send(result).ok();
-        });
-        rx.recv_timeout(TIMEOUT).unwrap().unwrap();
+        close_endpoint_blocking(handle).expect("close succeeded");
 
         assert!(matches!(
             endpoint_node_id(handle),
             Err(IrohError::InvalidHandle(_))
         ));
         // Double close reports InvalidHandle through the callback.
-        let (tx, rx) = mpsc::channel();
-        endpoint_close(handle, move |result| {
-            tx.send(result).ok();
-        });
         assert!(matches!(
-            rx.recv_timeout(TIMEOUT).unwrap(),
+            close_endpoint_blocking(handle),
             Err(IrohError::InvalidHandle(_))
         ));
     }

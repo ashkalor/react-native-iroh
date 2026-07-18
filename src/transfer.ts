@@ -232,7 +232,7 @@ export class TransferController implements Transfer {
     this.cancelRequested = true;
     if (!this.started) {
       // Still waiting in the FIFO queue: fail locally, never touch native.
-      this.settle(new IrohError(3003, "[iroh:3003] download cancelled before it started"));
+      this.settle(new IrohError(3003, "download cancelled before it started"));
       return;
     }
     if (this.nativeTransferId !== null) {
@@ -269,7 +269,9 @@ export class TransferController implements Transfer {
       return;
     }
     const event: ProgressEvent = { bytesReceived };
-    for (const listener of [...this.listeners]) {
+    // Set iteration tolerates delete-during-iteration, so an unsubscribe (or
+    // iterator detach) from inside a callback needs no defensive copy.
+    for (const listener of this.listeners) {
       try {
         listener(event);
       } catch (error) {
@@ -278,7 +280,7 @@ export class TransferController implements Transfer {
         console.error("react-native-iroh: onProgress listener threw", error);
       }
     }
-    for (const iterator of [...this.iterators]) {
+    for (const iterator of this.iterators) {
       iterator.push(event);
     }
   }

@@ -4,7 +4,7 @@
 #![allow(non_snake_case)]
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
@@ -14,13 +14,9 @@ use std::{
 
 use Iroh_rust::{
     blobs::{blob_download, blob_share},
-    endpoint::{
-        endpoint_close, endpoint_create, endpoint_node_id, EndpointConfig, EndpointHandle,
-        NetworkProfile,
-    },
+    endpoint::endpoint_node_id,
+    test_support::{close_endpoint_blocking, create_isolated_endpoint, TIMEOUT},
 };
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Deterministic pseudo-random payload (xorshift), big enough to span many
 /// chunk groups so the transfer emits multiple progress events.
@@ -37,32 +33,6 @@ fn payload(len: usize) -> Vec<u8> {
     out
 }
 
-fn create_isolated_endpoint(store_dir: &Path) -> EndpointHandle {
-    let (tx, rx) = mpsc::channel();
-    endpoint_create(
-        EndpointConfig {
-            profile: NetworkProfile::Isolated,
-            blob_store_dir: Some(store_dir.to_path_buf()),
-        },
-        move |result| {
-            tx.send(result).ok();
-        },
-    );
-    rx.recv_timeout(TIMEOUT)
-        .expect("endpoint_create completion callback fired")
-        .expect("endpoint created")
-}
-
-fn close_endpoint(handle: EndpointHandle) {
-    let (tx, rx) = mpsc::channel();
-    endpoint_close(handle, move |result| {
-        tx.send(result).ok();
-    });
-    rx.recv_timeout(TIMEOUT)
-        .expect("endpoint_close completion callback fired")
-        .expect("endpoint closed");
-}
-
 #[test]
 fn two_isolated_endpoints_transfer_a_file_with_monotone_progress() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -70,8 +40,8 @@ fn two_isolated_endpoints_transfer_a_file_with_monotone_progress() {
     let src_path = dir.path().join("shared.bin");
     std::fs::write(&src_path, &bytes).expect("write source file");
 
-    let provider = create_isolated_endpoint(&dir.path().join("provider-store"));
-    let receiver = create_isolated_endpoint(&dir.path().join("receiver-store"));
+    let provider = create_isolated_endpoint(Some(dir.path().join("provider-store")));
+    let receiver = create_isolated_endpoint(Some(dir.path().join("receiver-store")));
 
     // Node ids are distinct, valid public keys.
     let provider_id = endpoint_node_id(provider).expect("provider node id");
@@ -136,6 +106,6 @@ fn two_isolated_endpoints_transfer_a_file_with_monotone_progress() {
     }
     assert!(*progress.last().unwrap() <= bytes.len() as u64);
 
-    close_endpoint(provider);
-    close_endpoint(receiver);
+    close_endpoint_blocking(provider).expect("provider closed");
+    close_endpoint_blocking(receiver).expect("receiver closed");
 }

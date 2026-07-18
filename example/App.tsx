@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { Endpoint } from "react-native-iroh";
 import DownloadSection from "./src/DownloadSection";
+import { e2eReady, e2eReport } from "./src/markers";
 import { APP_STORE_DIR } from "./src/paths";
 import ShareSection from "./src/ShareSection";
 import SmokeSection from "./src/SmokeSection";
@@ -31,13 +32,13 @@ function App(): React.JSX.Element {
         if (!alive) {
           return endpoint.close();
         }
-        console.log(`E2E: READY ${endpoint.nodeId}`);
+        e2eReady(endpoint.nodeId);
         setState({ phase: "ready", endpoint });
         return undefined;
       })
       .catch((error: unknown) => {
         if (alive) {
-          console.log(`E2E: FAIL endpoint ${String(error)}`);
+          e2eReport("endpoint", false, String(error));
           setState({ phase: "error", message: String(error) });
         }
       });

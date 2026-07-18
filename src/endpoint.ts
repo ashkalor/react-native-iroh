@@ -52,7 +52,6 @@ export class Endpoint {
   private readonly downloadQueue: TransferController[] = [];
   private activeDownloads = 0;
   private closePromise: Promise<void> | null = null;
-  private closed = false;
 
   private constructor(
     binding: IrohBinding,
@@ -107,9 +106,6 @@ export class Endpoint {
 
   /** Whether the endpoint is live (created and not yet closed). */
   get isOpen(): boolean {
-    if (this.closed) {
-      return false;
-    }
     try {
       return this.binding.isEndpointOpen(this.handle);
     } catch (error) {
@@ -147,7 +143,11 @@ export class Endpoint {
       (onStart, onProgress) =>
         this.binding.downloadBlob(this.handle, ticket, destPath, onStart, onProgress),
       (transferId) => {
-        this.binding.cancelDownload(transferId);
+        try {
+          this.binding.cancelDownload(transferId);
+        } catch (error) {
+          throw IrohError.from(error);
+        }
       },
     );
     this.downloadQueue.push(transfer);
@@ -158,31 +158,33 @@ export class Endpoint {
   /**
    * Closes the endpoint: shuts down its router, sockets and blob store.
    *
-   * Idempotent — concurrent and repeated calls share one close operation,
-   * and after a failed close, calling again retries. Once the native close
-   * succeeds, downloads still waiting in the queue are cancelled (their
-   * promises reject with kind `"cancelled"`); actively running downloads are
-   * settled by the native shutdown. A failed close leaves the queue intact,
-   * so `close()` stays honestly retryable.
+   * One-shot: the native side invalidates the handle at the first close
+   * call, so the first call's outcome — success or failure — is final.
+   * Concurrent and repeated calls all return the same promise; the native
+   * close runs at most once. When the native close settles (regardless of
+   * outcome — the endpoint is unusable either way), downloads still waiting
+   * in the queue are cancelled (their promises reject with kind
+   * `"cancelled"`); actively running downloads are settled by the native
+   * shutdown. On failure the promise rejects with an {@link IrohError}.
    */
   close(): Promise<void> {
-    if (this.closePromise !== null) {
-      return this.closePromise;
-    }
-    const closing = this.binding.closeEndpoint(this.handle).then(
-      () => {
-        this.closed = true;
+    if (this.closePromise === null) {
+      const cancelQueued = (): void => {
         for (const queued of this.downloadQueue.splice(0)) {
           queued.cancel();
         }
-      },
-      (error: unknown) => {
-        this.closePromise = null;
-        throw IrohError.from(error);
-      },
-    );
-    this.closePromise = closing;
-    return closing;
+      };
+      this.closePromise = this.binding.closeEndpoint(this.handle).then(
+        () => {
+          cancelQueued();
+        },
+        (error: unknown) => {
+          cancelQueued();
+          throw IrohError.from(error);
+        },
+      );
+    }
+    return this.closePromise;
   }
 
   /** Starts queued transfers while concurrency slots are available. */

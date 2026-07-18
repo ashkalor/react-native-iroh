@@ -1,6 +1,7 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Keyboard, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import type { Endpoint, Transfer } from "react-native-iroh";
+import { e2eEvent, e2eReport } from "./markers";
 import ProgressBar from "./ProgressBar";
 import { DOWNLOAD_DEST } from "./paths";
 import { extractTicketHash } from "./ticketHash";
@@ -59,7 +60,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       return;
     }
     const expectedHash = extractTicketHash(ticket);
-    console.log("E2E: DOWNLOAD_START");
+    e2eEvent("DOWNLOAD_START");
     const transfer = endpoint.downloadBlob(ticket, DOWNLOAD_DEST);
 
     // E2E accounting: refs, not state, so progress never re-renders here.
@@ -75,15 +76,13 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       await transfer.promise;
     } catch (error) {
       unsubscribe();
-      console.log(`E2E: FAIL download-complete ${String(error)}`);
+      e2eReport("download-complete", false, String(error));
       setState({ ...IDLE, phase: "failed", transfer, error: String(error) });
       return;
     }
     unsubscribe();
-    console.log(`E2E: PASS download-complete bytes=${lastBytes}`);
-    console.log(
-      `E2E: ${progressEvents >= 1 ? "PASS" : "FAIL"} progress-observed events=${progressEvents}`,
-    );
+    e2eReport("download-complete", true, `bytes=${lastBytes}`);
+    e2eReport("progress-observed", progressEvents >= 1, `events=${progressEvents}`);
 
     setState({ ...IDLE, phase: "verifying", transfer });
     try {
@@ -91,7 +90,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       const actualHash = extractTicketHash(reShareTicket);
       const pass = expectedHash !== null && actualHash !== null && expectedHash === actualHash;
       const detail = `expected=${expectedHash ?? "unparseable"} actual=${actualHash ?? "unparseable"}`;
-      console.log(`E2E: ${pass ? "PASS" : "FAIL"} integrity ${detail}`);
+      e2eReport("integrity", pass, detail);
       setState({
         ...IDLE,
         phase: "complete",
@@ -100,7 +99,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
         integrityDetail: detail,
       });
     } catch (error) {
-      console.log(`E2E: FAIL integrity re-share failed: ${String(error)}`);
+      e2eReport("integrity", false, `re-share failed: ${String(error)}`);
       setState({
         ...IDLE,
         phase: "complete",

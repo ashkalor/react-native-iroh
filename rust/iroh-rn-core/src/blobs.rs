@@ -23,6 +23,7 @@ use crate::{
     error::{IrohError, Result},
     guarded_callback,
     registry::Registry,
+    require_absolute,
     runtime::runtime,
 };
 
@@ -71,12 +72,7 @@ pub fn blob_share(
 }
 
 async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> {
-    if !path.is_absolute() {
-        return Err(IrohError::InvalidPath(format!(
-            "share path must be absolute: {}",
-            path.display()
-        )));
-    }
+    let path = require_absolute(path, "share path")?;
     let state = endpoint_state(endpoint)?;
     // TryReference avoids copying file bytes into a persistent store; stores
     // that cannot reference (in-memory) fall back to reading the file.
@@ -85,26 +81,34 @@ async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> 
     } else {
         ImportMode::Copy
     };
-    let tag = state
-        .store
-        .api()
-        .blobs()
-        .add_path_with_opts(AddPathOptions {
-            path,
-            format: BlobFormat::Raw,
-            mode,
-        })
-        .await
-        .map_err(|e| IrohError::BlobImport(e.to_string()))?;
+    let import = async {
+        state
+            .store
+            .api()
+            .blobs()
+            .add_path_with_opts(AddPathOptions {
+                path,
+                format: BlobFormat::Raw,
+                mode,
+            })
+            .await
+            .map_err(|e| IrohError::BlobImport(e.to_string()))
+    };
     // On the Standard profile a ticket minted right after bind may not carry
     // dialable addresses yet (no home relay, no confirmed direct addresses).
-    // Wait — bounded — for the endpoint to come online first; on timeout the
-    // ticket is still produced with whatever addresses are known (best effort).
+    // Wait — bounded — for the endpoint to come online; on timeout the ticket
+    // is still produced with whatever addresses are known (best effort).
     // Isolated endpoints skip this: their only addresses are the locally bound
     // sockets, which are known immediately.
-    if state.profile == NetworkProfile::Standard {
-        let _ = tokio::time::timeout(ONLINE_TIMEOUT, state.endpoint.online()).await;
-    }
+    let wait_online = async {
+        if state.profile == NetworkProfile::Standard {
+            let _ = tokio::time::timeout(ONLINE_TIMEOUT, state.endpoint.online()).await;
+        }
+    };
+    // The import and the online wait are independent — overlap them and mint
+    // the ticket once both are done.
+    let (tag, ()) = tokio::join!(import, wait_online);
+    let tag = tag?;
     let ticket = BlobTicket::new(state.endpoint.addr(), tag.hash, tag.format);
     Ok(ticket.to_string())
 }
@@ -126,12 +130,7 @@ pub fn blob_download(
     let ticket: BlobTicket = ticket
         .parse()
         .map_err(|e| IrohError::InvalidTicket(format!("{e}")))?;
-    if !dest_path.is_absolute() {
-        return Err(IrohError::InvalidPath(format!(
-            "destination path must be absolute: {}",
-            dest_path.display()
-        )));
-    }
+    let dest_path = require_absolute(dest_path, "destination path")?;
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
     let handle = TRANSFERS.insert(TransferState {
@@ -258,35 +257,15 @@ mod tests {
     use iroh_blobs::Hash;
 
     use super::*;
-    use crate::endpoint::{endpoint_close, endpoint_create, EndpointConfig, NetworkProfile};
-
-    const TIMEOUT: Duration = Duration::from_secs(30);
-
-    fn create_isolated_endpoint() -> EndpointHandle {
-        let (tx, rx) = mpsc::channel();
-        endpoint_create(
-            EndpointConfig {
-                profile: NetworkProfile::Isolated,
-                blob_store_dir: None,
-            },
-            move |result| {
-                tx.send(result).ok();
-            },
-        );
-        rx.recv_timeout(TIMEOUT).unwrap().unwrap()
-    }
+    use crate::test_support::{close_endpoint_blocking, create_isolated_endpoint, TIMEOUT};
 
     fn close(handle: EndpointHandle) {
-        let (tx, rx) = mpsc::channel();
-        endpoint_close(handle, move |result| {
-            tx.send(result).ok();
-        });
-        rx.recv_timeout(TIMEOUT).unwrap().unwrap();
+        close_endpoint_blocking(handle).expect("endpoint closed");
     }
 
     #[test]
     fn download_rejects_garbage_ticket_synchronously() {
-        let endpoint = create_isolated_endpoint();
+        let endpoint = create_isolated_endpoint(None);
         let result = blob_download(
             endpoint,
             "not-a-ticket",
@@ -300,7 +279,7 @@ mod tests {
 
     #[test]
     fn share_rejects_relative_path_via_callback() {
-        let endpoint = create_isolated_endpoint();
+        let endpoint = create_isolated_endpoint(None);
         let (tx, rx) = mpsc::channel();
         blob_share(
             endpoint,
@@ -334,7 +313,7 @@ mod tests {
 
     #[test]
     fn cancelled_download_terminates_exactly_once_with_cancelled() {
-        let endpoint = create_isolated_endpoint();
+        let endpoint = create_isolated_endpoint(None);
         // A well-formed ticket pointing at an unreachable peer: the connect
         // stalls, so cancellation is what terminates the transfer.
         let unreachable = SecretKey::from_bytes(&[7u8; 32]).public();
