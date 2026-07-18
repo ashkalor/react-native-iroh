@@ -55,6 +55,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # The full build needs ~12GB (4 rust release targets with fat LTO,
+      # cargo registry, gradle trees) but a stock runner only has ~14GB
+      # free; a previous run died with ENOSPC. Drop preinstalled toolsets
+      # this job never uses. The Android SDK/NDK and node must stay.
+      - name: Free disk space
+        run: |
+          set -uo pipefail
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/.ghcup \
+            /opt/ghc \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL \
+            || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h /
+
       - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies (bun)
@@ -87,17 +108,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      # Integration check: the example app must build against the library
-      # (debug variant, all four ABIs). This also produces the library's
-      # native libs; the rust side is always compiled in release mode.
-      - name: Build example app (assembleDebug, all ABIs)
+      # Integration check: the example app must build against the library.
+      # Runs on the app's default ABI subset (arm64-v8a + x86_64, see
+      # example/android/gradle.properties) - all four ABIs are covered by
+      # the release leg below, and keeping this leg small saves disk and
+      # minutes. The rust side is always compiled in release mode.
+      - name: Build example app (assembleDebug, default ABIs)
         working-directory: example/android
-        run: ./gradlew assembleDebug --no-daemon --build-cache -PreactNativeArchitectures=${{ env.ABIS }}
+        run: ./gradlew assembleDebug --no-daemon --build-cache
+
+      # The debug leg's intermediates (unstripped debug .so, per-ABI copies
+      # of the 130-150MB rust .a, APK merge dirs) are dead weight for the
+      # release leg; reclaim them to keep the runner off the ENOSPC cliff.
+      - name: Reclaim debug build space
+        run: |
+          set -uo pipefail
+          rm -rf example/android/app/build android/.cxx/Debug android/build/intermediates
+          df -h /
 
       # Release variant of the library itself: this is where the
       # distributable per-ABI libIroh.so artifacts come from. Cargo
-      # artifacts are shared with the previous step, so only the C++ glue
-      # is recompiled.
+      # artifacts for arm64-v8a/x86_64 are shared with the debug leg
+      # (same target dir and env), so only armv7/i686 rust plus the C++
+      # glue are built here.
       - name: Build library (assembleRelease, all ABIs)
         working-directory: example/android
         run: ./gradlew :react-native-iroh:assembleRelease --no-daemon --build-cache -PreactNativeArchitectures=${{ env.ABIS }}
