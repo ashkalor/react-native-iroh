@@ -25,6 +25,11 @@ Pod::Spec.new do |s|
   load 'nitrogen/generated/ios/Iroh+autolinking.rb'
   add_nitrogen_files(s)
 
+  # iroh's netdev crate uses Network.framework (nw_path_monitor) and
+  # SystemConfiguration on Apple platforms; the Rust static lib needs them
+  # linked into the final binary.
+  s.frameworks = 'Network', 'SystemConfiguration', 'Security'
+
   s.dependency 'React-jsi'
   s.dependency 'React-callinvoker'
   install_modules_dependencies(s)
