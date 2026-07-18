@@ -1,0 +1,162 @@
+name: E2E Android
+
+permissions:
+  contents: read
+
+# Two emulators on one runner are expensive (~30+ minutes), so this never
+# runs per-PR: it triggers after a successful "Build Android" run on main,
+# or manually via workflow_dispatch.
+on:
+  workflow_run:
+    workflows: ["Build Android"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Two-emulator E2E file transfer (50MB)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # For workflow_run events, test the commit that was built, not the
+          # default branch head at trigger time.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+
+      # Mirrors Build Android: the rust build plus two emulator system images
+      # need more space than a stock runner offers.
+      - name: Free disk space
+        run: |
+          set -uo pipefail
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/.ghcup \
+            /opt/ghc \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL \
+            || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h /
+
+      # Hardware acceleration for the emulators; ubuntu-latest runners have
+      # /dev/kvm but it is root-only by default.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies (bun)
+        run: bun install --frozen-lockfile
+
+      # JDK 17 serves both Gradle and the Maestro CLI.
+      - name: Setup JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      # Emulators are x86_64, so only that rust target is needed here.
+      - name: Install Rust toolchain (x86_64 Android target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - name: Cache cargo (registry + target)
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-e2e-${{ hashFiles('example/android/**/*.gradle*', 'android/**/*.gradle*') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-e2e-
+            ${{ runner.os }}-gradle-
+
+      - name: Build example app (assembleDebug, x86_64 only)
+        working-directory: example/android
+        run: ./gradlew assembleDebug --no-daemon --build-cache -PreactNativeArchitectures=x86_64
+
+      - name: Install emulator and system image
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
+
+      - name: Create and boot two emulators
+        run: |
+          set -euo pipefail
+          AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          EMULATOR="$ANDROID_HOME/emulator/emulator"
+          for name in e2e_a e2e_b; do
+            echo no | "$AVDMANAGER" create avd -n "$name" -k "system-images;android-35;google_apis;x86_64" -d medium_phone --force
+          done
+          nohup "$EMULATOR" -avd e2e_a -port 5554 -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -accel on > /tmp/emulator-a.log 2>&1 &
+          nohup "$EMULATOR" -avd e2e_b -port 5556 -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -accel on > /tmp/emulator-b.log 2>&1 &
+          for serial in emulator-5554 emulator-5556; do
+            adb -s "$serial" wait-for-device
+            timeout 600 bash -c "until [ \"\$(adb -s $serial shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')\" = \"1\" ]; do sleep 5; done"
+            echo "$serial booted"
+          done
+          adb devices
+
+      # Debug builds load their JS bundle from Metro; the harness wires
+      # adb reverse per device itself.
+      - name: Start Metro
+        working-directory: example
+        run: |
+          set -euo pipefail
+          nohup bun start > /tmp/metro.log 2>&1 &
+          timeout 120 bash -c 'until curl -sf http://127.0.0.1:8081/status > /dev/null; do sleep 2; done'
+          echo "Metro is up"
+
+      - name: Install Maestro
+        run: |
+          set -euo pipefail
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # run-e2e.sh itself resets both devices to first-launch state before
+      # driving any UI (am force-stop + pm clear per run), so repeated runs
+      # and reruns on a warm runner are deterministic.
+      - name: Run E2E (two devices, 50MB transfer)
+        env:
+          FILE_MB: "50"
+          E2E_ARTIFACTS: /tmp/e2e-logs
+          MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED: "true"
+          MAESTRO_CLI_NO_ANALYTICS: "1"
+        run: bun run e2e
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/e2e-logs
+          adb -s emulator-5554 logcat -d > /tmp/e2e-logs/logcat-emulator-5554.txt 2>/dev/null || true
+          adb -s emulator-5556 logcat -d > /tmp/e2e-logs/logcat-emulator-5556.txt 2>/dev/null || true
+          cp /tmp/emulator-a.log /tmp/emulator-b.log /tmp/metro.log /tmp/e2e-logs/ 2>/dev/null || true
+          cp -r "$HOME"/.maestro/tests /tmp/e2e-logs/maestro-tests 2>/dev/null || true
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-logs
+          path: /tmp/e2e-logs
+          if-no-files-found: ignore

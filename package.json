@@ -54,6 +54,7 @@
     "build:rust:ios": "bash scripts/build-rust-ios.sh",
     "codegen": "bun \"${NITROGEN_FORK:-$HOME/dev/ffi/nitro-rebase}/packages/nitrogen/src/index.ts\" --logLevel=\"debug\" && bun run build",
     "postcodegen": "bun --cwd example pod || echo 'pod install skipped (not available on this host)'",
+    "e2e": "bash e2e/run-e2e.sh",
     "lint": "oxlint",
     "format": "oxfmt",
     "format:check": "oxfmt --check",

@@ -1,0 +1,41 @@
+# Device B: paste the ticket (injected via -e TICKET=...), download, and
+# assert the on-screen integrity verdict. Machine-readable per-assert markers
+# ("E2E: PASS ...") are checked from logcat by run-e2e.sh.
+appId: com.irohexample
+---
+# stopApp: false keeps an already-running app (and its live endpoint) alive,
+# which the single-device loopback fallback depends on (device A's sharing
+# endpoint must survive while this flow runs).
+- launchApp:
+    stopApp: false
+- extendedWaitUntil:
+    visible:
+      id: "endpoint-status"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      text: "Status: Online"
+    timeout: 120000
+# Scroll first (keyboard closed): tolerates the share section's expanded
+# ticket card pushing the download section below the fold (loopback mode).
+- scrollUntilVisible:
+    element:
+      id: "ticket-input"
+- tapOn:
+    id: "ticket-input"
+# Retry-safety: a re-run of this flow must not append to a half-typed ticket.
+- eraseText: 600
+- inputText: ${TICKET}
+# No hideKeyboard here: on Android it is a back-style key event that exits
+# the activity when the keyboard is already down (observed: launcher on
+# screen mid-flow). The button shares a row with the input, so the OS keeps
+# it visible above the keyboard, and the app itself dismisses the keyboard
+# when Download is pressed.
+- tapOn:
+    id: "download-button"
+- extendedWaitUntil:
+    visible:
+      id: "integrity-result"
+    timeout: 600000
+- assertVisible:
+    text: "Integrity: PASS.*"

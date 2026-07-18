@@ -1,0 +1,23 @@
+# Device A: share the test file and wait for the ticket to render.
+# The ticket itself is extracted by run-e2e.sh from the "E2E: TICKET" logcat
+# marker (more robust than copying a 300-char string out of the UI).
+appId: com.irohexample
+---
+# stopApp: false keeps an already-running app (and its live endpoint) alive,
+# which the single-device loopback fallback depends on.
+- launchApp:
+    stopApp: false
+- extendedWaitUntil:
+    visible:
+      id: "endpoint-status"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      text: "Status: Online"
+    timeout: 120000
+- tapOn:
+    id: "share-button"
+- extendedWaitUntil:
+    visible:
+      id: "share-ticket"
+    timeout: 180000
