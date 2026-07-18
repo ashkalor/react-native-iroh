@@ -88,15 +88,21 @@ bun run ios                      # build and run on iOS (runs `bun run pod` firs
 
 ### Regenerating bindings (nitrogen codegen)
 
-The Rust binding codegen lives in a fork of nitrogen (the Rust support
-proposed upstream in [nitro PR #1229](https://github.com/mrousavy/nitro/pull/1229)).
-It is a dev-time-only concern: all generated output under
+The Rust binding codegen lives in a maintained fork of nitrogen:
+[`ashkalor/nitro`, branch `feat/rust-codegen`](https://github.com/ashkalor/nitro/tree/feat/rust-codegen).
+This is the checkout to build from. It carries the Rust support originally
+proposed upstream in [nitro PR #1229](https://github.com/mrousavy/nitro/pull/1229)
+and keeps it current, so prefer it over the upstream PR branch, which has
+fallen behind.
+
+Codegen is a dev-time-only concern: all generated output under
 `nitrogen/generated/` is committed, so consumers and CI never run it. To
-regenerate after editing `src/specs/iroh.nitro.ts`, point `NITROGEN_FORK` at
-a checkout of the fork and run:
+regenerate after editing `src/specs/iroh.nitro.ts`, clone the fork and point
+`NITROGEN_FORK` at it:
 
 ```bash
-NITROGEN_FORK=/path/to/nitro-fork bun run codegen
+git clone -b feat/rust-codegen https://github.com/ashkalor/nitro.git
+NITROGEN_FORK=/path/to/nitro bun run codegen
 ```
 
 ### End-to-end tests

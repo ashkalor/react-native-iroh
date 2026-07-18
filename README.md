@@ -396,7 +396,9 @@ the end-to-end suite in `e2e/`.
   the native-module framework powering the bindings.
 - Rust codegen for Nitro by boorad: this package's Rust binding layer is
   generated with the Rust support proposed upstream in
-  [nitro PR #1229](https://github.com/mrousavy/nitro/pull/1229).
+  [nitro PR #1229](https://github.com/mrousavy/nitro/pull/1229), maintained in
+  the [`ashkalor/nitro` fork](https://github.com/ashkalor/nitro/tree/feat/rust-codegen)
+  this repo builds from (see [CONTRIBUTING.md](./CONTRIBUTING.md)).
 - Bootstrapped with
   [create-nitro-module](https://github.com/patrickkabwe/create-nitro-module)
   by Patrick Kabwe.
