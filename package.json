@@ -1,0 +1,95 @@
+{
+  "name": "react-native-iroh",
+  "version": "0.1.0",
+  "description": "react-native-iroh is a react native package built with Nitro",
+  "keywords": [
+    "react-native",
+    "react-native-iroh"
+  ],
+  "homepage": "https://github.com/ashkalor/react-native-iroh#readme",
+  "bugs": "https://github.com/ashkalor/react-native-iroh/issues",
+  "license": "MIT",
+  "author": "ashKalor",
+  "repository": "https://github.com/ashkalor/react-native-iroh.git",
+  "source": "src/index",
+  "workspaces": [
+    "example"
+  ],
+  "files": [
+    "src",
+    "react-native.config.js",
+    "lib",
+    "nitrogen",
+    "cpp",
+    "nitro.json",
+    "android/build.gradle",
+    "android/fix-prefab.gradle",
+    "android/gradle.properties",
+    "android/CMakeLists.txt",
+    "android/src",
+    "ios/**/*.h",
+    "ios/**/*.m",
+    "ios/**/*.mm",
+    "ios/**/*.cpp",
+    "ios/**/*.swift",
+    "app.plugin.js",
+    "*.podspec",
+    "README.md"
+  ],
+  "main": "./lib/commonjs/index.js",
+  "module": "./lib/module/index.js",
+  "types": "./lib/typescript/src/index.d.ts",
+  "react-native": "src/index",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clean": "git clean -dfX",
+    "release": "semantic-release",
+    "build": "bun run typecheck && bob build",
+    "codegen": "nitrogen --logLevel=\"debug\" && bun run build",
+    "postcodegen": "bun --cwd example pod",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@types/jest": "^29.5.12",
+    "@types/react": "19.2.0",
+    "conventional-changelog-conventionalcommits": "^10.2.1",
+    "lefthook": "^2.1.10",
+    "nitrogen": "0.36.1",
+    "oxfmt": "^0.59.0",
+    "oxlint": "^1.74.0",
+    "react": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-builder-bob": "^0.40.18",
+    "react-native-nitro-modules": "0.36.1",
+    "semantic-release": "^25.0.7",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-modules": "^0.36.1"
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      "commonjs",
+      "module",
+      [
+        "typescript",
+        {
+          "project": "tsconfig.json"
+        }
+      ]
+    ]
+  }
+}

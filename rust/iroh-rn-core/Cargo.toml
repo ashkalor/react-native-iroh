@@ -1,0 +1,23 @@
+# The staticlib must be named `libIroh_rust.a` — that exact file name is what
+# the nitrogen-generated `Iroh+autolinking.cmake` links against.
+[package]
+name = "iroh-rn-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[lib]
+name = "Iroh_rust"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+iroh_rust = { path = "../../nitrogen/generated/shared/rust" }
+iroh = "=1.0.2"
+iroh-blobs = "=0.103.0"
+tokio = { version = "=1.53.0", features = ["rt-multi-thread", "sync", "time", "fs", "macros"] }
+thiserror = "=2.0.18"
+tracing = "=0.1.44"
+
+[dev-dependencies]
+tempfile = "3"
