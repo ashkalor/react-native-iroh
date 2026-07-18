@@ -1,26 +1,20 @@
 {
   "$schema": "https://nitro.margelo.com/nitro.schema.json",
-  "cxxNamespace": [
-    "iroh"
-  ],
+  "cxxNamespace": ["iroh"],
   "ios": {
     "iosModuleName": "Iroh"
   },
   "android": {
-    "androidNamespace": [
-      "iroh"
-    ],
+    "androidNamespace": ["iroh"],
     "androidCxxLibName": "Iroh"
+  },
+  "rust": {
+    "implCrate": "iroh-rn-core"
   },
   "autolinking": {
     "Iroh": {
-      "all": {
-        "language": "c++",
-        "implementationClassName": "HybridIroh"
-      }
+      "rust": "HybridIroh"
     }
   },
-  "ignorePaths": [
-    "**/node_modules"
-  ]
+  "ignorePaths": ["**/node_modules"]
 }
