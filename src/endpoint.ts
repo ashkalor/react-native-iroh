@@ -11,8 +11,8 @@ import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
 export const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 4;
 
 /**
- * `Symbol.asyncDispose` with the registry fallback engines without native
- * explicit-resource-management use (Babel's and TypeScript's downlevel
+ * `Symbol.asyncDispose`, with a `Symbol.for` fallback for engines that lack
+ * native explicit-resource-management support (Babel and TypeScript downlevel
  * helpers look the alias up under the same registry key).
  */
 const ASYNC_DISPOSE: typeof Symbol.asyncDispose =

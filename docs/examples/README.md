@@ -1,7 +1,8 @@
 # Examples
 
 A ladder from "hello" to real error handling. Each file teaches exactly one
-concept, in order; read them top to bottom and you have the whole v0.1 API.
+concept, in order; read them top to bottom and you have the core of the v0.1
+API.
 
 Every example is compiled by `bun run typecheck` against the real package
 surface (the `react-native-iroh` import resolves to `src/`), so they cannot

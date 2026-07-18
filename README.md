@@ -17,9 +17,9 @@ npm install react-native-iroh react-native-nitro-modules
 
 A few things worth knowing up front:
 
-- This is the only React Native binding for iroh. The official
-  [iroh-ffi](https://github.com/n0-computer/iroh-ffi) bindings' 1.x line
-  currently ships no blobs support and has no React Native path.
+- The official [iroh-ffi](https://github.com/n0-computer/iroh-ffi) bindings
+  expose no React Native path, and their 1.x line currently ships no blobs
+  support. This package fills that gap.
 - The runtime rides Nitro/JSI directly: calls go JS to C++ to Rust in
   process, with no JSON serialization bridge and synchronous access where
   the API allows it. Consumers never run codegen: all generated bindings
@@ -207,8 +207,8 @@ More, in ladder order (each teaches one concept):
 
 Paths must be absolute paths inside your app's sandbox (for example from
 `react-native-fs` or `expo-file-system`). The ticket string encodes the blob
-hash and the sharing node's addresses; anyone holding it can fetch the blob
-while the sharing endpoint is open.
+hash and the sharing endpoint's addresses; anyone holding it can fetch the
+blob while the sharing endpoint is open.
 
 ## API reference
 
@@ -344,27 +344,27 @@ discriminated `code`/`kind` pairing).
 | `Blobs`, `DownloadOptions`, `AbortSignalLike`  | types         | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
 | `EndpointOptions`, `Transfer`, `ProgressEvent` | types         | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-## Threading and performance notes
+## Performance
 
-- Native calls run on Nitro's Promise thread pool, which grows from 3 to at
-  most 10 threads. Each in-flight native operation occupies one thread; that
-  is why downloads are capped (default 4) and queued FIFO per endpoint.
-  Keep `maxConcurrentDownloads` well below 10 unless you know your workload.
-- Progress events are coalesced natively to at most about 30 per second,
-  and the latest value is always flushed before the download's Promise
-  settles. `onProgress` listeners run synchronously on the JS thread, so
-  they should stay cheap.
-- The `progress` async iterable additionally conflates to the latest value
-  per iterator: a slow consumer sees fewer, fresher events instead of a
-  growing buffer, and memory use is O(1) regardless of consumer speed.
+- Downloads run on a native thread pool, one in-flight operation per thread,
+  which is why they are capped (default 4) and queued FIFO per endpoint. Keep
+  `maxConcurrentDownloads` modest unless you have measured your workload.
+- Progress events are throttled natively to roughly 30 per second, and the
+  latest value is always delivered before the download's Promise settles.
+  `onProgress` listeners run synchronously on the JS thread, so keep them
+  cheap.
+- The `progress` async iterable conflates to the latest value per iterator: a
+  slow consumer sees fewer, fresher events instead of a growing buffer, so its
+  memory use stays O(1) regardless of consumer speed.
 - `id` and `isOpen` are synchronous; `id` never crosses into native code
   after creation.
 
-For a sense of scale: the repo's benchmark harness (`bun run bench`, two
-Android emulators on one host) completes a full share/download roundtrip of
-100 files in under 2 seconds, and sustains 50-67 MiB/s on large blobs.
-Those are loopback numbers (real networks are dominated by path quality),
-but they bound the overhead of the binding itself.
+For a sense of scale: the repo's benchmark harness (`bun run bench`) runs a
+provider endpoint and a consumer endpoint in one app process on a single
+Android emulator (minimal preset, loopback QUIC), completing a full
+share/download roundtrip of 100 files in under 2 seconds and sustaining 50-67
+MiB/s on large blobs. Those are loopback numbers (real networks are dominated
+by path quality), but they bound the overhead of the binding itself.
 
 ## Platform support
 
@@ -388,69 +388,6 @@ ticket, downloads with live progress, and verifies integrity by re-sharing
 the downloaded file and comparing ticket hashes. It is also the vehicle for
 the end-to-end suite in `e2e/`.
 
-## Development
-
-Working on react-native-iroh itself (not needed to use the package):
-
-```bash
-bun install
-
-# TypeScript build (react-native-builder-bob -> lib/)
-bun run build
-
-# Quality gates
-bun run typecheck
-bun run lint          # oxlint
-bun run format:check  # oxfmt
-bun test src          # TS unit tests (bun test runner)
-cargo fmt --check && cargo clippy && cargo test
-
-# Rust static libs for all four Android ABIs / Apple targets
-bun run build:rust:android
-bun run build:rust:ios
-```
-
-`build:rust:android` needs the four Android rustup targets listed under
-Requirements. `build:rust:ios` (macOS only) packages an XCFramework and
-needs all three Apple targets (`aarch64-apple-ios`, `aarch64-apple-ios-sim`,
-and `x86_64-apple-ios`), regardless of the host Mac's architecture.
-
-Nitrogen codegen: the Rust binding codegen lives in a fork of nitrogen and
-is a dev-time-only concern. All generated output under
-`nitrogen/generated/` is committed, so consumers and CI never run it. To
-regenerate after editing `src/specs/iroh.nitro.ts`, point `NITROGEN_FORK`
-at a checkout of the fork and run:
-
-```bash
-NITROGEN_FORK=/path/to/nitro-fork bun run codegen
-```
-
-End-to-end tests drive the example app on two Android devices/emulators
-with Maestro (share on A, download on B, integrity check via re-share):
-
-```bash
-bun run e2e
-```
-
-The harness takes `adb` from `PATH`; when it is not there (typical on WSL,
-where the Android platform tools live on the Windows side), set
-`ADB=/path/to/adb` (a Windows `adb.exe` under `/mnt/c` works from WSL; APK
-paths are converted for it automatically):
-
-```bash
-ADB=/mnt/c/Android/platform-tools/adb.exe bun run e2e
-```
-
-See `e2e/run-e2e.sh` for the full requirements and environment overrides
-(`ADB`, `MAESTRO`, `APK`, `FILE_MB`, `E2E_ARTIFACTS`, `SKIP_INSTALL`).
-
-## Versioning
-
-This package uses 0-based versioning: while the major version is 0,
-breaking changes bump the minor version and features bump the patch
-version. Releases are cut manually via a `workflow_dispatch` GitHub Actions
-workflow using semantic-release with conventional commits.
-
 ## Acknowledgements
 
 - [iroh](https://github.com/n0-computer/iroh) by n0-computer: the
@@ -473,6 +410,10 @@ MIT. See `LICENSE`.
 
 ## Contributing
 
-Pull requests are welcome. For major changes, please open an issue first to
-discuss what you would like to change. Conventional commit messages are
-required.
+This library exists because I needed iroh inside a React Native app I am
+building, and open-sourcing it means nobody has to build the same binding
+twice. Contributions are genuinely welcome: bug reports, pull requests, and
+protocol bindings from the roadmap. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the dev-environment setup, the
+threading and packaging internals, and the repo conventions. For anything
+substantial, opening an issue first is a good way to compare notes.

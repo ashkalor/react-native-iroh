@@ -49,6 +49,7 @@
     ".cargo/config.toml",
     "*.podspec",
     "README.md",
+    "CONTRIBUTING.md",
     "CHANGELOG.md",
     "THIRD-PARTY-NOTICES.md"
   ],
