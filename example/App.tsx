@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { Endpoint } from "react-native-iroh";
+import BenchSection from "./src/BenchSection";
 import DownloadSection from "./src/DownloadSection";
 import { e2eReady, e2eReport } from "./src/markers";
 import { APP_STORE_DIR } from "./src/paths";
@@ -85,6 +86,7 @@ function App(): React.JSX.Element {
           </>
         ) : null}
         <SmokeSection />
+        <BenchSection />
       </ScrollView>
     </View>
   );

@@ -27,6 +27,20 @@ export function e2eEvent(event: string): void {
   console.log(`E2E: ${event}`);
 }
 
+/**
+ * `BENCH: <TAG> <detail>` machine-readable benchmark marker. Tags in use:
+ * START, SHARE, DOWNLOAD, INTEGRITY, ERROR (see example/src/bench.ts); the
+ * detail is space-separated `key=value` pairs the harness parses.
+ */
+export function benchReport(tag: string, detail: string): void {
+  console.log(`BENCH: ${tag} ${detail}`);
+}
+
+/** `BENCH: RESULT <runId> PASS|FAIL` — run verdict; the harness waits for this line. */
+export function benchResult(runId: string, ok: boolean): void {
+  console.log(`BENCH: RESULT ${runId} ${ok ? "PASS" : "FAIL"}`);
+}
+
 /** `SMOKE: PASS <name> - <detail>` / `SMOKE: FAIL <name> - <detail>` check marker. */
 export function smokeReport(name: string, ok: boolean, detail: string): void {
   console.log(`SMOKE: ${ok ? "PASS" : "FAIL"} ${name} - ${detail}`);
