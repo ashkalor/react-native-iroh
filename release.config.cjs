@@ -1,5 +1,12 @@
+// 0ver policy (binding): this package stays on 0.x. While major is 0,
+// breaking changes release a MINOR and features release a PATCH. No rule
+// below may ever say "major" — commit-analyzer only falls back to its
+// default rules (which contain major) when NO custom rule matches, and the
+// `breaking: true` rule in `releaseRules` matches every breaking commit
+// first, so a 1.0.0 auto-bump is impossible with this configuration.
+// Leaving 0.x is a deliberate, manual decision (edit these rules then).
 const rules = [
-  { type: "feat", release: "minor", title: "Features" },
+  { type: "feat", release: "patch", title: "Features" },
   { type: "fix", release: "patch", title: "Bug Fixes" },
   { type: "perf", release: "patch", title: "Performance Improvements" },
   { type: "refactor", release: "patch", title: "Code Refactors" },
@@ -20,7 +27,8 @@ module.exports = {
       {
         preset: "conventionalcommits",
         releaseRules: [
-          { breaking: true, release: "major" },
+          // 0ver: breaking -> minor while on 0.x. Never "major" here.
+          { breaking: true, release: "minor" },
           { revert: true, release: "patch" },
         ].concat(rules.map(({ type, release }) => ({ type, release }))),
       },

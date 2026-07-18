@@ -1,10 +1,19 @@
 {
   "name": "react-native-iroh",
   "version": "0.1.0",
-  "description": "react-native-iroh is a react native package built with Nitro",
+  "description": "Peer-to-peer blob sharing for React Native, powered by iroh through direct Rust-to-C++ Nitro bindings",
   "keywords": [
+    "blobs",
+    "file-transfer",
+    "iroh",
+    "nitro",
+    "nitro-module",
+    "p2p",
+    "peer-to-peer",
+    "quic",
     "react-native",
-    "react-native-iroh"
+    "react-native-iroh",
+    "rust"
   ],
   "homepage": "https://github.com/ashkalor/react-native-iroh#readme",
   "bugs": "https://github.com/ashkalor/react-native-iroh/issues",
@@ -17,10 +26,9 @@
   ],
   "files": [
     "src",
-    "react-native.config.js",
+    "!src/__tests__",
     "lib",
     "nitrogen",
-    "cpp",
     "nitro.json",
     "android/build.gradle",
     "android/fix-prefab.gradle",
@@ -32,9 +40,14 @@
     "ios/**/*.mm",
     "ios/**/*.cpp",
     "ios/**/*.swift",
-    "app.plugin.js",
+    "rust",
+    "Cargo.toml",
+    "Cargo.lock",
+    ".cargo/config.toml",
     "*.podspec",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "THIRD-PARTY-NOTICES.md"
   ],
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
