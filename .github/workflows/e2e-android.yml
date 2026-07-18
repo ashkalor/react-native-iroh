@@ -3,14 +3,10 @@ name: E2E Android
 permissions:
   contents: read
 
-# Two emulators on one runner are expensive (~30+ minutes), so this never
-# runs per-PR: it triggers after a successful "Build Android" run on main,
-# or manually via workflow_dispatch.
+# E2E runs locally (bun run e2e drives two emulators or a device pair);
+# CI emulators are too expensive to run automatically. This workflow is
+# manual-dispatch only, kept for deliberate one-off verification.
 on:
-  workflow_run:
-    workflows: ["Build Android"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -21,16 +17,11 @@ jobs:
   e2e:
     name: Two-emulator E2E file transfer (50MB)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     # Build+install take ~9 min and every boot/wait below is bounded, so a
     # healthy run fits comfortably; a hang must die fast (billed minutes).
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          # For workflow_run events, test the commit that was built, not the
-          # default branch head at trigger time.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       # Mirrors Build Android: the rust build plus two emulator system images
       # need more space than a stock runner offers.
