@@ -1,26 +1,20 @@
-import { NitroModules } from "react-native-nitro-modules";
-import type { Iroh as IrohSpec } from "./specs/iroh.nitro";
+import { getRawIroh } from "./native";
 
+export { DEFAULT_MAX_CONCURRENT_DOWNLOADS, Endpoint } from "./endpoint";
+export type { EndpointOptions } from "./endpoint";
+export { getIrohErrorCode, IrohError } from "./errors";
+export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";
+export type { IrohBinding } from "./native";
 export type { EndpointConfig, Iroh as IrohSpec, NetworkProfile } from "./specs/iroh.nitro";
+export type { ProgressEvent, Transfer } from "./transfer";
 
 /**
- * The `Iroh` hybrid object — the full native bridge surface.
+ * Unstable escape hatch: the raw `Iroh` hybrid object — the full native
+ * bridge surface, without the queueing, error typing, or lifecycle handling
+ * of the {@link Endpoint} class API.
  *
  * Rejected Promises / thrown errors carry messages of the form
  * `[iroh:<code>] <detail>`; use {@link getIrohErrorCode} to recover the
- * stable numeric code.
+ * stable numeric code. Prefer {@link Endpoint} for application code.
  */
-export const Iroh = NitroModules.createHybridObject<IrohSpec>("Iroh");
-
-const ERROR_CODE_PATTERN = /\[iroh:(\d+)\]/;
-
-/**
- * Extracts the stable numeric iroh error code from an error thrown (or a
- * Promise rejection produced) by any {@link Iroh} method, or `undefined` if
- * the error did not originate from the iroh bridge.
- */
-export function getIrohErrorCode(error: unknown): number | undefined {
-  const message = error instanceof Error ? error.message : String(error);
-  const match = ERROR_CODE_PATTERN.exec(message);
-  return match === null ? undefined : Number(match[1]);
-}
+export const Iroh = getRawIroh();

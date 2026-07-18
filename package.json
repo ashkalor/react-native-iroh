@@ -46,6 +46,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "bun test src",
     "clean": "git clean -dfX",
     "release": "semantic-release",
     "build": "bun run typecheck && bob build",
@@ -89,7 +90,7 @@
       [
         "typescript",
         {
-          "project": "tsconfig.json"
+          "project": "tsconfig.build.json"
         }
       ]
     ]
