@@ -21,9 +21,18 @@ export type IrohBinding = Pick<
 let singleton: IrohSpec | undefined;
 
 /**
- * Returns the process-wide `Iroh` hybrid object, creating it on first use.
+ * Unstable escape hatch: returns the process-wide raw `Iroh` hybrid object,
+ * the full native bridge surface, without the queueing, error typing, or
+ * lifecycle handling of the {@link Endpoint} class API.
+ *
+ * The native binding is instantiated lazily on the first call, never at
+ * module import, so importing this package is side-effect-free and safe in
+ * environments where the native module is absent (Node, SSR, unit tests).
+ * Rejected Promises / thrown errors carry messages of the form
+ * `[iroh:<code>] <detail>`; use {@link getIrohErrorCode} to recover the
+ * stable numeric code. Prefer {@link Endpoint} for application code.
  */
-export function getRawIroh(): IrohSpec {
+export function getIroh(): IrohSpec {
   singleton ??= NitroModules.createHybridObject<IrohSpec>("Iroh");
   return singleton;
 }

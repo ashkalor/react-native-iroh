@@ -1,5 +1,5 @@
 import { IrohError } from "./errors";
-import { getRawIroh, type IrohBinding } from "./native";
+import { getIroh, type IrohBinding } from "./native";
 import { parseTicket, type BlobTicket } from "./ticket";
 import { TransferController, type Transfer } from "./transfer";
 import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
@@ -107,7 +107,8 @@ export interface EndpointOptions {
    * Cap on concurrently active downloads for this endpoint; further
    * downloads wait in a FIFO queue. Defaults to
    * {@link DEFAULT_MAX_CONCURRENT_DOWNLOADS} (values below 1 are clamped to
-   * 1, non-integers are floored).
+   * 1, non-integers are floored, and non-finite values such as `NaN` or
+   * `Infinity` fall back to the default).
    *
    * Rationale: each in-flight native operation occupies a thread in the
    * native Promise thread pool (which grows from 3 to at most 10 threads),
@@ -171,13 +172,18 @@ export class Endpoint {
    */
   static async create(
     options: EndpointOptions = {},
-    binding: IrohBinding = getRawIroh(),
+    binding: IrohBinding = getIroh(),
   ): Promise<Endpoint> {
     const preset = options.preset ?? "n0";
-    const maxConcurrentDownloads = Math.max(
-      1,
-      Math.floor(options.maxConcurrentDownloads ?? DEFAULT_MAX_CONCURRENT_DOWNLOADS),
+    const requestedMax = Math.floor(
+      options.maxConcurrentDownloads ?? DEFAULT_MAX_CONCURRENT_DOWNLOADS,
     );
+    // Non-finite requests (NaN, Infinity) would leave the concurrency gate
+    // unusable (`active < NaN` is never true, deadlocking the queue), so fall
+    // back to the default rather than trusting the arithmetic.
+    const maxConcurrentDownloads = Number.isFinite(requestedMax)
+      ? Math.max(1, requestedMax)
+      : DEFAULT_MAX_CONCURRENT_DOWNLOADS;
     const config: EndpointConfig =
       options.blobStoreDir === undefined
         ? { preset }

@@ -357,6 +357,42 @@ describe("Endpoint download queue", () => {
     expect(mock.downloads).toHaveLength(1);
   });
 
+  it("falls back to the default cap for a NaN maxConcurrentDownloads", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({ maxConcurrentDownloads: Number.NaN }, mock.binding);
+    const transfers = ["a", "b", "c", "d", "e"].map((name) =>
+      endpoint.blobs.download(testTicket(name), `/dest/${name}`),
+    );
+    await flush();
+    // A NaN cap must not deadlock the queue: downloads still run, capped at
+    // the default rather than left permanently pending.
+    expect(mock.downloads).toHaveLength(DEFAULT_MAX_CONCURRENT_DOWNLOADS);
+    for (const call of mock.downloads) {
+      call.deferred.resolve();
+    }
+    await flush();
+    expect(mock.downloads).toHaveLength(5);
+    for (const call of mock.downloads) {
+      call.deferred.resolve();
+    }
+    await Promise.all(transfers.map((transfer) => transfer.done));
+  });
+
+  it("falls back to the default cap for an Infinity maxConcurrentDownloads", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create(
+      { maxConcurrentDownloads: Number.POSITIVE_INFINITY },
+      mock.binding,
+    );
+    ["a", "b", "c", "d", "e"].forEach((name) =>
+      endpoint.blobs.download(testTicket(name), `/dest/${name}`),
+    );
+    await flush();
+    // Infinity is non-finite too: it must not lift the cap, so the fifth
+    // download waits behind the default four.
+    expect(mock.downloads).toHaveLength(DEFAULT_MAX_CONCURRENT_DOWNLOADS);
+  });
+
   it("a transfer cancelled while queued never reaches native and frees no slot", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 1 }, mock.binding);

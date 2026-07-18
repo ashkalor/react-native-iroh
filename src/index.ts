@@ -1,5 +1,3 @@
-import { getRawIroh } from "./native";
-
 export { DEFAULT_MAX_CONCURRENT_DOWNLOADS, Endpoint } from "./endpoint";
 export type {
   AbortSignalLike,
@@ -18,12 +16,7 @@ export type { ProgressEvent, Transfer } from "./transfer";
 export { IROH_VERSION } from "./version";
 
 /**
- * Unstable escape hatch: the raw `Iroh` hybrid object: the full native
- * bridge surface, without the queueing, error typing, or lifecycle handling
- * of the {@link Endpoint} class API.
- *
- * Rejected Promises / thrown errors carry messages of the form
- * `[iroh:<code>] <detail>`; use {@link getIrohErrorCode} to recover the
- * stable numeric code. Prefer {@link Endpoint} for application code.
+ * Unstable escape hatch returning the raw `Iroh` hybrid object; see
+ * {@link getIroh} for details. Prefer {@link Endpoint} for application code.
  */
-export const Iroh = getRawIroh();
+export { getIroh } from "./native";
