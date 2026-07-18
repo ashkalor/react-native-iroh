@@ -3,7 +3,7 @@
 iroh for React Native: direct Rust bindings to the
 [iroh](https://github.com/n0-computer/iroh) peer-to-peer networking stack.
 
-iroh lets any device dial any other device on the planet by its node id:
+iroh lets any device dial any other device on the planet by its endpoint id:
 QUIC connections that hole-punch through NATs when a direct path exists and
 fall back to relays when it does not. This package puts the real thing
 inside your React Native app: the actual iroh 1.x Rust crates (`iroh`
@@ -33,22 +33,23 @@ A few things worth knowing up front:
 Everything in iroh hangs off an `Endpoint`, and so does everything in this
 package. An endpoint is an iroh node running inside your app:
 
-- **Identity**: every endpoint has a `nodeId`, the public key other
-  devices use to reach it. It is stable for the endpoint's lifetime and
-  cached at creation, so reading it never touches native code.
+- **Identity**: every endpoint has an `id`, the public key other devices
+  use to reach it. It is stable for the endpoint's lifetime and cached at
+  creation, so reading it never touches native code.
 - **Lifecycle**: `Endpoint.create()` binds sockets and loads the blob
   store; `close()` shuts down the router, sockets, and store with
-  well-defined one-shot semantics. `isOpen` tells you where you are in
-  between.
-- **Network profiles**: `standard` uses n0's relay servers and address
-  lookup (the production default); `isolated` uses neither, for tests and
-  LAN-only setups where peers are reachable only via direct addresses
-  embedded in tickets.
+  well-defined one-shot semantics, and `await using` binds that close to a
+  scope. `isOpen` tells you where you are in between.
+- **Network presets** (iroh's `presets`): `n0` uses n0's relay and
+  discovery infrastructure (the production default); `minimal` uses only
+  the mandatory configuration, for tests and LAN-only setups where peers
+  are reachable only via direct addresses embedded in tickets.
 - **Storage**: pass `blobStoreDir` for a persistent on-disk blob store,
   or omit it to keep blobs in memory for the endpoint's lifetime.
 
 The full option and method reference is under
-[API reference](#api-reference).
+[API reference](#api-reference); a graded set of runnable snippets lives in
+[docs/examples](./docs/examples).
 
 ## Protocols
 
@@ -57,15 +58,16 @@ protocol. This package ships protocols as their bindings mature.
 
 ### iroh-blobs (available now)
 
-Content-addressed blob transfer with BLAKE3-verified streaming. The
-complete v0.1 protocol surface:
+Content-addressed blob transfer with BLAKE3-verified streaming, namespaced
+under `endpoint.blobs`. The complete v0.1 protocol surface:
 
-- `shareBlob(path)` imports a file into the endpoint's blob store and
-  returns a ticket string (hash plus dialable addresses) that any other
+- `blobs.share(path)` imports a file into the endpoint's blob store and
+  returns a `BlobTicket` (hash plus dialable addresses) that any other
   endpoint can download from while the sharer is open.
-- `downloadBlob(ticket, destPath)` returns a `Transfer` handle
-  synchronously: a settlement `promise`, live progress as either a
-  callback subscription or an async iterable, and idempotent `cancel()`.
+- `blobs.download(ticket, destPath, options?)` returns a `Transfer` handle
+  synchronously: a settlement promise (`done`), live progress as either a
+  callback subscription or an async iterable, idempotent `cancel()`, and
+  optional `AbortSignal` integration.
 - Downloads are capped per endpoint (default 4) and queued FIFO beyond the
   cap; progress events are coalesced natively so slow consumers never
   buffer unboundedly.
@@ -163,21 +165,22 @@ import { Endpoint } from "react-native-iroh";
 // RNFS.DocumentDirectoryPath (react-native-fs) or an expo-file-system path.
 declare const DocumentDir: string;
 
-// Device A: share a file
+// Device A: create an endpoint and share a file
 const a = await Endpoint.create({ blobStoreDir: `${DocumentDir}/iroh` });
-const ticket = await a.shareBlob(`${DocumentDir}/photo.jpg`);
+console.log(`I am ${a.id}`);
+const ticket = await a.blobs.share(`${DocumentDir}/photo.jpg`);
 // Send `ticket` (a string) to device B out of band: QR code, chat, etc.
 
 // Device B: download it
 const b = await Endpoint.create({ blobStoreDir: `${DocumentDir}/iroh` });
-const transfer = b.downloadBlob(ticket, `${DocumentDir}/photo.jpg`);
+const transfer = b.blobs.download(ticket, `${DocumentDir}/photo.jpg`);
 
 const stopListening = transfer.onProgress(({ bytesReceived }) => {
   console.log(`received ${bytesReceived} bytes`);
 });
 
 try {
-  await transfer.promise; // resolves when the download completes
+  await transfer.done; // resolves when the download completes
 } finally {
   stopListening();
 }
@@ -191,13 +194,16 @@ Progress can also be consumed as an async iterable; the two styles can be
 mixed freely:
 
 ```ts
-const transfer = b.downloadBlob(ticket, destPath);
+const transfer = b.blobs.download(ticket, destPath);
 for await (const { bytesReceived } of transfer.progress) {
   updateUi(bytesReceived);
 }
 // The loop ends on completion and throws the terminal IrohError on
 // failure or cancellation.
 ```
+
+More, in ladder order (each teaches one concept):
+[docs/examples](./docs/examples).
 
 Paths must be absolute paths inside your app's sandbox (for example from
 `react-native-fs` or `expo-file-system`). The ticket string encodes the blob
@@ -219,38 +225,40 @@ Creates an endpoint: binds sockets and loads the blob store.
 
 `EndpointOptions` (all fields optional):
 
-| Option                   | Type                       | Default      | Meaning                                                                                                                                                                                                                                        |
-| ------------------------ | -------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `profile`                | `"standard" \| "isolated"` | `"standard"` | Network infrastructure profile. `standard` uses n0 relay servers and address lookup (production). `isolated` uses no relays and no address lookup: peers are only reachable via direct addresses embedded in tickets (tests, LAN-only setups). |
-| `blobStoreDir`           | `string`                   | in-memory    | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                   |
-| `maxConcurrentDownloads` | `number`                   | `4`          | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored.                                                                                     |
+| Option                   | Type                | Default   | Meaning                                                                                                                                                                                                                            |
+| ------------------------ | ------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preset`                 | `"n0" \| "minimal"` | `"n0"`    | Which of iroh's endpoint presets to bind with. `n0` uses n0's relay and discovery infrastructure (production). `minimal` uses only the mandatory configuration: peers are only reachable via direct addresses embedded in tickets. |
+| `blobStoreDir`           | `string`            | in-memory | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                       |
+| `maxConcurrentDownloads` | `number`            | `4`       | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored.                                                                         |
 
 `create` also accepts a second, advanced `binding` parameter (an
 `IrohBinding`) that substitutes the native module, primarily for tests.
 
-#### `endpoint.nodeId: string`
+#### `endpoint.id: EndpointId`
 
-The endpoint's node id (its public key). Stable for the endpoint's lifetime;
-cached at creation, so reading it never touches native code and stays valid
-after `close()`.
+The endpoint's id (its public key), as a branded string. Stable for the
+endpoint's lifetime; cached at creation, so reading it never touches native
+code and stays valid after `close()`.
 
 #### `endpoint.isOpen: boolean`
 
 Whether the endpoint is live (created and not yet closed).
 
-#### `endpoint.shareBlob(path: string): Promise<string>`
+#### `endpoint.blobs.share(path: string): Promise<BlobTicket>`
 
 Imports the file at absolute `path` into the endpoint's blob store and
-resolves with a shareable ticket string. On the `standard` profile this
-waits (bounded) for the endpoint to come online first, so the ticket
-contains dialable addresses.
+resolves with a shareable `BlobTicket`. On the `n0` preset this waits
+(bounded) for the endpoint to come online first, so the ticket contains
+dialable addresses.
 
-#### `endpoint.downloadBlob(ticket: string, destPath: string): Transfer`
+#### `endpoint.blobs.download(ticket, destPath, options?): Transfer`
 
-Starts downloading the blob described by `ticket` into absolute `destPath`
-and synchronously returns a `Transfer` handle. At most
+Starts downloading the blob described by `ticket` (a `BlobTicket` or a
+plain string, which is validated with `parseTicket` first) into absolute
+`destPath` and synchronously returns a `Transfer` handle. At most
 `maxConcurrentDownloads` downloads run natively at once; additional ones
-wait in a FIFO queue.
+wait in a FIFO queue. `options.signal` accepts a standard `AbortSignal`:
+aborting it cancels the transfer (aborting after settle is a no-op).
 
 #### `endpoint.close(): Promise<void>`
 
@@ -264,13 +272,20 @@ is unusable either way), downloads still waiting in the queue are cancelled
 are settled by the native shutdown. On failure the promise rejects with an
 `IrohError`.
 
+#### `endpoint[Symbol.asyncDispose](): Promise<void>`
+
+An alias of `close()` that makes endpoints usable with
+`await using endpoint = await Endpoint.create(...)`: the endpoint closes
+automatically when the binding goes out of scope.
+
 ### Transfer
 
-Handle for one download started with `downloadBlob`.
+Handle for one download started with `blobs.download`.
 
 | Member                 | Type                                                           | Meaning                                                                                                                                                                                                                                                                  |
 | ---------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `promise`              | `Promise<void>`                                                | Settles exactly once: resolves on completion, rejects with an `IrohError` on failure or cancellation. Rejections are pre-observed, so watching only `progress` does not cause unhandled-rejection warnings.                                                              |
+| `done`                 | `Promise<void>`                                                | Settles exactly once: resolves on completion, rejects with an `IrohError` on failure or cancellation. Rejections are pre-observed, so watching only `progress` does not cause unhandled-rejection warnings.                                                              |
+| `promise`              | `Promise<void>`                                                | Alias of `done` (the identical promise object); both names are documented and stable.                                                                                                                                                                                    |
 | `progress`             | `AsyncIterable<ProgressEvent>`                                 | Each `for await` gets an independent iterator that receives events from that point on, ends on completion, and throws the terminal `IrohError` on failure or cancellation. Latest-value conflation keeps buffering O(1); breaking out of the loop detaches the iterator. |
 | `isSettled`            | `boolean`                                                      | Whether the transfer has settled (completed, failed, or cancelled).                                                                                                                                                                                                      |
 | `cancel()`             | `() => void`                                                   | Requests cancellation. Idempotent and safe at any point: a queued transfer fails immediately with kind `"cancelled"`; an active transfer is cancelled natively and rejects with code `3003`. No-op after settling.                                                       |
@@ -315,15 +330,19 @@ discriminated `code`/`kind` pairing).
 
 ### Other exports
 
-| Export                                         | Kind          | Meaning                                                                                                                                                                                                                                                                                                                                        |
-| ---------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEFAULT_MAX_CONCURRENT_DOWNLOADS`             | `const` (`4`) | Default download-concurrency cap per endpoint.                                                                                                                                                                                                                                                                                                 |
-| `getIrohErrorCode(error)`                      | function      | Extracts the numeric code from a raw-bridge error message, or `undefined`. Retained for users of the raw escape hatch; the class API throws `IrohError`, which carries `code`/`kind` directly.                                                                                                                                                 |
-| `Iroh`                                         | const         | Unstable escape hatch: the raw Nitro hybrid object with the full native surface (`createEndpoint`, `nodeId`, `isEndpointOpen`, `closeEndpoint`, `shareBlob`, `downloadBlob`, `cancelDownload`), without the queueing, error typing, or lifecycle handling of `Endpoint`. Its errors carry `[iroh:<code>]` message prefixes. Prefer `Endpoint`. |
-| `IrohSpec`                                     | type          | The interface of the raw hybrid object.                                                                                                                                                                                                                                                                                                        |
-| `IrohBinding`                                  | type          | The structural subset of `IrohSpec` that `Endpoint` depends on; implement it to mock the native layer in tests.                                                                                                                                                                                                                                |
-| `EndpointConfig`, `NetworkProfile`             | types         | The raw bridge's endpoint configuration types.                                                                                                                                                                                                                                                                                                 |
-| `EndpointOptions`, `Transfer`, `ProgressEvent` | types         | Described above.                                                                                                                                                                                                                                                                                                                               |
+| Export                                         | Kind          | Meaning                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEFAULT_MAX_CONCURRENT_DOWNLOADS`             | `const` (`4`) | Default download-concurrency cap per endpoint.                                                                                                                                                                                                                                                                                                     |
+| `IROH_VERSION`                                 | `const`       | The exact version of the iroh Rust crate compiled into this package (e.g. `"1.0.2"`). A unit test pins it to the crate manifest, so it cannot drift.                                                                                                                                                                                               |
+| `parseTicket(s)`                               | function      | Validates a string's blob-ticket shape (`blob` prefix, base32 charset, minimum length) and returns it as a `BlobTicket`; throws `IrohError` kind `"invalid-ticket"` on failure. `blobs.download` runs the same check on plain strings.                                                                                                             |
+| `getIrohErrorCode(error)`                      | function      | Extracts the numeric code from a raw-bridge error message, or `undefined`. Retained for users of the raw escape hatch; the class API throws `IrohError`, which carries `code`/`kind` directly.                                                                                                                                                     |
+| `Iroh`                                         | const         | Unstable escape hatch: the raw Nitro hybrid object with the full native surface (`createEndpoint`, `endpointId`, `isEndpointOpen`, `closeEndpoint`, `shareBlob`, `downloadBlob`, `cancelDownload`), without the queueing, error typing, or lifecycle handling of `Endpoint`. Its errors carry `[iroh:<code>]` message prefixes. Prefer `Endpoint`. |
+| `IrohSpec`                                     | type          | The interface of the raw hybrid object.                                                                                                                                                                                                                                                                                                            |
+| `IrohBinding`                                  | type          | The structural subset of `IrohSpec` that `Endpoint` depends on; implement it to mock the native layer in tests.                                                                                                                                                                                                                                    |
+| `EndpointId`, `BlobTicket`                     | types         | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `parseTicket` (or `blobs.share`).                                                                                                                                                                |
+| `EndpointConfig`, `NetworkPreset`              | types         | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                            |
+| `Blobs`, `DownloadOptions`, `AbortSignalLike`  | types         | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                |
+| `EndpointOptions`, `Transfer`, `ProgressEvent` | types         | Described above.                                                                                                                                                                                                                                                                                                                                   |
 
 ## Threading and performance notes
 
@@ -338,8 +357,8 @@ discriminated `code`/`kind` pairing).
 - The `progress` async iterable additionally conflates to the latest value
   per iterator: a slow consumer sees fewer, fresher events instead of a
   growing buffer, and memory use is O(1) regardless of consumer speed.
-- `nodeId` and `isOpen` are synchronous; `nodeId` never crosses into native
-  code after creation.
+- `id` and `isOpen` are synchronous; `id` never crosses into native code
+  after creation.
 
 For a sense of scale: the repo's benchmark harness (`bun run bench`, two
 Android emulators on one host) completes a full share/download roundtrip of

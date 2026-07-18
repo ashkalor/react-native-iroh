@@ -15,7 +15,7 @@ namespace margelo::nitro::iroh {
     // load custom methods/properties
     registerHybrids(this, [](Prototype& prototype) {
       prototype.registerHybridMethod("createEndpoint", &HybridIrohSpec::createEndpoint);
-      prototype.registerHybridMethod("nodeId", &HybridIrohSpec::nodeId);
+      prototype.registerHybridMethod("endpointId", &HybridIrohSpec::endpointId);
       prototype.registerHybridMethod("isEndpointOpen", &HybridIrohSpec::isEndpointOpen);
       prototype.registerHybridMethod("closeEndpoint", &HybridIrohSpec::closeEndpoint);
       prototype.registerHybridMethod("shareBlob", &HybridIrohSpec::shareBlob);

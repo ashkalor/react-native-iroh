@@ -1,12 +1,21 @@
 import { getRawIroh } from "./native";
 
 export { DEFAULT_MAX_CONCURRENT_DOWNLOADS, Endpoint } from "./endpoint";
-export type { EndpointOptions } from "./endpoint";
+export type {
+  AbortSignalLike,
+  Blobs,
+  DownloadOptions,
+  EndpointId,
+  EndpointOptions,
+} from "./endpoint";
 export { getIrohErrorCode, IrohError } from "./errors";
 export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";
 export type { IrohBinding } from "./native";
-export type { EndpointConfig, Iroh as IrohSpec, NetworkProfile } from "./specs/iroh.nitro";
+export type { EndpointConfig, Iroh as IrohSpec, NetworkPreset } from "./specs/iroh.nitro";
+export { parseTicket } from "./ticket";
+export type { BlobTicket } from "./ticket";
 export type { ProgressEvent, Transfer } from "./transfer";
+export { IROH_VERSION } from "./version";
 
 /**
  * Unstable escape hatch: the raw `Iroh` hybrid object: the full native

@@ -15,7 +15,7 @@ interface CheckResult {
 /**
  * Regression net: the Phase 2 raw-surface smoke suite, re-expressed through
  * the public class API (Endpoint / Transfer / IrohError). Runs against its
- * own isolated endpoints so it never disturbs the app's main endpoint.
+ * own minimal-preset endpoints so it never disturbs the app's main endpoint.
  */
 async function runSmokeSuite(report: (result: CheckResult) => void): Promise<void> {
   const check = (name: string, pass: boolean, detail: string) => {
@@ -27,26 +27,26 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   };
 
   const provider = await Endpoint.create({
-    profile: "isolated",
+    preset: "minimal",
     blobStoreDir: `${FILES_DIR}/iroh-smoke/provider-store`,
   });
   check("Endpoint.create provider", provider.isOpen, "provider endpoint open");
   const receiver = await Endpoint.create({
-    profile: "isolated",
+    preset: "minimal",
     blobStoreDir: `${FILES_DIR}/iroh-smoke/receiver-store`,
   });
   check("Endpoint.create receiver", receiver.isOpen, "receiver endpoint open");
 
   check(
-    "nodeId",
-    provider.nodeId.length > 0 && receiver.nodeId.length > 0 && provider.nodeId !== receiver.nodeId,
-    `provider=${provider.nodeId.slice(0, 12)}... receiver=${receiver.nodeId.slice(0, 12)}...`,
+    "endpoint id",
+    provider.id.length > 0 && receiver.id.length > 0 && provider.id !== receiver.id,
+    `provider=${provider.id.slice(0, 12)}... receiver=${receiver.id.slice(0, 12)}...`,
   );
 
   const attempt = await shareFirstReadable(provider, SYSTEM_FILE_CANDIDATES);
   const ticket = attempt.ok ? attempt.ticket : "";
   const sourceFile = attempt.ok ? attempt.source : "";
-  check("shareBlob", ticket.length > 0, `${sourceFile} -> ticket[${ticket.length} chars]`);
+  check("blobs.share", ticket.length > 0, `${sourceFile} -> ticket[${ticket.length} chars]`);
 
   const contentHash = extractTicketHash(ticket);
   check(
@@ -56,7 +56,7 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   );
 
   const destPath = `${FILES_DIR}/iroh-smoke/downloaded.bin`;
-  const transfer = receiver.downloadBlob(ticket, destPath);
+  const transfer = receiver.blobs.download(ticket, destPath);
   let progressEvents = 0;
   let lastBytes = 0;
   let monotone = true;
@@ -75,10 +75,10 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
       }
     }
   })();
-  await transfer.promise;
+  await transfer.done;
   await iteration;
   unsubscribe();
-  check("Transfer.promise resolves", true, `terminal resolve, ${lastBytes} bytes received`);
+  check("Transfer.done resolves", true, `terminal resolve, ${lastBytes} bytes received`);
   check(
     "Transfer.onProgress",
     progressEvents >= 1 && monotone,
@@ -92,13 +92,13 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   check("Transfer.isSettled", transfer.isSettled, "settled after promise resolved");
 
   // Same-endpoint re-share must reproduce the identical ticket.
-  const ticketAgain = await provider.shareBlob(sourceFile);
+  const ticketAgain = await provider.blobs.share(sourceFile);
   check("re-share ticket equality", ticketAgain === ticket, "same endpoint, identical ticket");
 
-  // Cross-endpoint re-share: different ticket string (different node
+  // Cross-endpoint re-share: different ticket string (different endpoint
   // addresses), identical trailing content hash. This validates the
   // extractTicketHash parser used by the download integrity check.
-  const receiverTicket = await receiver.shareBlob(destPath);
+  const receiverTicket = await receiver.blobs.share(destPath);
   check(
     "cross-endpoint hash equality",
     receiverTicket !== ticket && extractTicketHash(receiverTicket) === contentHash,
@@ -110,7 +110,8 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
 
   let invalidTicketError: unknown;
   try {
-    await receiver.downloadBlob("definitely-not-a-ticket", destPath).promise;
+    // Throws synchronously: parseTicket validation runs before native.
+    await receiver.blobs.download("definitely-not-a-ticket", destPath).done;
   } catch (error) {
     invalidTicketError = error;
   }
@@ -125,18 +126,18 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   await provider.close();
   await receiver.close();
   check("close", !provider.isOpen && !receiver.isOpen, "both endpoints report closed");
-  check("nodeId cached after close", provider.nodeId.length > 0, "nodeId readable after close");
+  check("id cached after close", provider.id.length > 0, "id readable after close");
 
   let staleError: unknown;
   try {
-    await provider.shareBlob(sourceFile);
+    await provider.blobs.share(sourceFile);
   } catch (error) {
     staleError = error;
   }
   check(
     "error path stale endpoint",
     staleError instanceof IrohError && staleError.code === 1001,
-    `shareBlob after close rejected with code ${staleError instanceof IrohError ? staleError.code : "?"}`,
+    `blobs.share after close rejected with code ${staleError instanceof IrohError ? staleError.code : "?"}`,
   );
 }
 

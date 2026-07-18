@@ -19,7 +19,7 @@ use n0_future::StreamExt;
 use tokio::sync::oneshot;
 
 use crate::{
-    endpoint::{endpoint_state, EndpointHandle, NetworkProfile},
+    endpoint::{endpoint_state, EndpointHandle, NetworkPreset},
     error::{IrohError, Result},
     guarded_callback,
     registry::Registry,
@@ -27,7 +27,7 @@ use crate::{
     runtime::runtime,
 };
 
-/// How long [`blob_share`] waits for a `Standard`-profile endpoint to come
+/// How long [`blob_share`] waits for an `N0`-preset endpoint to come
 /// online (home relay + addresses known) before minting a ticket anyway.
 const ONLINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -94,14 +94,14 @@ async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> 
             .await
             .map_err(|e| IrohError::BlobImport(e.to_string()))
     };
-    // On the Standard profile a ticket minted right after bind may not carry
+    // On the N0 preset a ticket minted right after bind may not carry
     // dialable addresses yet (no home relay, no confirmed direct addresses).
     // Wait (bounded) for the endpoint to come online; on timeout the ticket
     // is still produced with whatever addresses are known (best effort).
-    // Isolated endpoints skip this: their only addresses are the locally bound
+    // Minimal endpoints skip this: their only addresses are the locally bound
     // sockets, which are known immediately.
     let wait_online = async {
-        if state.profile == NetworkProfile::Standard {
+        if state.preset == NetworkPreset::N0 {
             let _ = tokio::time::timeout(ONLINE_TIMEOUT, state.endpoint.online()).await;
         }
     };
@@ -188,7 +188,7 @@ async fn download_inner(
     let state = endpoint_state(endpoint)?;
 
     // Dial the provider directly via the addresses in the ticket (plus any
-    // address lookup the endpoint's network profile provides).
+    // address lookup the endpoint's network preset provides).
     let connection = state
         .endpoint
         .connect(ticket.addr().clone(), iroh_blobs::ALPN)
@@ -257,7 +257,7 @@ mod tests {
     use iroh_blobs::Hash;
 
     use super::*;
-    use crate::test_support::{close_endpoint_blocking, create_isolated_endpoint, TIMEOUT};
+    use crate::test_support::{close_endpoint_blocking, create_minimal_endpoint, TIMEOUT};
 
     fn close(handle: EndpointHandle) {
         close_endpoint_blocking(handle).expect("endpoint closed");
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn download_rejects_garbage_ticket_synchronously() {
-        let endpoint = create_isolated_endpoint(None);
+        let endpoint = create_minimal_endpoint(None);
         let result = blob_download(
             endpoint,
             "not-a-ticket",
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn share_rejects_relative_path_via_callback() {
-        let endpoint = create_isolated_endpoint(None);
+        let endpoint = create_minimal_endpoint(None);
         let (tx, rx) = mpsc::channel();
         blob_share(
             endpoint,
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn cancelled_download_terminates_exactly_once_with_cancelled() {
-        let endpoint = create_isolated_endpoint(None);
+        let endpoint = create_minimal_endpoint(None);
         // A well-formed ticket pointing at an unreachable peer: the connect
         // stalls, so cancellation is what terminates the transfer.
         let unreachable = SecretKey::from_bytes(&[7u8; 32]).public();

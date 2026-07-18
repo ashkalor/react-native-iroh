@@ -1,4 +1,4 @@
-//! Endpoint lifecycle: create, query the node id, close.
+//! Endpoint lifecycle: create, query the endpoint id, close.
 //!
 //! An endpoint owns an [`iroh::Endpoint`], its blob store, and an
 //! [`iroh::protocol::Router`] that accepts incoming iroh-blobs connections.
@@ -37,22 +37,24 @@ impl EndpointHandle {
     }
 }
 
-/// Which network infrastructure the endpoint uses.
+/// Which of iroh's endpoint presets the endpoint binds with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NetworkProfile {
-    /// Production default: n0 relay servers and address lookup services.
+pub enum NetworkPreset {
+    /// Production default: n0's relay and discovery infrastructure
+    /// ([`presets::N0`]).
     #[default]
-    Standard,
-    /// No relays, no address lookup. Peers are only reachable through direct
-    /// addresses embedded in tickets. Used for tests and LAN-only setups.
-    Isolated,
+    N0,
+    /// Only the mandatory configuration ([`presets::Minimal`]): no relays,
+    /// no discovery. Peers are only reachable through direct addresses
+    /// embedded in tickets. Used for tests and LAN-only setups.
+    Minimal,
 }
 
 /// Configuration for [`endpoint_create`].
 #[derive(Debug, Clone, Default)]
 pub struct EndpointConfig {
-    /// Network infrastructure profile.
-    pub profile: NetworkProfile,
+    /// Network infrastructure preset.
+    pub preset: NetworkPreset,
     /// Directory for the persistent blob store. `None` keeps blobs in memory
     /// (blobs are lost when the endpoint closes).
     pub blob_store_dir: Option<PathBuf>,
@@ -85,7 +87,7 @@ impl BlobStore {
 pub(crate) struct EndpointState {
     pub(crate) endpoint: Endpoint,
     pub(crate) store: BlobStore,
-    pub(crate) profile: NetworkProfile,
+    pub(crate) preset: NetworkPreset,
     router: Router,
 }
 
@@ -118,11 +120,11 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .transpose()?;
 
     let bind = async {
-        match config.profile {
-            NetworkProfile::Standard => Endpoint::bind(presets::N0).await,
+        match config.preset {
+            NetworkPreset::N0 => Endpoint::bind(presets::N0).await,
             // `Minimal` sets only the mandatory crypto provider: relays stay
             // disabled and no address lookup services are configured.
-            NetworkProfile::Isolated => Endpoint::bind(presets::Minimal).await,
+            NetworkPreset::Minimal => Endpoint::bind(presets::Minimal).await,
         }
         .map_err(|e| IrohError::EndpointBind(e.to_string()))
     };
@@ -148,7 +150,7 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
-        profile: config.profile,
+        preset: config.preset,
         router,
     });
     Ok(EndpointHandle(handle))
@@ -161,10 +163,10 @@ pub fn endpoint_is_open(handle: EndpointHandle) -> bool {
     endpoint_state(handle).is_ok()
 }
 
-/// Returns the endpoint's node id (its public key) as a string.
+/// Returns the endpoint's id (its public key) as a string.
 ///
 /// Cheap and synchronous: no network involved.
-pub fn endpoint_node_id(handle: EndpointHandle) -> Result<String> {
+pub fn endpoint_id(handle: EndpointHandle) -> Result<String> {
     Ok(endpoint_state(handle)?.endpoint.id().to_string())
 }
 
@@ -205,17 +207,16 @@ async fn close_inner(state: Arc<EndpointState>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::{
-        close_endpoint_blocking, create_endpoint_blocking, create_isolated_endpoint,
+        close_endpoint_blocking, create_endpoint_blocking, create_minimal_endpoint,
     };
 
     #[test]
-    fn create_isolated_endpoint_yields_valid_node_id() {
-        let handle = create_isolated_endpoint(None);
+    fn create_minimal_endpoint_yields_valid_endpoint_id() {
+        let handle = create_minimal_endpoint(None);
 
-        let node_id = endpoint_node_id(handle).expect("node id");
-        node_id
-            .parse::<iroh::EndpointId>()
-            .expect("node id is a valid iroh EndpointId");
+        let id = endpoint_id(handle).expect("endpoint id");
+        id.parse::<iroh::EndpointId>()
+            .expect("endpoint id is a valid iroh EndpointId");
 
         close_endpoint_blocking(handle).expect("close succeeded");
     }
@@ -223,7 +224,7 @@ mod tests {
     #[test]
     fn create_rejects_relative_blob_store_dir() {
         let result = create_endpoint_blocking(EndpointConfig {
-            profile: NetworkProfile::Isolated,
+            preset: NetworkPreset::Minimal,
             blob_store_dir: Some(PathBuf::from("relative/store")),
         });
         assert!(matches!(result, Err(IrohError::InvalidPath(_))));
@@ -231,12 +232,12 @@ mod tests {
 
     #[test]
     fn closed_handle_becomes_invalid() {
-        let handle = create_isolated_endpoint(None);
+        let handle = create_minimal_endpoint(None);
 
         close_endpoint_blocking(handle).expect("close succeeded");
 
         assert!(matches!(
-            endpoint_node_id(handle),
+            endpoint_id(handle),
             Err(IrohError::InvalidHandle(_))
         ));
         // Double close reports InvalidHandle through the callback.
@@ -247,9 +248,9 @@ mod tests {
     }
 
     #[test]
-    fn node_id_on_unknown_handle_is_invalid_handle() {
+    fn endpoint_id_on_unknown_handle_is_invalid_handle() {
         assert!(matches!(
-            endpoint_node_id(EndpointHandle::from_raw(u64::MAX)),
+            endpoint_id(EndpointHandle::from_raw(u64::MAX)),
             Err(IrohError::InvalidHandle(_))
         ));
     }

@@ -10,7 +10,7 @@ import type { Iroh as IrohSpec } from "./specs/iroh.nitro";
 export type IrohBinding = Pick<
   IrohSpec,
   | "createEndpoint"
-  | "nodeId"
+  | "endpointId"
   | "isEndpointOpen"
   | "closeEndpoint"
   | "shareBlob"

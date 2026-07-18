@@ -4,6 +4,9 @@
   "exclude": ["**/node_modules", "**/Pods"],
   "compilerOptions": {
     "strict": true,
+    // The library source (mapped below) uses Symbol.asyncDispose, which
+    // needs the esnext.disposable lib on top of RN's default target.
+    "lib": ["esnext"],
     "paths": {
       "react-native-iroh": ["../src"]
     }

@@ -1,6 +1,15 @@
 import { DEFAULT_MAX_CONCURRENT_DOWNLOADS, Endpoint } from "../endpoint";
 import { IrohError } from "../errors";
-import { captureRejection, createMockBinding, flush } from "./helpers";
+import { captureRejection, createMockBinding, flush, testTicket } from "./helpers";
+import type { AbortSignalLike } from "../endpoint";
+
+// The project's TS lib is "esnext" (no DOM), so the runtime-provided
+// AbortController global is typed locally against the structural signal
+// interface the download option accepts.
+declare const AbortController: new () => {
+  readonly signal: AbortSignalLike;
+  abort(): void;
+};
 
 function expectIrohError(value: unknown): IrohError {
   expect(value).toBeInstanceOf(IrohError);
@@ -8,16 +17,16 @@ function expectIrohError(value: unknown): IrohError {
 }
 
 describe("Endpoint.create", () => {
-  it("defaults to the standard profile with no blob store dir", async () => {
+  it("defaults to the n0 preset with no blob store dir", async () => {
     const mock = createMockBinding();
     await Endpoint.create({}, mock.binding);
-    expect(mock.configs).toEqual([{ profile: "standard" }]);
+    expect(mock.configs).toEqual([{ preset: "n0" }]);
   });
 
-  it("passes profile and blobStoreDir through", async () => {
+  it("passes preset and blobStoreDir through", async () => {
     const mock = createMockBinding();
-    await Endpoint.create({ profile: "isolated", blobStoreDir: "/data/store" }, mock.binding);
-    expect(mock.configs).toEqual([{ profile: "isolated", blobStoreDir: "/data/store" }]);
+    await Endpoint.create({ preset: "minimal", blobStoreDir: "/data/store" }, mock.binding);
+    expect(mock.configs).toEqual([{ preset: "minimal", blobStoreDir: "/data/store" }]);
   });
 
   it("wraps native bind failures in IrohError", async () => {
@@ -30,21 +39,21 @@ describe("Endpoint.create", () => {
 });
 
 describe("Endpoint identity and lifecycle", () => {
-  it("caches nodeId at creation (single native call)", async () => {
+  it("caches id at creation (single native call)", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    expect(endpoint.nodeId).toBe("node-1");
-    expect(endpoint.nodeId).toBe("node-1");
-    expect(mock.nodeIdCalls).toEqual([1]);
+    expect(endpoint.id).toBe("endpoint-1");
+    expect(endpoint.id).toBe("endpoint-1");
+    expect(mock.endpointIdCalls).toEqual([1]);
   });
 
-  it("reports isOpen until closed, and nodeId stays readable after close", async () => {
+  it("reports isOpen until closed, and id stays readable after close", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
     expect(endpoint.isOpen).toBe(true);
     await endpoint.close();
     expect(endpoint.isOpen).toBe(false);
-    expect(endpoint.nodeId).toBe("node-1");
+    expect(endpoint.id).toBe("endpoint-1");
   });
 
   it("close is idempotent: repeated calls share one native close", async () => {
@@ -55,6 +64,24 @@ describe("Endpoint identity and lifecycle", () => {
     expect(second).toBe(first);
     await Promise.all([first, second]);
     await endpoint.close();
+    expect(mock.closeCalls).toEqual([1]);
+  });
+
+  it("Symbol.asyncDispose closes the endpoint (await using)", async () => {
+    const mock = createMockBinding();
+    {
+      await using endpoint = await Endpoint.create({}, mock.binding);
+      expect(endpoint.isOpen).toBe(true);
+    }
+    expect(mock.closeCalls).toEqual([1]);
+  });
+
+  it("Symbol.asyncDispose is an alias of close (same shared promise)", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const disposed = endpoint[Symbol.asyncDispose]();
+    expect(endpoint.close()).toBe(disposed);
+    await disposed;
     expect(mock.closeCalls).toEqual([1]);
   });
 
@@ -90,11 +117,11 @@ describe("Endpoint identity and lifecycle", () => {
   });
 });
 
-describe("Endpoint.shareBlob", () => {
+describe("Endpoint.blobs.share", () => {
   it("resolves with the native ticket", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    await expect(endpoint.shareBlob("/tmp/file.bin")).resolves.toBe("ticket-/tmp/file.bin");
+    await expect(endpoint.blobs.share("/tmp/file.bin")).resolves.toBe("ticket-/tmp/file.bin");
     expect(mock.shareCalls).toEqual([{ endpoint: 1, path: "/tmp/file.bin" }]);
   });
 
@@ -102,36 +129,51 @@ describe("Endpoint.shareBlob", () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
     mock.failures.shareBlob = new Error("[iroh:3000] import failed");
-    const error = expectIrohError(await captureRejection(endpoint.shareBlob("/missing")));
+    const error = expectIrohError(await captureRejection(endpoint.blobs.share("/missing")));
     expect(error.code).toBe(3000);
     expect(error.kind).toBe("blob-import");
   });
 });
 
-describe("Endpoint.downloadBlob", () => {
+describe("Endpoint.blobs.download", () => {
   it("starts the native download with the right arguments and resolves", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("ticket-a", "/dest/a");
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a");
     await flush();
     expect(mock.downloads).toHaveLength(1);
     const call = mock.downloads[0]!;
     expect(call.endpoint).toBe(1);
-    expect(call.ticket).toBe("ticket-a");
+    expect(call.ticket).toBe(testTicket("a"));
     expect(call.destPath).toBe("/dest/a");
     expect(transfer.isSettled).toBe(false);
     call.deferred.resolve();
-    await transfer.promise;
+    await transfer.done;
     expect(transfer.isSettled).toBe(true);
   });
 
-  it("rejects with a typed IrohError on invalid tickets", async () => {
+  it("throws a typed IrohError synchronously on malformed ticket strings", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("garbage", "/dest/a");
+    let caught: unknown;
+    try {
+      endpoint.blobs.download("definitely-not-a-ticket", "/dest/a");
+    } catch (error) {
+      caught = error;
+    }
+    const error = expectIrohError(caught);
+    expect(error.code).toBe(1002);
+    expect(error.kind).toBe("invalid-ticket");
+    expect(mock.downloads).toHaveLength(0);
+  });
+
+  it("rejects with a typed IrohError when the native side refuses the ticket", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const transfer = endpoint.blobs.download(testTicket("wellformedbutbogus"), "/dest/a");
     await flush();
     mock.downloads[0]!.deferred.reject(new Error("[iroh:1002] not a ticket"));
-    const error = expectIrohError(await captureRejection(transfer.promise));
+    const error = expectIrohError(await captureRejection(transfer.done));
     expect(error.code).toBe(1002);
     expect(error.kind).toBe("invalid-ticket");
   });
@@ -139,7 +181,7 @@ describe("Endpoint.downloadBlob", () => {
   it("delivers progress to listeners and honors unsubscribe", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("ticket-a", "/dest/a");
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a");
     await flush();
     const seen: number[] = [];
     const unsubscribe = transfer.onProgress((event) => {
@@ -152,13 +194,13 @@ describe("Endpoint.downloadBlob", () => {
     call.onProgress(30);
     expect(seen).toEqual([10, 20]);
     call.deferred.resolve();
-    await transfer.promise;
+    await transfer.done;
   });
 
   it("ignores progress after settlement and no-ops late subscriptions", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("ticket-a", "/dest/a");
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a");
     await flush();
     const seen: number[] = [];
     transfer.onProgress((event) => {
@@ -167,7 +209,7 @@ describe("Endpoint.downloadBlob", () => {
     const call = mock.downloads[0]!;
     call.onProgress(10);
     call.deferred.resolve();
-    await transfer.promise;
+    await transfer.done;
     call.onProgress(99);
     const lateUnsubscribe = transfer.onProgress(() => {
       throw new Error("must never fire");
@@ -179,21 +221,21 @@ describe("Endpoint.downloadBlob", () => {
   it("cancel on an active transfer forwards the native transfer id", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("ticket-a", "/dest/a");
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a");
     await flush();
     const call = mock.downloads[0]!;
     call.onStart(77);
     transfer.cancel();
     expect(mock.cancelled).toEqual([77]);
     call.deferred.reject(new Error("[iroh:3003] cancelled"));
-    const error = expectIrohError(await captureRejection(transfer.promise));
+    const error = expectIrohError(await captureRejection(transfer.done));
     expect(error.kind).toBe("cancelled");
   });
 
   it("cancel before onStart defers the native cancel until the id arrives", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("ticket-a", "/dest/a");
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a");
     await flush();
     transfer.cancel();
     expect(mock.cancelled).toEqual([]);
@@ -204,16 +246,66 @@ describe("Endpoint.downloadBlob", () => {
   it("cancel is idempotent and a no-op after settlement", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
-    const transfer = endpoint.downloadBlob("ticket-a", "/dest/a");
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a");
     await flush();
     const call = mock.downloads[0]!;
     call.onStart(7);
     transfer.cancel();
     transfer.cancel();
     call.deferred.reject(new Error("[iroh:3003] cancelled"));
-    await captureRejection(transfer.promise);
+    await captureRejection(transfer.done);
     transfer.cancel();
     expect(mock.cancelled).toEqual([7, 7]);
+  });
+});
+
+describe("Endpoint.blobs.download with an AbortSignal", () => {
+  it("aborting the signal cancels the active transfer", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const controller = new AbortController();
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a", {
+      signal: controller.signal,
+    });
+    await flush();
+    mock.downloads[0]!.onStart(11);
+    controller.abort();
+    expect(mock.cancelled).toEqual([11]);
+    mock.downloads[0]!.deferred.reject(new Error("[iroh:3003] cancelled"));
+    const error = expectIrohError(await captureRejection(transfer.done));
+    expect(error.kind).toBe("cancelled");
+  });
+
+  it("an already-aborted signal cancels before the download reaches native", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const controller = new AbortController();
+    controller.abort();
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a", {
+      signal: controller.signal,
+    });
+    const error = expectIrohError(await captureRejection(transfer.done));
+    expect(error.code).toBe(3003);
+    expect(error.kind).toBe("cancelled");
+    await flush();
+    expect(mock.downloads).toHaveLength(0);
+  });
+
+  it("aborting after settle is a no-op", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const controller = new AbortController();
+    const transfer = endpoint.blobs.download(testTicket("a"), "/dest/a", {
+      signal: controller.signal,
+    });
+    await flush();
+    mock.downloads[0]!.onStart(3);
+    mock.downloads[0]!.deferred.resolve();
+    await transfer.done;
+    await flush();
+    controller.abort();
+    expect(mock.cancelled).toEqual([]);
+    expect(transfer.isSettled).toBe(true);
   });
 });
 
@@ -222,36 +314,36 @@ describe("Endpoint download queue", () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({}, mock.binding);
     const transfers = ["a", "b", "c", "d", "e", "f"].map((name) =>
-      endpoint.downloadBlob(`ticket-${name}`, `/dest/${name}`),
+      endpoint.blobs.download(testTicket(name), `/dest/${name}`),
     );
     await flush();
     expect(mock.downloads).toHaveLength(DEFAULT_MAX_CONCURRENT_DOWNLOADS);
     expect(mock.downloads.map((call) => call.ticket)).toEqual([
-      "ticket-a",
-      "ticket-b",
-      "ticket-c",
-      "ticket-d",
+      testTicket("a"),
+      testTicket("b"),
+      testTicket("c"),
+      testTicket("d"),
     ]);
     mock.downloads[1]!.deferred.resolve();
     await flush();
     expect(mock.downloads).toHaveLength(5);
-    expect(mock.downloads[4]!.ticket).toBe("ticket-e");
+    expect(mock.downloads[4]!.ticket).toBe(testTicket("e"));
     mock.downloads[0]!.deferred.resolve();
     await flush();
     expect(mock.downloads).toHaveLength(6);
-    expect(mock.downloads[5]!.ticket).toBe("ticket-f");
+    expect(mock.downloads[5]!.ticket).toBe(testTicket("f"));
     for (const call of mock.downloads.slice(2)) {
       call.deferred.resolve();
     }
-    await Promise.all(transfers.map((transfer) => transfer.promise));
+    await Promise.all(transfers.map((transfer) => transfer.done));
   });
 
   it("respects a custom maxConcurrentDownloads", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 2 }, mock.binding);
-    endpoint.downloadBlob("ticket-a", "/dest/a");
-    endpoint.downloadBlob("ticket-b", "/dest/b");
-    endpoint.downloadBlob("ticket-c", "/dest/c");
+    endpoint.blobs.download(testTicket("a"), "/dest/a");
+    endpoint.blobs.download(testTicket("b"), "/dest/b");
+    endpoint.blobs.download(testTicket("c"), "/dest/c");
     await flush();
     expect(mock.downloads).toHaveLength(2);
   });
@@ -259,8 +351,8 @@ describe("Endpoint download queue", () => {
   it("clamps maxConcurrentDownloads to at least 1", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 0 }, mock.binding);
-    endpoint.downloadBlob("ticket-a", "/dest/a");
-    endpoint.downloadBlob("ticket-b", "/dest/b");
+    endpoint.blobs.download(testTicket("a"), "/dest/a");
+    endpoint.blobs.download(testTicket("b"), "/dest/b");
     await flush();
     expect(mock.downloads).toHaveLength(1);
   });
@@ -268,28 +360,28 @@ describe("Endpoint download queue", () => {
   it("a transfer cancelled while queued never reaches native and frees no slot", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 1 }, mock.binding);
-    endpoint.downloadBlob("ticket-a", "/dest/a");
-    const queued = endpoint.downloadBlob("ticket-b", "/dest/b");
-    const third = endpoint.downloadBlob("ticket-c", "/dest/c");
+    endpoint.blobs.download(testTicket("a"), "/dest/a");
+    const queued = endpoint.blobs.download(testTicket("b"), "/dest/b");
+    const third = endpoint.blobs.download(testTicket("c"), "/dest/c");
     await flush();
     queued.cancel();
-    const error = expectIrohError(await captureRejection(queued.promise));
+    const error = expectIrohError(await captureRejection(queued.done));
     expect(error.code).toBe(3003);
     expect(error.kind).toBe("cancelled");
     expect(mock.cancelled).toEqual([]);
     mock.downloads[0]!.deferred.resolve();
     await flush();
     expect(mock.downloads).toHaveLength(2);
-    expect(mock.downloads[1]!.ticket).toBe("ticket-c");
+    expect(mock.downloads[1]!.ticket).toBe(testTicket("c"));
     mock.downloads[1]!.deferred.resolve();
-    await third.promise;
+    await third.done;
   });
 
   it("a failed close still cancels queued transfers (the endpoint is unusable)", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 1 }, mock.binding);
-    endpoint.downloadBlob("ticket-a", "/dest/a");
-    const queued = endpoint.downloadBlob("ticket-b", "/dest/b");
+    endpoint.blobs.download(testTicket("a"), "/dest/a");
+    const queued = endpoint.blobs.download(testTicket("b"), "/dest/b");
     await flush();
     mock.failures.closeEndpoint = new Error("[iroh:1000] close failed");
     const first = endpoint.close();
@@ -297,7 +389,7 @@ describe("Endpoint download queue", () => {
     expect(error.kind).toBe("internal");
     // The native handle is invalidated at the first close call, so a failed
     // close still cancels everything waiting in the queue.
-    const cancelled = expectIrohError(await captureRejection(queued.promise));
+    const cancelled = expectIrohError(await captureRejection(queued.done));
     expect(cancelled.code).toBe(3003);
     expect(cancelled.kind).toBe("cancelled");
     // Second close() returns the same settled promise; no second native call.
@@ -311,14 +403,14 @@ describe("Endpoint download queue", () => {
   it("close cancels queued transfers", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ maxConcurrentDownloads: 1 }, mock.binding);
-    const active = endpoint.downloadBlob("ticket-a", "/dest/a");
-    const queued = endpoint.downloadBlob("ticket-b", "/dest/b");
+    const active = endpoint.blobs.download(testTicket("a"), "/dest/a");
+    const queued = endpoint.blobs.download(testTicket("b"), "/dest/b");
     await flush();
     const closing = endpoint.close();
-    const error = expectIrohError(await captureRejection(queued.promise));
+    const error = expectIrohError(await captureRejection(queued.done));
     expect(error.kind).toBe("cancelled");
     mock.downloads[0]!.deferred.reject(new Error("[iroh:1001] endpoint closed"));
-    const activeError = expectIrohError(await captureRejection(active.promise));
+    const activeError = expectIrohError(await captureRejection(active.done));
     expect(activeError.kind).toBe("invalid-handle");
     await closing;
     expect(mock.downloads).toHaveLength(1);

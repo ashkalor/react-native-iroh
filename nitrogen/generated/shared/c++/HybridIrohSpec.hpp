@@ -53,7 +53,7 @@ namespace margelo::nitro::iroh {
     public:
       // Methods
       virtual std::shared_ptr<Promise<double>> createEndpoint(const EndpointConfig& config) = 0;
-      virtual std::string nodeId(double endpoint) = 0;
+      virtual std::string endpointId(double endpoint) = 0;
       virtual bool isEndpointOpen(double endpoint) = 0;
       virtual std::shared_ptr<Promise<void>> closeEndpoint(double endpoint) = 0;
       virtual std::shared_ptr<Promise<std::string>> shareBlob(double endpoint, const std::string& path) = 0;

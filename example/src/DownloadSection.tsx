@@ -61,7 +61,15 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
     }
     const expectedHash = extractTicketHash(ticket);
     e2eEvent("DOWNLOAD_START");
-    const transfer = endpoint.downloadBlob(ticket, DOWNLOAD_DEST);
+    let transfer: Transfer;
+    try {
+      // Throws synchronously on malformed tickets (parseTicket validation).
+      transfer = endpoint.blobs.download(ticket, DOWNLOAD_DEST);
+    } catch (error) {
+      e2eReport("download-complete", false, String(error));
+      setState({ ...IDLE, phase: "failed", error: String(error) });
+      return;
+    }
 
     // E2E accounting: refs, not state, so progress never re-renders here.
     let progressEvents = 0;
@@ -73,7 +81,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
 
     setState({ ...IDLE, phase: "downloading", transfer });
     try {
-      await transfer.promise;
+      await transfer.done;
     } catch (error) {
       unsubscribe();
       e2eReport("download-complete", false, String(error));
@@ -86,7 +94,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
 
     setState({ ...IDLE, phase: "verifying", transfer });
     try {
-      const reShareTicket = await endpoint.shareBlob(DOWNLOAD_DEST);
+      const reShareTicket = await endpoint.blobs.share(DOWNLOAD_DEST);
       const actualHash = extractTicketHash(reShareTicket);
       const pass = expectedHash !== null && actualHash !== null && expectedHash === actualHash;
       const detail = `expected=${expectedHash ?? "unparseable"} actual=${actualHash ?? "unparseable"}`;

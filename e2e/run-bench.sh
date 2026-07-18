@@ -2,15 +2,15 @@
 # Loopback performance benchmark for react-native-iroh's example app.
 #
 # Measures the hard path of the v0.1 API: many image-sized files shared and
-# downloaded through the class API (Endpoint.shareBlob / downloadBlob), one
+# downloaded through the class API (endpoint.blobs.share / .download), one
 # ticket per file. Provider and consumer endpoints run in the same app
-# process on one emulator with the isolated profile, so the transfer is
+# process on one emulator with the minimal preset, so the transfer is
 # loopback QUIC: deterministic, and it measures the library stack (import,
 # BLAKE3 hashing, QUIC, blob store, export, native thread pool, TS download
-# queue) rather than relay infrastructure. Two isolated-profile endpoints on
+# queue) rather than relay infrastructure. Two minimal-preset endpoints on
 # *different* emulators cannot dial each other (each emulator NATs its own
-# 10.0.2.x network and tickets carry undialable addresses), and the standard
-# profile would benchmark n0's public relays instead of this library.
+# 10.0.2.x network and tickets carry undialable addresses), and the n0
+# preset would benchmark n0's public relays instead of this library.
 #
 # Run matrix (per invocation):
 #   device A: mix-mcd4   100 files (60x300KiB, 30x1MiB, 10x3MiB), cap 4

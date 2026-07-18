@@ -15,11 +15,11 @@
     clippy::useless_conversion
 )]
 
-use super::network_profile::NetworkProfile;
+use super::network_preset::NetworkPreset;
 
 /// Struct `EndpointConfig` — auto-generated from TypeScript.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EndpointConfig {
-    pub profile: NetworkProfile,
+    pub preset: NetworkPreset,
     pub blob_store_dir: Option<String>,
 }

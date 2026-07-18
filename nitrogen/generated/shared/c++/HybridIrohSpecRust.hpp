@@ -39,7 +39,7 @@ struct __FfiResult_void { uint8_t is_ok; char* error; };
 // Forward declarations for Rust FFI functions
 extern "C" {
   __FfiResult_f64 HybridIrohSpec_create_endpoint(void* rustPtr, void* config);
-  __FfiResult_cstr HybridIrohSpec_node_id(void* rustPtr, double endpoint);
+  __FfiResult_cstr HybridIrohSpec_endpoint_id(void* rustPtr, double endpoint);
   __FfiResult_bool HybridIrohSpec_is_endpoint_open(void* rustPtr, double endpoint);
   __FfiResult_void HybridIrohSpec_close_endpoint(void* rustPtr, double endpoint);
   __FfiResult_cstr HybridIrohSpec_share_blob(void* rustPtr, double endpoint, const char* path);
@@ -79,12 +79,12 @@ namespace margelo::nitro::iroh {
     // Methods
     inline std::shared_ptr<Promise<double>> createEndpoint(const EndpointConfig& config) override {
           return Promise<double>::async([=]() -> double {
-            auto __ffi = HybridIrohSpec_create_endpoint(_rustPtr, [&]() -> void* { struct __Struct_0 { int32_t profile; void* blobStoreDir; }; const auto& __f0_0 = config.profile; const auto& __f0_1 = config.blobStoreDir; auto __s_0 = new __Struct_0(); __s_0->profile = static_cast<int32_t>(__f0_0); __s_0->blobStoreDir = [&]() -> void* { struct __Opt_1 { uint8_t has_value; const char* value; }; auto __opt_1 = new __Opt_1(); if (__f0_1.has_value()) { const auto& __inner_1 = __f0_1.value(); __opt_1->has_value = 1; __opt_1->value = __inner_1.c_str(); } else { __opt_1->has_value = 0; __opt_1->value = {}; } return static_cast<void*>(__opt_1); }(); return static_cast<void*>(__s_0); }());
+            auto __ffi = HybridIrohSpec_create_endpoint(_rustPtr, [&]() -> void* { struct __Struct_0 { int32_t preset; void* blobStoreDir; }; const auto& __f0_0 = config.preset; const auto& __f0_1 = config.blobStoreDir; auto __s_0 = new __Struct_0(); __s_0->preset = static_cast<int32_t>(__f0_0); __s_0->blobStoreDir = [&]() -> void* { struct __Opt_1 { uint8_t has_value; const char* value; }; auto __opt_1 = new __Opt_1(); if (__f0_1.has_value()) { const auto& __inner_1 = __f0_1.value(); __opt_1->has_value = 1; __opt_1->value = __inner_1.c_str(); } else { __opt_1->has_value = 0; __opt_1->value = {}; } return static_cast<void*>(__opt_1); }(); return static_cast<void*>(__s_0); }());
             if (!__ffi.is_ok) { __throwRustError(__ffi.error); }
             return __ffi.value;
           });
         }
-    inline std::string nodeId(double endpoint) override { auto __ffi = HybridIrohSpec_node_id(_rustPtr, endpoint); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value); }
+    inline std::string endpointId(double endpoint) override { auto __ffi = HybridIrohSpec_endpoint_id(_rustPtr, endpoint); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value); }
     inline bool isEndpointOpen(double endpoint) override { auto __ffi = HybridIrohSpec_is_endpoint_open(_rustPtr, endpoint); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return __ffi.value; }
     inline std::shared_ptr<Promise<void>> closeEndpoint(double endpoint) override {
           return Promise<void>::async([=]() {

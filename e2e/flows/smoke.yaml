@@ -1,11 +1,11 @@
 # Device A: run the adapted Phase 2 smoke suite (public class-API surface
-# checks against isolated in-process endpoints) and wait for the on-screen
+# checks against minimal-preset in-process endpoints) and wait for the on-screen
 # verdict. Per-check "SMOKE: ..." markers are asserted from logcat by
 # run-e2e.sh.
 appId: com.irohexample
 ---
 # stopApp: false keeps the already-running app (and its live endpoint) alive;
-# the suite runs against its own isolated endpoints and does not disturb it.
+# the suite runs against its own minimal-preset endpoints and does not disturb it.
 - launchApp:
     stopApp: false
 - scrollUntilVisible:
