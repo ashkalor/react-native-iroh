@@ -16,6 +16,11 @@ on:
       - "**/nitrogen/generated/ios/**"
       - "cpp/**"
       - "ios/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/**"
       - "**/Podfile.lock"
       - "**/bun.lock"
       - "**/*.podspec"
@@ -31,6 +36,11 @@ on:
       - "**/nitrogen/generated/ios/**"
       - "cpp/**"
       - "ios/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/**"
       - "**/Podfile.lock"
       - "**/bun.lock"
       - "**/*.podspec"
@@ -47,8 +57,8 @@ concurrency:
 
 jobs:
   build:
-    name: Build iOS Example App
-    runs-on: macOS-15
+    name: Build iOS XCFramework + Example App
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -58,7 +68,49 @@ jobs:
           xcode-version: 16.4
 
       - name: Install dependencies (bun)
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      # The podspec's cargo script phase and the XCFramework script both
+      # cross-compile, so the iOS rust-std components must be installed on
+      # the runner (its default toolchain only carries the host target).
+      - name: Install Rust toolchain (iOS targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Cache cargo (registry + target)
+        uses: Swatinem/rust-cache@v2
+
+      # Distributable artifact: device arm64 + fat simulator static libs
+      # packaged as an XCFramework. Runs before the example app build so the
+      # simulator cargo artifacts are already in target/ when the pod's
+      # script phase runs.
+      - name: Build XCFramework
+        run: bash scripts/build-rust-ios.sh
+
+      - name: Size report
+        run: |
+          set -euo pipefail
+          xcf=build/apple/Iroh_rust.xcframework
+          report=build/apple/SIZES.md
+          {
+            echo "### iOS XCFramework slice sizes (release, static libs)"
+            echo ""
+            echo "| Slice | Size |"
+            echo "| ----- | ---- |"
+            find "$xcf" -name '*.a' | sort | while read -r lib; do
+              echo "| ${lib#"$xcf"/} | $(du -h "$lib" | cut -f1) ($(stat -f%z "$lib") bytes) |"
+            done
+          } | tee "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcframework
+          path: |
+            build/apple/Iroh_rust.xcframework
+            build/apple/SIZES.md
+          if-no-files-found: error
 
       - name: Setup Ruby (bundle)
         uses: ruby/setup-ruby@v1
@@ -66,9 +118,6 @@ jobs:
           ruby-version: "3.2"
           bundler-cache: true
           working-directory: example/ios
-
-      - name: Install xcpretty
-        run: gem install xcpretty
 
       - name: Cache CocoaPods
         uses: actions/cache@v4
@@ -84,10 +133,21 @@ jobs:
         working-directory: example/ios
         run: pod install
 
-      - name: Build App
+      # xcbeautify ships on the GitHub macOS images; install it only if a
+      # future image drops it.
+      - name: Ensure xcbeautify
+        run: command -v xcbeautify >/dev/null 2>&1 || brew install xcbeautify
+
+      # Integration check: the example app builds against the library. The
+      # pod's cargo script phase compiles the simulator slice (cache-hot
+      # from the XCFramework step). xcodebuild output goes through tee so
+      # the raw log survives xcbeautify: prettifiers swallow rust/cargo
+      # stderr from script phases, which previously hid the real error.
+      - name: Build example app (simulator)
         working-directory: example/ios
         run: |
-          set -o pipefail && xcodebuild \
+          set -o pipefail
+          xcodebuild \
             CC=clang CPLUSPLUS=clang++ LD=clang LDPLUSPLUS=clang++ \
             -derivedDataPath build -UseModernBuildSystem=YES \
             -workspace IrohExample.xcworkspace \
@@ -96,4 +156,23 @@ jobs:
             -configuration Debug \
             -destination 'platform=iOS Simulator,name=iPhone 17' \
             build \
-            CODE_SIGNING_ALLOWED=NO | xcpretty
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild-raw.log | xcbeautify
+
+      - name: Show raw xcodebuild log tail (on failure)
+        if: failure()
+        working-directory: example/ios
+        run: |
+          if [ -f xcodebuild-raw.log ]; then
+            echo "=== error context (grep) ==="
+            grep -n -B 2 -A 10 -E "error(\[|:)" xcodebuild-raw.log | tail -n 300 || true
+            echo "=== last 200 lines of raw xcodebuild log ==="
+            tail -n 200 xcodebuild-raw.log
+          fi
+
+      - name: Upload raw xcodebuild log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-raw-log
+          path: example/ios/xcodebuild-raw.log
+          if-no-files-found: ignore

@@ -5,3 +5,15 @@ members = ["rust/iroh-rn-core"]
 # member: it is generated code (DO NOT MODIFY), so fmt/clippy/test must not
 # run over it. It still builds as a dependency of iroh-rn-core.
 exclude = ["nitrogen/generated/shared/rust"]
+
+# Mobile artifacts are size-sensitive: fat LTO + a single codegen unit shave
+# a significant amount off the static library, at the cost of slower release
+# builds. `panic` intentionally stays at the default "unwind" because the
+# bridge relies on catch_unwind guards at the FFI boundary; do not set
+# panic = "abort" here. `strip` only affects final linked artifacts (the
+# Android .so is stripped by AGP anyway); it is set for completeness.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

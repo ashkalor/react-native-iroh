@@ -14,6 +14,11 @@ on:
       - "nitrogen/generated/android/**"
       - "cpp/**"
       - "android/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/**"
       - "**/bun.lock"
       - "**/react-native.config.js"
       - "**/nitro.json"
@@ -25,6 +30,11 @@ on:
       - "**/nitrogen/generated/android/**"
       - "cpp/**"
       - "android/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "scripts/**"
       - "**/bun.lock"
       - "**/react-native.config.js"
       - "**/nitro.json"
@@ -34,23 +44,38 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # All four ABIs shipped by the library. The example app defaults to a
+  # subset (see example/android/gradle.properties), so CI overrides it.
+  ABIS: arm64-v8a,armeabi-v7a,x86_64,x86
+
 jobs:
   build:
-    name: Build Android Example App
+    name: Build Android (4 ABIs) + Example App
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies (bun)
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Setup JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: "zulu"
           java-version: "17"
-          cache: "gradle"
+
+      # The nitrogen-generated CMake invokes `cargo build --release --target
+      # <triple>` per ABI, so all four Android rust-std components must be
+      # installed on the runner.
+      - name: Install Rust toolchain (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Cache cargo (registry + target)
+        uses: Swatinem/rust-cache@v2
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -58,14 +83,72 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('example/android/**/*.gradle*') }}
+          key: ${{ runner.os }}-gradle-${{ hashFiles('example/android/**/*.gradle*', 'android/**/*.gradle*') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Run Gradle build
+      # Integration check: the example app must build against the library
+      # (debug variant, all four ABIs). This also produces the library's
+      # native libs; the rust side is always compiled in release mode.
+      - name: Build example app (assembleDebug, all ABIs)
         working-directory: example/android
-        run: ./gradlew assembleDebug --no-daemon --build-cache
+        run: ./gradlew assembleDebug --no-daemon --build-cache -PreactNativeArchitectures=${{ env.ABIS }}
 
-      - name: Stop Gradle daemon
+      # Release variant of the library itself: this is where the
+      # distributable per-ABI libIroh.so artifacts come from. Cargo
+      # artifacts are shared with the previous step, so only the C++ glue
+      # is recompiled.
+      - name: Build library (assembleRelease, all ABIs)
         working-directory: example/android
-        run: ./gradlew --stop
+        run: ./gradlew :react-native-iroh:assembleRelease --no-daemon --build-cache -PreactNativeArchitectures=${{ env.ABIS }}
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          out=dist/android
+          libdir=android/build/intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib
+          for abi in ${ABIS//,/ }; do
+            mkdir -p "$out/$abi"
+            cp "$libdir/$abi/libIroh.so" "$out/$abi/libIroh.so"
+          done
+          cp android/build/outputs/aar/*-release.aar "$out/" 2>/dev/null || cp android/build/outputs/aar/*.aar "$out/"
+          find "$out" -type f | sort
+
+      # Google Play requires 16KB page-size support for arm64 (and NDK 27
+      # only provides it when ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES is on, see
+      # android/build.gradle). Assert every LOAD segment is 0x4000-aligned.
+      - name: Assert 16KB page-size alignment (arm64-v8a)
+        run: |
+          set -euo pipefail
+          so=dist/android/arm64-v8a/libIroh.so
+          readelf -lW "$so" | awk '/LOAD/ {print $NF}' | tee /tmp/aligns.txt
+          if grep -qvx '0x4000' /tmp/aligns.txt; then
+            echo "error: $so has a LOAD segment not aligned to 16KB (0x4000)" >&2
+            exit 1
+          fi
+          echo "OK: all LOAD segments of $so are 16KB-aligned"
+
+      - name: Size report
+        run: |
+          set -euo pipefail
+          report=dist/android/SIZES.md
+          {
+            echo "### Android artifact sizes (release, stripped)"
+            echo ""
+            echo "| Artifact | Size |"
+            echo "| -------- | ---- |"
+            for abi in ${ABIS//,/ }; do
+              so=dist/android/$abi/libIroh.so
+              echo "| $abi/libIroh.so | $(du -h "$so" | cut -f1) ($(stat -c%s "$so") bytes) |"
+            done
+            for aar in dist/android/*.aar; do
+              echo "| $(basename "$aar") | $(du -h "$aar" | cut -f1) ($(stat -c%s "$aar") bytes) |"
+            done
+          } | tee "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-libs
+          path: dist/android
+          if-no-files-found: error
