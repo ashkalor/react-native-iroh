@@ -9,7 +9,6 @@
  */
 import React, { useCallback, useState } from "react";
 import { Button, Text, View } from "react-native";
-import { parseTicket } from "react-native-iroh";
 import type { Endpoint } from "react-native-iroh";
 
 // Any absolute directory inside your app's sandbox, e.g.
@@ -31,12 +30,9 @@ export function DownloadProgress({
   const onDownload = useCallback(async () => {
     setPhase("downloading");
     try {
-      // parseTicket validates the pasted string's shape up front (and
-      // download would run the same check on a plain string itself).
-      const transfer = endpoint.blobs.download(
-        parseTicket(ticket.trim()),
-        `${DocumentDir}/download.bin`,
-      );
+      // download validates the pasted string's shape up front and throws
+      // synchronously (kind "invalid-ticket") on garbage.
+      const transfer = endpoint.blobs.download(ticket.trim(), `${DocumentDir}/download.bin`);
       for await (const { bytesReceived } of transfer.progress) {
         setReceived(bytesReceived);
       }

@@ -253,4 +253,27 @@ if printf '%s\n' "$SMOKE" | grep -qE "^SMOKE: (FAIL|SUITE ABORTED)"; then
   fail "smoke suite emitted a FAIL marker"
 fi
 
+# --- Collections demo on device A -----------------------------------------
+# Bundles several files into one ticket (shareCollection), fetches them all via
+# a single downloadCollection, and asserts every child arrived. Runs on device
+# A against its own minimal-preset endpoints (loopback), so it needs no ticket
+# hand-off between devices.
+
+"$ADB" -s "$DEVICE_A" logcat -c
+log "driving collections demo on $DEVICE_A"
+run_flow "$DEVICE_A" collection "$E2E_DIR/flows/collection.yaml" \
+  || fail "collection flow failed on $DEVICE_A"
+
+COLLECTION="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' | grep -oE "E2E: (PASS|FAIL) collection-.*")"
+log "----- collection markers -----"
+printf '%s\n' "$COLLECTION"
+log "------------------------------"
+printf '%s\n' "$COLLECTION" | grep -q "^E2E: PASS collection-share" \
+  || fail "collection share did not pass"
+printf '%s\n' "$COLLECTION" | grep -q "^E2E: PASS collection-download" \
+  || fail "collection download did not pass (per-file integrity)"
+if printf '%s\n' "$COLLECTION" | grep -q "^E2E: FAIL collection-"; then
+  fail "collection demo emitted a FAIL marker"
+fi
+
 log "E2E: RESULT ALL PASS"

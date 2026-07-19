@@ -1,9 +1,8 @@
 import React, { useCallback, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
-import { Endpoint, IrohError } from "react-native-iroh";
+import { Endpoint, IrohError, parseTicket } from "react-native-iroh";
 import { smokeAborted, smokeReport, smokeResult } from "./markers";
 import { FILES_DIR, SYSTEM_FILE_CANDIDATES, shareFirstReadable } from "./paths";
-import { extractTicketHash } from "./ticketHash";
 import { sectionStyles } from "./theme";
 
 interface CheckResult {
@@ -48,7 +47,7 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   const sourceFile = attempt.ok ? attempt.source : "";
   check("blobs.share", ticket.length > 0, `${sourceFile} -> ticket[${ticket.length} chars]`);
 
-  const contentHash = extractTicketHash(ticket);
+  const contentHash = ticket.length > 0 ? parseTicket(ticket).hash : null;
   check(
     "ticket hash extraction",
     contentHash !== null && contentHash.length === 64,
@@ -96,12 +95,12 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   check("re-share ticket equality", ticketAgain === ticket, "same endpoint, identical ticket");
 
   // Cross-endpoint re-share: different ticket string (different endpoint
-  // addresses), identical trailing content hash. This validates the
-  // extractTicketHash parser used by the download integrity check.
+  // addresses), identical content hash. This validates the native
+  // parseTicket decode used by the download integrity check.
   const receiverTicket = await receiver.blobs.share(destPath);
   check(
     "cross-endpoint hash equality",
-    receiverTicket !== ticket && extractTicketHash(receiverTicket) === contentHash,
+    receiverTicket !== ticket && parseTicket(receiverTicket).hash === contentHash,
     "tickets differ, content hashes match",
   );
 

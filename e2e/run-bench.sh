@@ -210,12 +210,13 @@ done
 
 # --- Per-run plumbing -----------------------------------------------------
 
-write_plan() { # write_plan <run-id> <mcd> <manifest> <integrity-sample>
-  local run_id="$1" mcd="$2" manifest="$3" sample="$4" sep=""
+write_plan() { # write_plan <run-id> <mcd> <manifest> <integrity-sample> [mode]
+  local run_id="$1" mcd="$2" manifest="$3" sample="$4" mode="${5:-tickets}" sep=""
   {
     printf '{"runId":"%s","srcDir":"%s/bench-src","workDir":"%s/bench-work",' \
       "$run_id" "$FILES_BASE" "$FILES_BASE"
-    printf '"maxConcurrentDownloads":%s,"integritySample":%s,"files":[' "$mcd" "$sample"
+    printf '"mode":"%s","maxConcurrentDownloads":%s,"integritySample":%s,"files":[' \
+      "$mode" "$mcd" "$sample"
     while read -r name bytes; do
       printf '%s{"name":"%s","bytes":%s}' "$sep" "$name" "$bytes"
       sep=","
@@ -232,8 +233,8 @@ field() { # field <line> <key> -> numeric value or "?"
 
 OVERALL=0
 
-run_bench() { # run_bench <device> <run-id> <mcd> <manifest-basename> <integrity-sample>
-  local device="$1" run_id="$2" mcd="$3" manifest="$4" sample="$5"
+run_bench() { # run_bench <device> <run-id> <mcd> <manifest-basename> <integrity-sample> [mode]
+  local device="$1" run_id="$2" mcd="$3" manifest="$4" sample="$5" mode="${6:-tickets}"
   local bench_log="$ARTIFACTS/bench-$device-$run_id.txt"
 
   # BENCH_ONLY="id1 id2" restricts the matrix to the named runs.
@@ -244,8 +245,8 @@ run_bench() { # run_bench <device> <run-id> <mcd> <manifest-basename> <integrity
     esac
   fi
 
-  log "run $run_id on $device (mcd=$mcd)"
-  write_plan "$run_id" "$mcd" "$SERVE_DIR/$manifest" "$sample"
+  log "run $run_id on $device (mcd=$mcd mode=$mode)"
+  write_plan "$run_id" "$mcd" "$SERVE_DIR/$manifest" "$sample" "$mode"
   "$ADB" -s "$device" shell run-as "$APP_ID" rm -rf files/bench-work
   "$ADB" -s "$device" shell run-as "$APP_ID" mkdir -p files/bench-work/dl \
     || { log "ASSERT FAILED: $run_id workdir setup"; OVERALL=1; return; }
@@ -322,6 +323,10 @@ run_bench "$DEVICE_A" mix-mcd1 1 manifest-mix.txt 10
 run_bench "$DEVICE_A" single-100m 4 manifest-single.txt 1
 # Cap-lift proof: 12 files, cap 32 (the new default) so none of them queue.
 run_bench "$DEVICE_A" stress-12 32 manifest-stress.txt 3
+# collection-vs-tickets: the same 12-file corpus fetched as ONE collection
+# ticket rather than 12 individual tickets. Compare its SHARE/DOWNLOAD row
+# against stress-12 (identical corpus and cap, tickets mode).
+run_bench "$DEVICE_A" coll-12 32 manifest-stress.txt 3 collection
 if [ -n "$DEVICE_B" ]; then
   run_bench "$DEVICE_B" mix-mcd4-b 4 manifest-mix.txt 10
 fi

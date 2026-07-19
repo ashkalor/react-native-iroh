@@ -16,6 +16,9 @@ export type IrohBinding = Pick<
   | "shareBlob"
   | "downloadBlob"
   | "cancelDownload"
+  | "shareCollection"
+  | "collectionManifest"
+  | "parseTicket"
 >;
 
 let singleton: IrohSpec | undefined;

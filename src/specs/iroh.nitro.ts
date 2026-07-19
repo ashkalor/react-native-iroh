@@ -83,4 +83,32 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * transfer's Promise rejects with code 3003.
    */
   cancelDownload(transferId: number): void;
+  /**
+   * Bundles the files named in `pathsJoined` (absolute paths, joined with a
+   * single `"\n"`) into an iroh-blobs Collection and resolves with one
+   * shareable HashSeq ticket string. Like {@link Iroh.shareBlob} it waits
+   * (bounded) for the endpoint to come online on the `n0` preset.
+   *
+   * Structured data crosses the bridge as delimited/JSON strings to keep the
+   * native surface to the primitive shapes the Rust bridge already supports.
+   *
+   * @see https://docs.rs/iroh-blobs/0.103.0/iroh_blobs/format/collection/struct.Collection.html
+   */
+  shareCollection(endpoint: number, pathsJoined: string): Promise<string>;
+  /**
+   * Fetches only the manifest of the collection described by `ticket` (its
+   * HashSeq root plus metadata blob, not the child payloads) and resolves with
+   * a JSON array string of `{ name, ticket }` objects: one per child, each
+   * `ticket` a standalone raw-blob ticket dialable through
+   * {@link Iroh.downloadBlob}. Rejects (code 1002) if `ticket` is not a
+   * collection (HashSeq) ticket.
+   */
+  collectionManifest(endpoint: number, ticket: string): Promise<string>;
+  /**
+   * Decodes `ticket` and returns a JSON object string
+   * `{ hash, format, nodeId, size? }` (see the `TicketInfo` TS type).
+   * Synchronous and side-effect-free: a pure parse of the ticket wire format,
+   * no network or store access. Throws (code 1002) on a malformed ticket.
+   */
+  parseTicket(ticket: string): string;
 }

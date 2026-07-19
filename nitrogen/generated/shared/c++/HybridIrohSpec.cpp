@@ -21,6 +21,9 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("shareBlob", &HybridIrohSpec::shareBlob);
       prototype.registerHybridMethod("downloadBlob", &HybridIrohSpec::downloadBlob);
       prototype.registerHybridMethod("cancelDownload", &HybridIrohSpec::cancelDownload);
+      prototype.registerHybridMethod("shareCollection", &HybridIrohSpec::shareCollection);
+      prototype.registerHybridMethod("collectionManifest", &HybridIrohSpec::collectionManifest);
+      prototype.registerHybridMethod("parseTicket", &HybridIrohSpec::parseTicket);
     });
   }
 

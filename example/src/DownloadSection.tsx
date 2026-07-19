@@ -1,10 +1,9 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Keyboard, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
-import type { Endpoint, Transfer } from "react-native-iroh";
+import { parseTicket, type Endpoint, type Transfer } from "react-native-iroh";
 import { e2eEvent, e2eReport } from "./markers";
 import ProgressBar from "./ProgressBar";
 import { DOWNLOAD_DEST } from "./paths";
-import { extractTicketHash } from "./ticketHash";
 import { sectionStyles } from "./theme";
 
 type Phase = "idle" | "downloading" | "verifying" | "complete" | "failed";
@@ -59,7 +58,6 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       setState({ ...IDLE, phase: "failed", error: "Paste a ticket first" });
       return;
     }
-    const expectedHash = extractTicketHash(ticket);
     e2eEvent("DOWNLOAD_START");
     let transfer: Transfer;
     try {
@@ -70,6 +68,8 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       setState({ ...IDLE, phase: "failed", error: String(error) });
       return;
     }
+    // The download call above validated the ticket, so this decode is safe.
+    const expectedHash = parseTicket(ticket).hash;
 
     // E2E accounting: refs, not state, so progress never re-renders here.
     let progressEvents = 0;
@@ -95,9 +95,9 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
     setState({ ...IDLE, phase: "verifying", transfer });
     try {
       const reShareTicket = await endpoint.blobs.share(DOWNLOAD_DEST);
-      const actualHash = extractTicketHash(reShareTicket);
-      const pass = expectedHash !== null && actualHash !== null && expectedHash === actualHash;
-      const detail = `expected=${expectedHash ?? "unparseable"} actual=${actualHash ?? "unparseable"}`;
+      const actualHash = parseTicket(reShareTicket).hash;
+      const pass = expectedHash === actualHash;
+      const detail = `expected=${expectedHash} actual=${actualHash}`;
       e2eReport("integrity", pass, detail);
       setState({
         ...IDLE,

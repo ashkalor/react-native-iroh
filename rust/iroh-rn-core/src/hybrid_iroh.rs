@@ -24,7 +24,10 @@ use iroh_rust::{
 };
 
 use crate::{
-    blobs::{blob_download, blob_download_cancel, blob_share, TransferHandle},
+    blobs::{
+        blob_download, blob_download_cancel, blob_share, collection_manifest, collection_share,
+        parse_ticket, CollectionEntry, TicketInfo, TransferHandle,
+    },
     coalesce::Coalescer,
     endpoint::{
         endpoint_close, endpoint_create, endpoint_id, endpoint_is_open, EndpointConfig,
@@ -63,6 +66,60 @@ fn encode_error(err: IrohError) -> String {
 /// The completer a Promise-returning trait method receives: settles the JS
 /// Promise exactly once with the bridge-encoded result.
 type Completer<T> = Box<dyn FnOnce(Result<T, String>) + Send>;
+
+/// Appends `value` to `out` as a JSON string literal (quotes + escaping).
+///
+/// The bridge encodes structured results as JSON strings that JS parses with
+/// `JSON.parse`; only serialization happens natively (never parsing), so a
+/// small, dependency-free encoder is enough. Escapes per RFC 8259.
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Serializes a [`TicketInfo`] as a JSON object string for the bridge.
+fn ticket_info_to_json(info: &TicketInfo) -> String {
+    let mut out = String::from("{\"hash\":");
+    push_json_string(&mut out, &info.hash);
+    out.push_str(",\"format\":");
+    push_json_string(&mut out, info.format);
+    out.push_str(",\"nodeId\":");
+    push_json_string(&mut out, &info.node_id);
+    if let Some(size) = info.size {
+        out.push_str(",\"size\":");
+        out.push_str(&size.to_string());
+    }
+    out.push('}');
+    out
+}
+
+/// Serializes the collection children as a JSON array string for the bridge.
+fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
+    let mut out = String::from("[");
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        push_json_string(&mut out, &entry.name);
+        out.push_str(",\"ticket\":");
+        push_json_string(&mut out, &entry.ticket);
+        out.push('}');
+    }
+    out.push(']');
+    out
+}
 
 impl HybridIrohSpec for HybridIroh {
     fn create_endpoint(&self, config: BridgeEndpointConfig, promise: Completer<f64>) {
@@ -167,6 +224,43 @@ impl HybridIrohSpec for HybridIroh {
             Err(err) => Err(encode_error(err)),
         }
     }
+
+    fn share_collection(&self, endpoint: f64, paths_joined: String, promise: Completer<String>) {
+        // Paths arrive newline-joined (see the TS wrapper). Empty segments are
+        // dropped so a stray leading/trailing separator is harmless.
+        let paths = paths_joined
+            .split('\n')
+            .filter(|segment| !segment.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        collection_share(
+            EndpointHandle::from_raw(endpoint as u64),
+            paths,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn collection_manifest(&self, endpoint: f64, ticket: String, promise: Completer<String>) {
+        collection_manifest(
+            EndpointHandle::from_raw(endpoint as u64),
+            ticket,
+            move |result| {
+                promise(
+                    result
+                        .map(|entries| collection_entries_to_json(&entries))
+                        .map_err(encode_error),
+                );
+            },
+        );
+    }
+
+    fn parse_ticket(&self, ticket: String) -> Result<String, String> {
+        parse_ticket(&ticket)
+            .map(|info| ticket_info_to_json(&info))
+            .map_err(encode_error)
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +353,53 @@ mod tests {
     fn cancel_download_is_idempotent_for_unknown_transfers() {
         let hybrid = HybridIroh::new();
         assert_eq!(hybrid.cancel_download(987654321.0), Ok(()));
+    }
+
+    #[test]
+    fn json_string_encoding_escapes_special_characters() {
+        let mut out = String::new();
+        super::push_json_string(&mut out, "a\"b\\c\nd\te");
+        assert_eq!(out, r#""a\"b\\c\nd\te""#);
+    }
+
+    #[test]
+    fn collection_entries_serialize_as_json_array() {
+        let entries = vec![
+            super::CollectionEntry {
+                name: "a b.txt".into(),
+                ticket: "blobaaa".into(),
+            },
+            super::CollectionEntry {
+                name: "c.bin".into(),
+                ticket: "blobbbb".into(),
+            },
+        ];
+        let json = super::collection_entries_to_json(&entries);
+        assert_eq!(
+            json,
+            r#"[{"name":"a b.txt","ticket":"blobaaa"},{"name":"c.bin","ticket":"blobbbb"}]"#
+        );
+    }
+
+    #[test]
+    fn parse_ticket_via_trait_returns_json_or_typed_error() {
+        let hybrid = HybridIroh::new();
+        let err = hybrid.parse_ticket("garbage".into()).unwrap_err();
+        assert!(err.starts_with("[iroh:1002] "), "unexpected error: {err}");
+
+        // A well-formed raw ticket round-trips into the expected JSON shape.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, b"parse me").expect("write");
+        let endpoint = create_minimal(&hybrid, Some(&dir.path().join("store")));
+        let ticket =
+            block_on(|done| hybrid.share_blob(endpoint, src.to_string_lossy().into_owned(), done))
+                .expect("shared");
+        let json = hybrid.parse_ticket(ticket).expect("parses");
+        assert!(json.starts_with("{\"hash\":\""));
+        assert!(json.contains("\"format\":\"raw\""));
+        assert!(json.contains("\"nodeId\":\""));
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
     }
 
     #[test]
