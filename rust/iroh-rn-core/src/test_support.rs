@@ -8,7 +8,7 @@
 use std::{path::PathBuf, sync::mpsc, time::Duration};
 
 use crate::{
-    endpoint::{endpoint_close, endpoint_create, EndpointConfig, EndpointHandle, NetworkProfile},
+    endpoint::{endpoint_close, endpoint_create, EndpointConfig, EndpointHandle, NetworkPreset},
     error::Result,
 };
 
@@ -25,10 +25,10 @@ pub fn create_endpoint_blocking(config: EndpointConfig) -> Result<EndpointHandle
         .expect("endpoint_create completion callback fired")
 }
 
-/// Creates an `Isolated`-profile endpoint, panicking on failure.
-pub fn create_isolated_endpoint(blob_store_dir: Option<PathBuf>) -> EndpointHandle {
+/// Creates a `Minimal`-preset endpoint, panicking on failure.
+pub fn create_minimal_endpoint(blob_store_dir: Option<PathBuf>) -> EndpointHandle {
     create_endpoint_blocking(EndpointConfig {
-        profile: NetworkProfile::Isolated,
+        preset: NetworkPreset::Minimal,
         blob_store_dir,
     })
     .expect("endpoint created")

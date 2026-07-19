@@ -179,6 +179,15 @@ describe("Transfer.progress async iteration", () => {
   });
 });
 
+describe("Transfer.done", () => {
+  it("is the same promise object as Transfer.promise", async () => {
+    const harness = createTransfer();
+    expect(harness.transfer.done).toBe(harness.transfer.promise);
+    harness.resolve();
+    await harness.transfer.done;
+  });
+});
+
 describe("Transfer listeners alongside iterators", () => {
   it("a throwing listener does not break iterators or other listeners", async () => {
     const harness = createTransfer();

@@ -40,7 +40,7 @@ pub trait HybridIrohSpec: Send + Sync {
 
     // Methods
     fn create_endpoint(&self, config: EndpointConfig) -> Result<f64, String>;
-    fn node_id(&self, endpoint: f64) -> Result<String, String>;
+    fn endpoint_id(&self, endpoint: f64) -> Result<String, String>;
     fn is_endpoint_open(&self, endpoint: f64) -> Result<bool, String>;
     fn close_endpoint(&self, endpoint: f64) -> Result<(), String>;
     fn share_blob(&self, endpoint: f64, path: String) -> Result<String, String>;
@@ -77,17 +77,14 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
             let __config = {
                 #[repr(C)]
                 struct __Struct {
-                    profile: i32,
+                    preset: i32,
                     blobStoreDir: *mut std::ffi::c_void,
                 }
                 let __s = *Box::from_raw(config as *mut __Struct);
                 super::endpoint_config::EndpointConfig {
-                    profile: super::network_profile::NetworkProfile::from_i32(__s.profile)
+                    preset: super::network_preset::NetworkPreset::from_i32(__s.preset)
                         .unwrap_or_else(|| {
-                            panic!(
-                                "[Nitro] Invalid NetworkProfile discriminant: {}",
-                                __s.profile
-                            )
+                            panic!("[Nitro] Invalid NetworkPreset discriminant: {}", __s.preset)
                         }),
                     blob_store_dir: {
                         #[repr(C)]
@@ -134,7 +131,7 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HybridIrohSpec_node_id(
+pub unsafe extern "C" fn HybridIrohSpec_endpoint_id(
     ptr: *mut std::ffi::c_void,
     endpoint: f64,
 ) -> __FfiResult_cstr {
@@ -144,7 +141,7 @@ pub unsafe extern "C" fn HybridIrohSpec_node_id(
     unsafe {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
-            obj.node_id(endpoint).map(|__value| {
+            obj.endpoint_id(endpoint).map(|__value| {
                 let __s = __value.replace('\0', "");
                 std::ffi::CString::new(__s).unwrap_or_default().into_raw()
             })

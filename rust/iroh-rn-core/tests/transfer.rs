@@ -14,8 +14,8 @@ use std::{
 
 use Iroh_rust::{
     blobs::{blob_download, blob_share},
-    endpoint::endpoint_node_id,
-    test_support::{close_endpoint_blocking, create_isolated_endpoint, TIMEOUT},
+    endpoint::endpoint_id,
+    test_support::{close_endpoint_blocking, create_minimal_endpoint, TIMEOUT},
 };
 
 /// Deterministic pseudo-random payload (xorshift), big enough to span many
@@ -34,22 +34,22 @@ fn payload(len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn two_isolated_endpoints_transfer_a_file_with_monotone_progress() {
+fn two_minimal_endpoints_transfer_a_file_with_monotone_progress() {
     let dir = tempfile::tempdir().expect("tempdir");
     let bytes = payload(4 * 1024 * 1024);
     let src_path = dir.path().join("shared.bin");
     std::fs::write(&src_path, &bytes).expect("write source file");
 
-    let provider = create_isolated_endpoint(Some(dir.path().join("provider-store")));
-    let receiver = create_isolated_endpoint(Some(dir.path().join("receiver-store")));
+    let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+    let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
 
-    // Node ids are distinct, valid public keys.
-    let provider_id = endpoint_node_id(provider).expect("provider node id");
-    let receiver_id = endpoint_node_id(receiver).expect("receiver node id");
+    // Endpoint ids are distinct, valid public keys.
+    let provider_id = endpoint_id(provider).expect("provider endpoint id");
+    let receiver_id = endpoint_id(receiver).expect("receiver endpoint id");
     assert_ne!(provider_id, receiver_id);
     provider_id
         .parse::<iroh::EndpointId>()
-        .expect("node id parses as an iroh EndpointId");
+        .expect("endpoint id parses as an iroh EndpointId");
 
     // Share: path -> ticket.
     let (share_tx, share_rx) = mpsc::channel();

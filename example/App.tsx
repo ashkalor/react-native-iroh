@@ -33,7 +33,7 @@ function App(): React.JSX.Element {
         if (!alive) {
           return endpoint.close();
         }
-        e2eReady(endpoint.nodeId);
+        e2eReady(endpoint.id);
         setState({ phase: "ready", endpoint });
         return undefined;
       })
@@ -69,9 +69,9 @@ function App(): React.JSX.Element {
           </Text>
           {state.phase === "ready" ? (
             <>
-              <Text style={sectionStyles.dimText}>Node id:</Text>
-              <Text style={styles.nodeId} selectable testID="node-id">
-                {state.endpoint.nodeId}
+              <Text style={sectionStyles.dimText}>Endpoint id:</Text>
+              <Text style={styles.endpointId} selectable testID="endpoint-id">
+                {state.endpoint.id}
               </Text>
             </>
           ) : null}
@@ -114,7 +114,7 @@ const styles = StyleSheet.create({
     color: "#1a1a2e",
     marginBottom: 8,
   },
-  nodeId: {
+  endpointId: {
     fontFamily: "monospace",
     fontSize: 11,
     color: "#1a1a2e",

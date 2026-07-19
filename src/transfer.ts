@@ -12,7 +12,7 @@ export interface ProgressEvent {
 }
 
 /**
- * Handle for one download started with {@link Endpoint.downloadBlob}.
+ * Handle for one download started with {@link Blobs.download}.
  *
  * Progress can be observed two ways, and both may be used at once:
  *
@@ -33,6 +33,12 @@ export interface Transfer {
    * trigger unhandled-rejection warnings.
    */
   readonly promise: Promise<void>;
+  /**
+   * Alias of {@link Transfer.promise}: the same settlement Promise under the
+   * name most call sites read best (`await transfer.done`). Both are
+   * documented and stable; use whichever fits.
+   */
+  readonly done: Promise<void>;
   /**
    * Async-iterable view of the progress stream. Each `for await` gets an
    * independent iterator that receives events from that point on, ends when
@@ -148,13 +154,14 @@ class ProgressIterator implements AsyncIterableIterator<ProgressEvent> {
 
 /**
  * Internal implementation of {@link Transfer}. Constructed by
- * {@link Endpoint.downloadBlob}; {@link TransferController.begin} is invoked
+ * {@link Blobs.download}; {@link TransferController.begin} is invoked
  * by the endpoint's download queue when a concurrency slot frees up.
  *
  * Not part of the public API surface.
  */
 export class TransferController implements Transfer {
   readonly promise: Promise<void>;
+  readonly done: Promise<void>;
   readonly progress: AsyncIterable<ProgressEvent>;
 
   private resolvePromise!: () => void;
@@ -179,6 +186,7 @@ export class TransferController implements Transfer {
     // through the progress iterators, so consumers are not forced to attach
     // their own handler to `promise` to avoid unhandled-rejection noise.
     this.promise.catch(() => undefined);
+    this.done = this.promise;
     this.progress = {
       [Symbol.asyncIterator]: () => this.createIterator(),
     };

@@ -4,10 +4,12 @@
 //! - **Handle-based object model**: endpoints and transfers live in
 //!   process-wide [`registry::Registry`] instances and are addressed by opaque
 //!   `u64` handles; nothing structured crosses the FFI boundary.
-//! - **Sync-call + completion-callback surface**: every public operation
-//!   returns immediately; results arrive via callbacks run on the shared
-//!   tokio runtime. The Nitro bridge (Phase 2) adapts these callbacks to JS
-//!   Promises/event listeners.
+//! - **Sync-call + completion-callback surface**: async operations
+//!   (create/close/share/download) return immediately and deliver their
+//!   result via callbacks run on the shared tokio runtime; cheap queries
+//!   (`endpoint_id`, `endpoint_is_open`) and `blob_download_cancel` return
+//!   synchronously. The Nitro bridge (`hybrid_iroh`) adapts these callbacks
+//!   to JS Promises and event listeners.
 //! - **Typed errors**: all failures are [`error::IrohError`] values with
 //!   stable numeric codes.
 //!

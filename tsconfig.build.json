@@ -9,6 +9,7 @@
     "**/babel.config.js",
     "**/metro.config.js",
     "**/tsconfig.json",
-    "src/__tests__"
+    "src/__tests__",
+    "docs"
   ]
 }

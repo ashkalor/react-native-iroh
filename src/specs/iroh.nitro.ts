@@ -1,20 +1,23 @@
 import type { HybridObject } from "react-native-nitro-modules";
 
 /**
- * Which network infrastructure an endpoint uses.
+ * Which of iroh's endpoint presets an endpoint binds with.
  *
- * - `standard`: n0 relay servers and address lookup services (production).
- * - `isolated`: no relays, no address lookup; peers are only reachable via
- *   direct addresses embedded in tickets (tests / LAN-only setups).
+ * - `n0`: n0's production relay and discovery infrastructure (the default).
+ * - `minimal`: only the mandatory configuration; no relays, no discovery.
+ *   Peers are only reachable via direct addresses embedded in tickets
+ *   (tests / LAN-only setups).
+ *
+ * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/presets/index.html
  */
-export type NetworkProfile = "standard" | "isolated";
+export type NetworkPreset = "n0" | "minimal";
 
 /**
  * Configuration for {@link Iroh.createEndpoint}.
  */
 export interface EndpointConfig {
-  /** Network infrastructure profile. */
-  profile: NetworkProfile;
+  /** Network infrastructure preset. */
+  preset: NetworkPreset;
   /**
    * Absolute directory path for the persistent blob store. Omit to keep
    * blobs in memory (they are lost when the endpoint closes).
@@ -40,8 +43,8 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * with its opaque handle. Handles are never `0` and never reused.
    */
   createEndpoint(config: EndpointConfig): Promise<number>;
-  /** Returns the endpoint's node id (its public key) as a string. Cheap and synchronous. */
-  nodeId(endpoint: number): string;
+  /** Returns the endpoint's id (its public key) as a string. Cheap and synchronous. */
+  endpointId(endpoint: number): string;
   /** Whether `endpoint` refers to a live (not yet closed) endpoint. */
   isEndpointOpen(endpoint: number): boolean;
   /**
@@ -51,9 +54,9 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
   closeEndpoint(endpoint: number): Promise<void>;
   /**
    * Imports the file at absolute `path` into the endpoint's blob store and
-   * resolves with a shareable ticket string. On the `standard` profile this
-   * waits (bounded) for the endpoint to come online first, so the ticket
-   * contains dialable addresses.
+   * resolves with a shareable ticket string. On the `n0` preset this waits
+   * (bounded) for the endpoint to come online first, so the ticket contains
+   * dialable addresses.
    */
   shareBlob(endpoint: number, path: string): Promise<string>;
   /**

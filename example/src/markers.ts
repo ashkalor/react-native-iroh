@@ -17,9 +17,9 @@ export function e2eTicket(ticket: string): void {
   console.log(`E2E: TICKET ${ticket}`);
 }
 
-/** `E2E: READY <nodeId>` - app booted; the harness waits for this before driving UI. */
-export function e2eReady(nodeId: string): void {
-  console.log(`E2E: READY ${nodeId}`);
+/** `E2E: READY <endpointId>` - app booted; the harness waits for this before driving UI. */
+export function e2eReady(endpointId: string): void {
+  console.log(`E2E: READY ${endpointId}`);
 }
 
 /** `E2E: <event>` bare lifecycle marker (e.g. `DOWNLOAD_START`). */

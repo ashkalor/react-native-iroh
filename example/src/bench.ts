@@ -3,11 +3,11 @@
  * class API under a plan served by the harness (e2e/run-bench.sh) on an
  * adb-reversed local port.
  *
- * Both endpoints live in this app process and use the isolated profile, so
+ * Both endpoints live in this app process and use the minimal preset, so
  * the transfer runs over loopback QUIC. That is deliberate: two emulators
- * each sit behind their own virtual NAT, so isolated (relay-less) endpoints
- * on different emulators cannot dial each other, and the standard profile
- * would benchmark public relay infrastructure instead of this library.
+ * each sit behind their own virtual NAT, so minimal (relay-less) endpoints
+ * on different emulators cannot dial each other, and the n0 preset would
+ * benchmark public relay infrastructure instead of this library.
  * Loopback exercises the full shipped stack (file import, BLAKE3 hashing,
  * QUIC transfer, blob store, export to disk, the native thread pool, and the
  * TS download queue) without network variance.
@@ -177,11 +177,11 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
   let ok = false;
   try {
     provider = await Endpoint.create({
-      profile: "isolated",
+      preset: "minimal",
       blobStoreDir: `${plan.workDir}/provider-store`,
     });
     consumer = await Endpoint.create({
-      profile: "isolated",
+      preset: "minimal",
       blobStoreDir: `${plan.workDir}/consumer-store`,
       maxConcurrentDownloads: plan.maxConcurrentDownloads,
     });
@@ -195,7 +195,7 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
     const tickets = await Promise.all(
       plan.files.map(async (file) => {
         const start = now();
-        const ticket = await providerEndpoint.shareBlob(`${plan.srcDir}/${file.name}`);
+        const ticket = await providerEndpoint.blobs.share(`${plan.srcDir}/${file.name}`);
         shareLatencies.push(now() - start);
         return ticket;
       }),
@@ -221,14 +221,14 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
     const outcomes: DownloadOutcome[] = await Promise.all(
       jobs.map((job) => {
         const enqueuedAt = now();
-        const transfer = consumerEndpoint.downloadBlob(job.ticket, job.destPath);
+        const transfer = consumerEndpoint.blobs.download(job.ticket, job.destPath);
         let firstProgressAt: number | null = null;
         const unsubscribe = transfer.onProgress(() => {
           if (firstProgressAt === null) {
             firstProgressAt = now();
           }
         });
-        return transfer.promise.then(
+        return transfer.done.then(
           (): DownloadOutcome => {
             unsubscribe();
             const settledAt = now();
@@ -276,7 +276,7 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
       if (job === undefined) {
         continue;
       }
-      const reShareTicket = await consumerEndpoint.shareBlob(job.destPath);
+      const reShareTicket = await consumerEndpoint.blobs.share(job.destPath);
       const expected = extractTicketHash(job.ticket);
       if (expected !== null && extractTicketHash(reShareTicket) === expected) {
         passed += 1;

@@ -25,6 +25,15 @@ export function flush(): Promise<void> {
   });
 }
 
+/**
+ * Builds a syntactically valid blob ticket ("blob" + base32, long enough to
+ * pass `parseTicket`); `seed` keeps tickets distinct across calls.
+ */
+export function testTicket(seed: string): string {
+  const safe = seed.toLowerCase().replace(/[^a-z2-7]/g, "a");
+  return `blob${safe}`.padEnd(60, "a");
+}
+
 /** One recorded native downloadBlob call, fully controllable by the test. */
 export interface DownloadCall {
   endpoint: number;
@@ -38,7 +47,7 @@ export interface DownloadCall {
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
-  nodeIdCalls: number[];
+  endpointIdCalls: number[];
   closeCalls: number[];
   downloads: DownloadCall[];
   cancelled: number[];
@@ -68,9 +77,9 @@ export function createMockBinding(): MockBinding {
         open.add(handle);
         return Promise.resolve(handle);
       },
-      nodeId: (endpoint) => {
-        mock.nodeIdCalls.push(endpoint);
-        return `node-${endpoint}`;
+      endpointId: (endpoint) => {
+        mock.endpointIdCalls.push(endpoint);
+        return `endpoint-${endpoint}`;
       },
       isEndpointOpen: (endpoint) => {
         if (mock.failures.isEndpointOpen !== undefined) {
@@ -110,7 +119,7 @@ export function createMockBinding(): MockBinding {
       },
     },
     configs: [],
-    nodeIdCalls: [],
+    endpointIdCalls: [],
     closeCalls: [],
     downloads: [],
     cancelled: [],

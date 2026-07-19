@@ -21,21 +21,22 @@ declare const DocumentDir: string;
 
 /** README Quickstart: a complete share/download roundtrip between two devices. */
 export async function quickstart(): Promise<void> {
-  // Device A: share a file
+  // Device A: create an endpoint and share a file
   const a = await Endpoint.create({ blobStoreDir: `${DocumentDir}/iroh` });
-  const ticket = await a.shareBlob(`${DocumentDir}/photo.jpg`);
+  console.log(`I am ${a.id}`);
+  const ticket = await a.blobs.share(`${DocumentDir}/photo.jpg`);
   // Send `ticket` (a string) to device B out of band: QR code, chat, etc.
 
   // Device B: download it
   const b = await Endpoint.create({ blobStoreDir: `${DocumentDir}/iroh` });
-  const transfer = b.downloadBlob(ticket, `${DocumentDir}/photo.jpg`);
+  const transfer = b.blobs.download(ticket, `${DocumentDir}/photo.jpg`);
 
   const stopListening = transfer.onProgress(({ bytesReceived }) => {
     console.log(`received ${bytesReceived} bytes`);
   });
 
   try {
-    await transfer.promise; // resolves when the download completes
+    await transfer.done; // resolves when the download completes
   } finally {
     stopListening();
   }
@@ -50,7 +51,7 @@ declare function updateUi(bytesReceived: number): void;
 
 /** README Quickstart: progress consumed as an async iterable. */
 export async function quickstartProgressIteration(b: Endpoint, ticket: string): Promise<void> {
-  const transfer = b.downloadBlob(ticket, destPath);
+  const transfer = b.blobs.download(ticket, destPath);
   for await (const { bytesReceived } of transfer.progress) {
     updateUi(bytesReceived);
   }

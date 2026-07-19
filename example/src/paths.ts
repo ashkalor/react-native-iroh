@@ -38,13 +38,13 @@ export type ShareAttempt =
  * the last failure rendered as a string.
  */
 export async function shareFirstReadable(
-  endpoint: { shareBlob(path: string): Promise<string> },
+  endpoint: { blobs: { share(path: string): Promise<string> } },
   candidates: readonly string[],
 ): Promise<ShareAttempt> {
   let lastError = "no readable share candidate found";
   for (const candidate of candidates) {
     try {
-      return { ok: true, ticket: await endpoint.shareBlob(candidate), source: candidate };
+      return { ok: true, ticket: await endpoint.blobs.share(candidate), source: candidate };
     } catch (error) {
       // Candidate missing/unreadable on this device; try the next one.
       lastError = String(error);

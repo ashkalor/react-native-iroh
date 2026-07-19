@@ -15,8 +15,12 @@ use crate::HybridIroh;
 /// instantiate the Rust-backed `Iroh` HybridObject.
 ///
 /// Returns a `Box<Arc<dyn HybridIrohSpec>>`: the outer Box provides a stable
-/// thin pointer for C++, the inner Arc enables shared ownership. Returns null
-/// if construction panics; the C++ side treats null as a failed registration.
+/// thin pointer for C++, the inner Arc enables shared ownership. This function
+/// never returns null: the generated consumer (`IrohOnLoad.cpp`) dereferences
+/// the pointer in its destructor and method shims without a null check, so a
+/// null return would be latent UB. The `catch_unwind` guards against a future
+/// fallible constructor, but on panic the only sound response is to abort the
+/// process rather than hand the consumer a null it cannot handle.
 // SAFETY: `unsafe(no_mangle)` only asserts the symbol name is unique in the
 // final binary; the exact name `create_HybridIrohSpec` is what the generated
 // bridge resolves, and nothing else in the link defines it.
@@ -29,8 +33,10 @@ pub extern "C" fn create_HybridIrohSpec() -> *mut std::ffi::c_void {
     match result {
         Ok(ptr) => ptr,
         Err(_) => {
-            tracing::error!("panic while constructing HybridIroh; returning null");
-            std::ptr::null_mut()
+            // The consumer does not null-check, so returning null is unsound.
+            // Abort is the only safe failure mode.
+            tracing::error!("panic while constructing HybridIroh; aborting");
+            std::process::abort();
         }
     }
 }

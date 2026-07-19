@@ -28,10 +28,10 @@
 #error NitroModules cannot be found! Are you sure you installed NitroModules properly?
 #endif
 
-// Forward declaration of `NetworkProfile` to properly resolve imports.
-namespace margelo::nitro::iroh { enum class NetworkProfile; }
+// Forward declaration of `NetworkPreset` to properly resolve imports.
+namespace margelo::nitro::iroh { enum class NetworkPreset; }
 
-#include "NetworkProfile.hpp"
+#include "NetworkPreset.hpp"
 #include <string>
 #include <optional>
 
@@ -42,12 +42,12 @@ namespace margelo::nitro::iroh {
    */
   struct EndpointConfig final {
   public:
-    NetworkProfile profile     SWIFT_PRIVATE;
+    NetworkPreset preset     SWIFT_PRIVATE;
     std::optional<std::string> blobStoreDir     SWIFT_PRIVATE;
 
   public:
     EndpointConfig() = default;
-    explicit EndpointConfig(NetworkProfile profile, std::optional<std::string> blobStoreDir): profile(profile), blobStoreDir(blobStoreDir) {}
+    explicit EndpointConfig(NetworkPreset preset, std::optional<std::string> blobStoreDir): preset(preset), blobStoreDir(blobStoreDir) {}
 
   public:
     friend bool operator==(const EndpointConfig& lhs, const EndpointConfig& rhs) = default;
@@ -63,13 +63,13 @@ namespace margelo::nitro {
     static inline margelo::nitro::iroh::EndpointConfig fromJSI(jsi::Runtime& runtime, const jsi::Value& arg) {
       jsi::Object obj = arg.asObject(runtime);
       return margelo::nitro::iroh::EndpointConfig(
-        JSIConverter<margelo::nitro::iroh::NetworkProfile>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "profile"))),
+        JSIConverter<margelo::nitro::iroh::NetworkPreset>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "preset"))),
         JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir")))
       );
     }
     static inline jsi::Value toJSI(jsi::Runtime& runtime, const margelo::nitro::iroh::EndpointConfig& arg) {
       jsi::Object obj(runtime);
-      obj.setProperty(runtime, PropNameIDCache::get(runtime, "profile"), JSIConverter<margelo::nitro::iroh::NetworkProfile>::toJSI(runtime, arg.profile));
+      obj.setProperty(runtime, PropNameIDCache::get(runtime, "preset"), JSIConverter<margelo::nitro::iroh::NetworkPreset>::toJSI(runtime, arg.preset));
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir"), JSIConverter<std::optional<std::string>>::toJSI(runtime, arg.blobStoreDir));
       return obj;
     }
@@ -81,7 +81,7 @@ namespace margelo::nitro {
       if (!nitro::isPlainObject(runtime, obj)) {
         return false;
       }
-      if (!JSIConverter<margelo::nitro::iroh::NetworkProfile>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "profile")))) return false;
+      if (!JSIConverter<margelo::nitro::iroh::NetworkPreset>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "preset")))) return false;
       if (!JSIConverter<std::optional<std::string>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir")))) return false;
       return true;
     }

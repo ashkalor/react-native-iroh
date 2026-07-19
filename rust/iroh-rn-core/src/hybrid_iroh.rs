@@ -17,15 +17,15 @@ use std::{path::PathBuf, sync::mpsc, sync::Arc, time::Duration};
 
 use iroh_rust::{
     endpoint_config::EndpointConfig as BridgeEndpointConfig, hybrid_iroh_spec::HybridIrohSpec,
-    network_profile::NetworkProfile as BridgeNetworkProfile,
+    network_preset::NetworkPreset as BridgeNetworkPreset,
 };
 
 use crate::{
     blobs::{blob_download, blob_download_cancel, blob_share, TransferHandle},
     coalesce::Coalescer,
     endpoint::{
-        endpoint_close, endpoint_create, endpoint_is_open, endpoint_node_id, EndpointConfig,
-        EndpointHandle, NetworkProfile,
+        endpoint_close, endpoint_create, endpoint_id, endpoint_is_open, EndpointConfig,
+        EndpointHandle, NetworkPreset,
     },
     error::IrohError,
 };
@@ -84,16 +84,16 @@ fn run_blocking<T: Send + 'static>(
 
 impl HybridIrohSpec for HybridIroh {
     fn create_endpoint(&self, config: BridgeEndpointConfig) -> Result<f64, String> {
-        let profile = match config.profile {
-            BridgeNetworkProfile::Standard => NetworkProfile::Standard,
-            BridgeNetworkProfile::Isolated => NetworkProfile::Isolated,
+        let preset = match config.preset {
+            BridgeNetworkPreset::N0 => NetworkPreset::N0,
+            BridgeNetworkPreset::Minimal => NetworkPreset::Minimal,
         };
         // Path validation (absolute blob store dir) happens in the core.
         let blob_store_dir = config.blob_store_dir.map(PathBuf::from);
         run_blocking(|done| {
             endpoint_create(
                 EndpointConfig {
-                    profile,
+                    preset,
                     blob_store_dir,
                 },
                 done,
@@ -103,8 +103,8 @@ impl HybridIrohSpec for HybridIroh {
         .map(|handle| handle.raw() as f64)
     }
 
-    fn node_id(&self, endpoint: f64) -> Result<String, String> {
-        endpoint_node_id(EndpointHandle::from_raw(endpoint as u64)).map_err(encode_error)
+    fn endpoint_id(&self, endpoint: f64) -> Result<String, String> {
+        endpoint_id(EndpointHandle::from_raw(endpoint as u64)).map_err(encode_error)
     }
 
     fn is_endpoint_open(&self, endpoint: f64) -> Result<bool, String> {
@@ -181,10 +181,10 @@ mod tests {
 
     use super::*;
 
-    fn create_isolated(hybrid: &HybridIroh, store_dir: Option<&std::path::Path>) -> f64 {
+    fn create_minimal(hybrid: &HybridIroh, store_dir: Option<&std::path::Path>) -> f64 {
         hybrid
             .create_endpoint(BridgeEndpointConfig {
-                profile: BridgeNetworkProfile::Isolated,
+                preset: BridgeNetworkPreset::Minimal,
                 blob_store_dir: store_dir.map(|p| p.to_string_lossy().into_owned()),
             })
             .expect("endpoint created")
@@ -193,17 +193,17 @@ mod tests {
     #[test]
     fn endpoint_lifecycle_via_trait() {
         let hybrid = HybridIroh::new();
-        let endpoint = create_isolated(&hybrid, None);
+        let endpoint = create_minimal(&hybrid, None);
         assert!(endpoint >= 1.0);
 
-        let id = hybrid.node_id(endpoint).expect("node id");
+        let id = hybrid.endpoint_id(endpoint).expect("endpoint id");
         id.parse::<iroh::EndpointId>()
-            .expect("node id parses as an iroh EndpointId");
+            .expect("endpoint id parses as an iroh EndpointId");
         assert_eq!(hybrid.is_endpoint_open(endpoint), Ok(true));
 
         hybrid.close_endpoint(endpoint).expect("close succeeded");
         assert_eq!(hybrid.is_endpoint_open(endpoint), Ok(false));
-        let err = hybrid.node_id(endpoint).unwrap_err();
+        let err = hybrid.endpoint_id(endpoint).unwrap_err();
         assert!(err.starts_with("[iroh:1001] "), "unexpected error: {err}");
     }
 
@@ -212,7 +212,7 @@ mod tests {
         let hybrid = HybridIroh::new();
         let err = hybrid
             .create_endpoint(BridgeEndpointConfig {
-                profile: BridgeNetworkProfile::Isolated,
+                preset: BridgeNetworkPreset::Minimal,
                 blob_store_dir: Some("relative/store".into()),
             })
             .unwrap_err();
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn download_with_garbage_ticket_reports_invalid_ticket_code() {
         let hybrid = HybridIroh::new();
-        let endpoint = create_isolated(&hybrid, None);
+        let endpoint = create_minimal(&hybrid, None);
         let err = hybrid
             .download_blob(
                 endpoint,
@@ -252,8 +252,8 @@ mod tests {
         std::fs::write(&src_path, &bytes).expect("write payload");
 
         let hybrid = HybridIroh::new();
-        let provider = create_isolated(&hybrid, Some(&dir.path().join("provider-store")));
-        let receiver = create_isolated(&hybrid, Some(&dir.path().join("receiver-store")));
+        let provider = create_minimal(&hybrid, Some(&dir.path().join("provider-store")));
+        let receiver = create_minimal(&hybrid, Some(&dir.path().join("receiver-store")));
 
         let ticket = hybrid
             .share_blob(provider, src_path.to_string_lossy().into_owned())

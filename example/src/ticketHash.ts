@@ -5,9 +5,9 @@
  * "blob" followed by lowercase RFC 4648 base32 (no padding) of a postcard
  * byte stream whose final field is the 32-byte BLAKE3 content hash. The hash
  * is therefore always the last 32 bytes of the decoded stream, regardless of
- * the variable-length node address that precedes it.
+ * the variable-length endpoint address that precedes it.
  *
- * This lets the app compare *content* across devices: tickets embed node
+ * This lets the app compare *content* across devices: tickets embed endpoint
  * addresses, so re-sharing identical bytes from a different endpoint yields a
  * different ticket string but an identical trailing hash. Validated on-device
  * by the "cross-endpoint hash equality" smoke check.
