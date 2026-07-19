@@ -39,11 +39,20 @@ pub trait HybridIrohSpec: Send + Sync {
     // Properties
 
     // Methods
-    fn create_endpoint(&self, config: EndpointConfig) -> Result<f64, String>;
+    fn create_endpoint(
+        &self,
+        config: EndpointConfig,
+        promise: Box<dyn FnOnce(Result<f64, String>) + Send>,
+    );
     fn endpoint_id(&self, endpoint: f64) -> Result<String, String>;
     fn is_endpoint_open(&self, endpoint: f64) -> Result<bool, String>;
-    fn close_endpoint(&self, endpoint: f64) -> Result<(), String>;
-    fn share_blob(&self, endpoint: f64, path: String) -> Result<String, String>;
+    fn close_endpoint(&self, endpoint: f64, promise: Box<dyn FnOnce(Result<(), String>) + Send>);
+    fn share_blob(
+        &self,
+        endpoint: f64,
+        path: String,
+        promise: Box<dyn FnOnce(Result<String, String>) + Send>,
+    );
     fn download_blob(
         &self,
         endpoint: f64,
@@ -51,7 +60,8 @@ pub trait HybridIrohSpec: Send + Sync {
         dest_path: String,
         on_start: Box<dyn Fn(f64) + Send + Sync>,
         on_progress: Box<dyn Fn(f64) + Send + Sync>,
-    ) -> Result<(), String>;
+        promise: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
     fn cancel_download(&self, transfer_id: f64) -> Result<(), String>;
 
     /// Return the size of any external heap allocations, in bytes.
@@ -67,12 +77,55 @@ pub trait HybridIrohSpec: Send + Sync {
 pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
     ptr: *mut std::ffi::c_void,
     config: *mut std::ffi::c_void,
-) -> __FfiResult_f64 {
-    // NOTE: AssertUnwindSafe is used because UnwindSafe cannot be required on the trait
-    // without making it viral across all implementations. If a panic occurs mid-mutation,
-    // the object's internal state may be inconsistent on subsequent calls.
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, f64),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
     unsafe {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, f64),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<f64, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => unsafe { (self.resolve)(self.userdata, __value) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<f64, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
             let __config = {
                 #[repr(C)]
@@ -105,28 +158,8 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
                     },
                 }
             };
-            obj.create_endpoint(__config)
-        })) {
-            Ok(Ok(__value)) => __FfiResult_f64 {
-                is_ok: 1,
-                error: std::ptr::null_mut(),
-                value: __value,
-            },
-            Ok(Err(__err)) => __FfiResult_f64 {
-                is_ok: 0,
-                error: {
-                    let __s = __err.replace('\0', "");
-                    std::ffi::CString::new(__s).unwrap_or_default().into_raw()
-                },
-                value: std::mem::zeroed(),
-            },
-            // SAFETY: value is intentionally zeroed on error — C++ checks is_ok before reading it.
-            Err(__panic) => __FfiResult_f64 {
-                is_ok: 0,
-                error: crate::__nitro_panic_to_cstring(__panic),
-                value: std::mem::zeroed(),
-            },
-        }
+            obj.create_endpoint(__config, __complete);
+        }));
     }
 }
 
@@ -209,31 +242,58 @@ pub unsafe extern "C" fn HybridIrohSpec_is_endpoint_open(
 pub unsafe extern "C" fn HybridIrohSpec_close_endpoint(
     ptr: *mut std::ffi::c_void,
     endpoint: f64,
-) -> __FfiResult_void {
-    // NOTE: AssertUnwindSafe is used because UnwindSafe cannot be required on the trait
-    // without making it viral across all implementations. If a panic occurs mid-mutation,
-    // the object's internal state may be inconsistent on subsequent calls.
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
     unsafe {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
-            obj.close_endpoint(endpoint)
-        })) {
-            Ok(Ok(_)) => __FfiResult_void {
-                is_ok: 1,
-                error: std::ptr::null_mut(),
-            },
-            Ok(Err(__err)) => __FfiResult_void {
-                is_ok: 0,
-                error: {
-                    let __s = __err.replace('\0', "");
-                    std::ffi::CString::new(__s).unwrap_or_default().into_raw()
-                },
-            },
-            Err(__panic) => __FfiResult_void {
-                is_ok: 0,
-                error: crate::__nitro_panic_to_cstring(__panic),
-            },
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
         }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<(), String>) {
+                self.armed = false;
+                match __result {
+                    Ok(()) => unsafe { (self.resolve)(self.userdata) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            obj.close_endpoint(endpoint, __complete);
+        }));
     }
 }
 
@@ -242,41 +302,67 @@ pub unsafe extern "C" fn HybridIrohSpec_share_blob(
     ptr: *mut std::ffi::c_void,
     endpoint: f64,
     path: *const std::ffi::c_char,
-) -> __FfiResult_cstr {
-    // NOTE: AssertUnwindSafe is used because UnwindSafe cannot be required on the trait
-    // without making it viral across all implementations. If a panic occurs mid-mutation,
-    // the object's internal state may be inconsistent on subsequent calls.
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
     unsafe {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<String, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => {
+                        let __ffi_value = {
+                            let __s = __value.replace('\0', "");
+                            std::ffi::CString::new(__s).unwrap_or_default().into_raw()
+                        };
+                        unsafe { (self.resolve)(self.userdata, __ffi_value) };
+                    }
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<String, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
             let __path = std::ffi::CStr::from_ptr(path)
                 .to_string_lossy()
                 .into_owned();
-            obj.share_blob(endpoint, __path).map(|__value| {
-                let __s = __value.replace('\0', "");
-                std::ffi::CString::new(__s).unwrap_or_default().into_raw()
-            })
-        })) {
-            Ok(Ok(__value)) => __FfiResult_cstr {
-                is_ok: 1,
-                error: std::ptr::null_mut(),
-                value: __value,
-            },
-            Ok(Err(__err)) => __FfiResult_cstr {
-                is_ok: 0,
-                error: {
-                    let __s = __err.replace('\0', "");
-                    std::ffi::CString::new(__s).unwrap_or_default().into_raw()
-                },
-                value: std::mem::zeroed(),
-            },
-            // SAFETY: value is intentionally zeroed on error — C++ checks is_ok before reading it.
-            Err(__panic) => __FfiResult_cstr {
-                is_ok: 0,
-                error: crate::__nitro_panic_to_cstring(__panic),
-                value: std::mem::zeroed(),
-            },
-        }
+            obj.share_blob(endpoint, __path, __complete);
+        }));
     }
 }
 
@@ -288,12 +374,55 @@ pub unsafe extern "C" fn HybridIrohSpec_download_blob(
     dest_path: *const std::ffi::c_char,
     on_start: *mut std::ffi::c_void,
     on_progress: *mut std::ffi::c_void,
-) -> __FfiResult_void {
-    // NOTE: AssertUnwindSafe is used because UnwindSafe cannot be required on the trait
-    // without making it viral across all implementations. If a panic occurs mid-mutation,
-    // the object's internal state may be inconsistent on subsequent calls.
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
     unsafe {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<(), String>) {
+                self.armed = false;
+                match __result {
+                    Ok(()) => unsafe { (self.resolve)(self.userdata) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
             let __ticket = std::ffi::CStr::from_ptr(ticket)
                 .to_string_lossy()
@@ -315,24 +444,15 @@ pub unsafe extern "C" fn HybridIrohSpec_download_blob(
                     Box::new(move |__p0: f64| __wrapper.call(__p0));
                 __cb
             };
-            obj.download_blob(endpoint, __ticket, __dest_path, __on_start, __on_progress)
-        })) {
-            Ok(Ok(_)) => __FfiResult_void {
-                is_ok: 1,
-                error: std::ptr::null_mut(),
-            },
-            Ok(Err(__err)) => __FfiResult_void {
-                is_ok: 0,
-                error: {
-                    let __s = __err.replace('\0', "");
-                    std::ffi::CString::new(__s).unwrap_or_default().into_raw()
-                },
-            },
-            Err(__panic) => __FfiResult_void {
-                is_ok: 0,
-                error: crate::__nitro_panic_to_cstring(__panic),
-            },
-        }
+            obj.download_blob(
+                endpoint,
+                __ticket,
+                __dest_path,
+                __on_start,
+                __on_progress,
+                __complete,
+            );
+        }));
     }
 }
 
