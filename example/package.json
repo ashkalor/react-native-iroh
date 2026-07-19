@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@react-native/new-app-screen": "0.86.0",
-    "react": "19.2.3",
+    "react": "19.2.7",
     "react-native": "0.86.0",
     "react-native-nitro-modules": "^0.36.1",
     "react-native-qrcode-svg": "^6.3.15",
@@ -30,7 +30,7 @@
     "@react-native/eslint-config": "0.86.0",
     "@react-native/metro-config": "0.86.0",
     "@react-native/typescript-config": "0.86.0",
-    "@types/jest": "^29.5.13",
+    "@types/jest": "^30.0.0",
     "babel-plugin-module-resolver": "^5.0.2"
   },
   "engines": {
