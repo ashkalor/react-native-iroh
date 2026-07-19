@@ -60,6 +60,24 @@ export interface OnlineCall {
   deferred: Deferred<void>;
 }
 
+/** One recorded native gossipSubscribe call, drivable by the test. */
+export interface GossipSubscribeCall {
+  endpoint: number;
+  topic: string;
+  bootstrapJoined: string;
+  subId: number;
+  onStart: (subId: number) => void;
+  onMessage: (message: string) => void;
+  onNeighbor: (event: string) => void;
+}
+
+/** One recorded native gossipBroadcast call, resolvable by the test. */
+export interface GossipBroadcastCall {
+  subId: number;
+  payload: string;
+  deferred: Deferred<void>;
+}
+
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
@@ -75,6 +93,11 @@ export interface MockBinding {
   watches: WatchCall[];
   stoppedWatches: number[];
   onlineCalls: OnlineCall[];
+  gossipSubscribes: GossipSubscribeCall[];
+  gossipBroadcasts: GossipBroadcastCall[];
+  gossipUnsubscribes: number[];
+  /** When false, gossipSubscribe does not auto-fire onStart (the test drives it). */
+  autoStartGossip: boolean;
   /** JSON string that {@link IrohBinding.endpointAddr} returns. */
   addrJson: string;
   /** Ticket string that {@link IrohBinding.shareCollection} resolves with. */
@@ -95,6 +118,7 @@ export interface MockBinding {
     shareCollection?: Error;
     collectionManifest?: Error;
     parseTicket?: Error;
+    gossipSubscribe?: Error;
   };
 }
 
@@ -102,6 +126,7 @@ export interface MockBinding {
 export function createMockBinding(): MockBinding {
   let nextHandle = 1;
   let nextWatchId = 1;
+  let nextSubId = 1;
   const open = new Set<number>();
   const mock: MockBinding = {
     binding: {
@@ -204,6 +229,37 @@ export function createMockBinding(): MockBinding {
         }
         return JSON.stringify(mock.ticketInfo);
       },
+      gossipSubscribe: (endpoint, topic, bootstrapJoined, onStart, onMessage, onNeighbor) => {
+        if (mock.failures.gossipSubscribe !== undefined) {
+          throw mock.failures.gossipSubscribe;
+        }
+        const subId = nextSubId;
+        nextSubId += 1;
+        const call: GossipSubscribeCall = {
+          endpoint,
+          topic,
+          bootstrapJoined,
+          subId,
+          onStart,
+          onMessage,
+          onNeighbor,
+        };
+        mock.gossipSubscribes.push(call);
+        // Native delivers the subscription id asynchronously once the topic
+        // has joined; the mock fires it synchronously by default for
+        // determinism (opt out with autoStartGossip = false).
+        if (mock.autoStartGossip) {
+          onStart(subId);
+        }
+      },
+      gossipBroadcast: (subId, payload) => {
+        const call: GossipBroadcastCall = { subId, payload, deferred: deferred<void>() };
+        mock.gossipBroadcasts.push(call);
+        return call.deferred.promise;
+      },
+      gossipUnsubscribe: (subId) => {
+        mock.gossipUnsubscribes.push(subId);
+      },
     },
     configs: [],
     endpointIdCalls: [],
@@ -218,6 +274,10 @@ export function createMockBinding(): MockBinding {
     watches: [],
     stoppedWatches: [],
     onlineCalls: [],
+    gossipSubscribes: [],
+    gossipBroadcasts: [],
+    gossipUnsubscribes: [],
+    autoStartGossip: true,
     addrJson: JSON.stringify({
       id: "endpoint-1",
       relayUrls: [],

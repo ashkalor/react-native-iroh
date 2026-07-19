@@ -276,4 +276,60 @@ if printf '%s\n' "$COLLECTION" | grep -q "^E2E: FAIL collection-"; then
   fail "collection demo emitted a FAIL marker"
 fi
 
+# --- Gossip chat roundtrip ------------------------------------------------
+# Two-device gossip: A joins the shared topic (empty bootstrap) and logs its
+# address via "E2E: GOSSIP_ADDR ..."; the harness extracts it (like the ticket
+# hand-off above) and hands it to B as the bootstrap peer through a Maestro env
+# var. Both broadcast on the topic and each asserts it received the peer's
+# message ("E2E: PASS gossip-roundtrip"). Both flows run concurrently so the
+# broadcasts overlap; gossip is not store-and-forward, so a peer must be present
+# when a message is sent. Skipped in single-device loopback (a swarm needs two
+# distinct endpoints reachable through the relay).
+
+if [ "$DEVICE_B" != "$DEVICE_A" ]; then
+  "$ADB" -s "$DEVICE_A" logcat -c
+  "$ADB" -s "$DEVICE_B" logcat -c
+  log "driving gossip chat: A joins and publishes its address"
+
+  # A joins with no bootstrap (in the background) and keeps chatting; its
+  # address is logged during the join step and picked up below.
+  run_flow "$DEVICE_A" gossip -e "BOOTSTRAP=" "$E2E_DIR/flows/gossip.yaml" &
+  A_GOSSIP_PID=$!
+
+  # Wait for A's address to appear on its logcat, then hand it to B.
+  GOSSIP_ADDR=""
+  for _ in $(seq 1 60); do
+    GOSSIP_ADDR="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' \
+      | grep "E2E: GOSSIP_ADDR " | tail -1 | sed 's/.*E2E: GOSSIP_ADDR //')"
+    [ -n "$GOSSIP_ADDR" ] && break
+    sleep 2
+  done
+  case "$GOSSIP_ADDR" in
+    '{'*'}') log "gossip bootstrap addr extracted (${#GOSSIP_ADDR} chars)" ;;
+    *)
+      wait "$A_GOSSIP_PID" 2>/dev/null || true
+      fail "could not extract E2E: GOSSIP_ADDR from $DEVICE_A logcat"
+      ;;
+  esac
+
+  log "driving gossip chat: B joins with A as bootstrap"
+  run_flow "$DEVICE_B" gossip -e "BOOTSTRAP=$GOSSIP_ADDR" "$E2E_DIR/flows/gossip.yaml" \
+    || { wait "$A_GOSSIP_PID" 2>/dev/null || true; fail "gossip flow failed on $DEVICE_B"; }
+  wait "$A_GOSSIP_PID" || fail "gossip flow failed on $DEVICE_A"
+
+  for d in "$DEVICE_A" "$DEVICE_B"; do
+    GOSSIP="$("$ADB" -s "$d" logcat -d | tr -d '\r' | grep -oE "E2E: (PASS|FAIL) gossip-.*")"
+    log "----- gossip markers ($d) -----"
+    printf '%s\n' "$GOSSIP"
+    log "-------------------------------"
+    printf '%s\n' "$GOSSIP" | grep -q "^E2E: PASS gossip-roundtrip" \
+      || fail "gossip roundtrip did not pass on $d"
+    if printf '%s\n' "$GOSSIP" | grep -q "^E2E: FAIL gossip-"; then
+      fail "gossip chat emitted a FAIL marker on $d"
+    fi
+  done
+else
+  log "single device: skipping gossip chat roundtrip (needs two endpoints)"
+fi
+
 log "E2E: RESULT ALL PASS"

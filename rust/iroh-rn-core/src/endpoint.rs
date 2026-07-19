@@ -15,6 +15,7 @@ use iroh_blobs::{
     store::{fs::FsStore, mem::MemStore},
     BlobsProtocol,
 };
+use iroh_gossip::net::Gossip;
 use n0_future::{task::AbortOnDropHandle, StreamExt};
 
 use crate::{
@@ -142,6 +143,10 @@ pub(crate) struct EndpointState {
     pub(crate) endpoint: Endpoint,
     pub(crate) store: BlobStore,
     pub(crate) preset: NetworkPreset,
+    /// The gossip protocol running over this endpoint. The [`Router`] below
+    /// accepts incoming gossip connections into it; [`crate::gossip`] drives
+    /// its subscriptions.
+    pub(crate) gossip: Gossip,
     router: Router,
 }
 
@@ -210,14 +215,21 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     let (endpoint, store) = tokio::try_join!(bind, load_store)?;
 
     let blobs = BlobsProtocol::new(store.api(), None);
+    // Gossip is registered as a second ALPN on the same router, additively:
+    // the blobs accept (and its ordering) is unchanged so blob transfer is
+    // unaffected. The gossip instance shares the endpoint and is driven by
+    // `crate::gossip`.
+    let gossip = Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
+        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .spawn();
 
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
         preset: config.preset,
+        gossip,
         router,
     });
     Ok(EndpointHandle(handle))

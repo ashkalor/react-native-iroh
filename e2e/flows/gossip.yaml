@@ -1,0 +1,52 @@
+# Gossip chat roundtrip. Runs on both devices with a different BOOTSTRAP env
+# var: device A gets an empty BOOTSTRAP (it is the topic's first member and
+# logs its address via "E2E: GOSSIP_ADDR ..."); device B gets A's address JSON
+# so it can dial into the swarm. Each device joins the shared topic, broadcasts
+# a few pings (repeated to bridge the window before the peer has joined, since
+# gossip is not store-and-forward), and the app emits "E2E: PASS
+# gossip-roundtrip" from logcat the moment a peer's message arrives. Uses the
+# app's main n0-preset endpoint so the relay traverses the emulators' NAT.
+appId: com.irohexample
+env:
+  BOOTSTRAP: ""
+---
+# stopApp: false keeps the already-running app (and its live endpoint) alive.
+- launchApp:
+    stopApp: false
+- extendedWaitUntil:
+    visible:
+      text: "Status: Online"
+    timeout: 120000
+- scrollUntilVisible:
+    element:
+      id: "gossip-bootstrap"
+    timeout: 60000
+# Seed the bootstrap peer (empty on device A, A's GOSSIP_ADDR json on device B).
+- tapOn:
+    id: "gossip-bootstrap"
+- eraseText: 2000
+- inputText: ${BOOTSTRAP}
+- tapOn:
+    id: "gossip-join"
+# Wait until we are joined (the send box appears).
+- extendedWaitUntil:
+    visible:
+      id: "gossip-status"
+    timeout: 60000
+# Broadcast several pings, spaced by the time it takes to type, so at least one
+# lands after the peer has joined the swarm.
+- repeat:
+    times: 6
+    commands:
+      - tapOn:
+          id: "gossip-message"
+      - inputText: "ping"
+      - tapOn:
+          id: "gossip-send"
+# Assert we received at least one message from the peer (the status counter
+# advances past zero). The "E2E: PASS gossip-roundtrip" marker is checked from
+# logcat by run-e2e.sh.
+- extendedWaitUntil:
+    visible:
+      text: "Joined - [1-9].*received"
+    timeout: 120000

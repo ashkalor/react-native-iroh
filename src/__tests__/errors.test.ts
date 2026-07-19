@@ -11,6 +11,9 @@ const KNOWN_CASES: [IrohErrorCode, IrohErrorKind][] = [
   [3001, "blob-download"],
   [3002, "blob-export"],
   [3003, "cancelled"],
+  [4000, "gossip-subscribe"],
+  [4001, "gossip-broadcast"],
+  [4002, "gossip-message-too-large"],
 ];
 
 describe("IrohError.from", () => {

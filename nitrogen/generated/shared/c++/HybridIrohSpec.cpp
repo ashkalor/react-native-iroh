@@ -28,6 +28,9 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("shareCollection", &HybridIrohSpec::shareCollection);
       prototype.registerHybridMethod("collectionManifest", &HybridIrohSpec::collectionManifest);
       prototype.registerHybridMethod("parseTicket", &HybridIrohSpec::parseTicket);
+      prototype.registerHybridMethod("gossipSubscribe", &HybridIrohSpec::gossipSubscribe);
+      prototype.registerHybridMethod("gossipBroadcast", &HybridIrohSpec::gossipBroadcast);
+      prototype.registerHybridMethod("gossipUnsubscribe", &HybridIrohSpec::gossipUnsubscribe);
     });
   }
 

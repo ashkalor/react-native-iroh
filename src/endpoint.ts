@@ -1,4 +1,9 @@
 import { IrohError } from "./errors";
+import {
+  GossipSubscriptionController,
+  type GossipSubscribeOptions,
+  type GossipSubscription,
+} from "./gossip";
 import { getIroh, type IrohBinding } from "./native";
 import { validateTicketShape, type BlobTicket } from "./ticket";
 import {
@@ -101,6 +106,42 @@ function parseEndpointAddr(json: string): EndpointAddr {
     relayUrls: raw.relayUrls ?? [],
     directAddrs: raw.directAddrs ?? [],
   };
+}
+
+/**
+ * Serializes an {@link EndpointAddr} to the same compact JSON shape the bridge
+ * emits (`{ id, relayUrls, directAddrs }`), so it can be handed back as a
+ * gossip bootstrap peer (see {@link Gossip.subscribe}).
+ */
+function serializeEndpointAddr(addr: EndpointAddr): string {
+  return JSON.stringify({
+    id: addr.id,
+    relayUrls: addr.relayUrls,
+    directAddrs: addr.directAddrs,
+  });
+}
+
+/**
+ * Gossip publish/subscribe over an endpoint: peers that subscribe to the same
+ * topic form a swarm and broadcast messages to one another. Namespaced as
+ * {@link Endpoint.gossip}.
+ *
+ * @see https://docs.rs/iroh-gossip/0.101.0/iroh_gossip/
+ */
+export interface Gossip {
+  /**
+   * Subscribes to the topic identified by `topic` (a free-form label; peers
+   * that pass the same label join the same topic) and returns a live
+   * {@link GossipSubscription}: an async-iterable message log, a neighbor-event
+   * stream, `broadcast(text)`, and `unsubscribe()`.
+   *
+   * On the `"minimal"` preset supply at least one {@link GossipSubscribeOptions.bootstrap}
+   * peer so the endpoints can find each other; on `"n0"` discovery can resolve
+   * peers without one. Throws an {@link IrohError} synchronously for a stale
+   * endpoint (kind `"invalid-handle"`) or a malformed bootstrap address (kind
+   * `"gossip-subscribe"`).
+   */
+  subscribe(topic: string, options?: GossipSubscribeOptions): GossipSubscription;
 }
 
 /**
@@ -256,6 +297,8 @@ export class Endpoint {
   // the native watch is (re)started only while there is at least one consumer.
   private addressWatch: Watchable<EndpointAddr> | null = null;
   private addressWatchId: number | null = null;
+  // Live gossip subscriptions, tracked so they can be torn down on close.
+  private readonly gossipSubscriptions = new Set<GossipSubscriptionController>();
 
   /**
    * The endpoint's blob transfer API ({@link Blobs.share} /
@@ -265,6 +308,14 @@ export class Endpoint {
    * @see https://docs.rs/iroh-blobs/0.103.0/iroh_blobs/
    */
   readonly blobs: Blobs;
+
+  /**
+   * The endpoint's gossip pub/sub API ({@link Gossip.subscribe}): the
+   * iroh-gossip protocol running over this endpoint.
+   *
+   * @see https://docs.rs/iroh-gossip/0.101.0/iroh_gossip/
+   */
+  readonly gossip: Gossip;
 
   private constructor(
     binding: IrohBinding,
@@ -282,6 +333,9 @@ export class Endpoint {
       shareCollection: (paths) => this.shareCollection(paths),
       downloadCollection: (ticket, destDir, options) =>
         this.downloadCollection(ticket, destDir, options),
+    };
+    this.gossip = {
+      subscribe: (topic, options) => this.subscribeGossip(topic, options),
     };
   }
 
@@ -462,6 +516,43 @@ export class Endpoint {
     }
   }
 
+  /** See {@link Gossip.subscribe}; exposed as {@link Endpoint.gossip}`.subscribe`. */
+  private subscribeGossip(topic: string, options?: GossipSubscribeOptions): GossipSubscription {
+    // Bootstrap peers cross the bridge as newline-joined EndpointAddr JSON,
+    // matching the collection paths convention for structured bridge inputs.
+    const bootstrapJoined = (options?.bootstrap ?? []).map(serializeEndpointAddr).join("\n");
+    try {
+      const controller = new GossipSubscriptionController({
+        startSubscribe: (onStart, onMessage, onNeighbor) => {
+          this.binding.gossipSubscribe(
+            this.handle,
+            topic,
+            bootstrapJoined,
+            onStart,
+            onMessage,
+            onNeighbor,
+          );
+        },
+        broadcast: (subId, payload) => this.binding.gossipBroadcast(subId, payload),
+        unsubscribe: (subId) => {
+          try {
+            this.binding.gossipUnsubscribe(subId);
+          } catch {
+            // Native unsubscribe is idempotent; ignore teardown races.
+          }
+        },
+        capacity: options?.capacity,
+        onDispose: () => {
+          this.gossipSubscriptions.delete(controller);
+        },
+      });
+      this.gossipSubscriptions.add(controller);
+      return controller;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
   /** See {@link Blobs.share}; exposed as {@link Endpoint.blobs}`.share`. */
   private async shareBlob(path: string): Promise<BlobTicket> {
     try {
@@ -587,6 +678,10 @@ export class Endpoint {
       const cancelQueued = (): void => {
         for (const queued of this.downloadQueue.splice(0)) {
           queued.cancel();
+        }
+        // End any live gossip subscriptions (their iterators complete).
+        for (const subscription of [...this.gossipSubscriptions]) {
+          subscription.unsubscribe();
         }
         // Stop the native address watch and end any addrChanges iterators.
         this.stopNativeAddrWatch();

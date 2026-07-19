@@ -35,6 +35,7 @@ use crate::{
         EndpointHandle, NetworkPreset, WatchHandle,
     },
     error::IrohError,
+    gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
 };
 
 /// Minimum spacing between progress events crossing into JS: 34ms keeps the
@@ -324,6 +325,45 @@ impl HybridIrohSpec for HybridIroh {
         parse_ticket(&ticket)
             .map(|info| ticket_info_to_json(&info))
             .map_err(encode_error)
+    }
+
+    fn gossip_subscribe(
+        &self,
+        endpoint: f64,
+        topic: String,
+        bootstrap_joined: String,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_message: Box<dyn Fn(String) + Send + Sync>,
+        on_neighbor: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        // Set-up errors (stale endpoint, bad bootstrap addr) surface
+        // synchronously; the subscription's handle is delivered later via
+        // on_start once the topic is joined (mirrors watch_addr's primitive).
+        gossip_subscribe(
+            EndpointHandle::from_raw(endpoint as u64),
+            topic,
+            bootstrap_joined,
+            move |handle| on_start(handle.raw() as f64),
+            on_message,
+            on_neighbor,
+        )
+        .map_err(encode_error)
+    }
+
+    fn gossip_broadcast(&self, sub_id: f64, payload: String, promise: Completer<()>) {
+        gossip_broadcast(
+            GossipHandle::from_raw(sub_id as u64),
+            payload,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn gossip_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
+        // Idempotent: unknown or already-ended subscriptions are a no-op.
+        gossip_unsubscribe(GossipHandle::from_raw(sub_id as u64));
+        Ok(())
     }
 }
 

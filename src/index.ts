@@ -6,9 +6,16 @@ export type {
   EndpointAddr,
   EndpointId,
   EndpointOptions,
+  Gossip,
   RelayMode,
 } from "./endpoint";
 export { getIrohErrorCode, IrohError } from "./errors";
+export type {
+  GossipMessage,
+  GossipNeighborEvent,
+  GossipSubscribeOptions,
+  GossipSubscription,
+} from "./gossip";
 export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";
 export type { IrohBinding } from "./native";
 export type { EndpointConfig, Iroh as IrohSpec, NetworkPreset } from "./specs/iroh.nitro";

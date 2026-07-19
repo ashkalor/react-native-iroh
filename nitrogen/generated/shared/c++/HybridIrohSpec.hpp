@@ -66,6 +66,9 @@ namespace margelo::nitro::iroh {
       virtual std::shared_ptr<Promise<std::string>> shareCollection(double endpoint, const std::string& pathsJoined) = 0;
       virtual std::shared_ptr<Promise<std::string>> collectionManifest(double endpoint, const std::string& ticket) = 0;
       virtual std::string parseTicket(const std::string& ticket) = 0;
+      virtual void gossipSubscribe(double endpoint, const std::string& topic, const std::string& bootstrapJoined, const std::function<void(double /* subId */)>& onStart, const std::function<void(const std::string& /* message */)>& onMessage, const std::function<void(const std::string& /* event */)>& onNeighbor) = 0;
+      virtual std::shared_ptr<Promise<void>> gossipBroadcast(double subId, const std::string& payload) = 0;
+      virtual void gossipUnsubscribe(double subId) = 0;
 
     protected:
       // Hybrid Setup

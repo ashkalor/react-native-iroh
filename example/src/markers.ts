@@ -22,6 +22,15 @@ export function e2eReady(endpointId: string): void {
   console.log(`E2E: READY ${endpointId}`);
 }
 
+/**
+ * `E2E: GOSSIP_ADDR <endpointAddr-json>` - the harness extracts the JSON after
+ * this tag (like {@link e2eTicket}) and hands it to the other device as the
+ * gossip bootstrap peer.
+ */
+export function e2eGossipAddr(addrJson: string): void {
+  console.log(`E2E: GOSSIP_ADDR ${addrJson}`);
+}
+
 /** `E2E: <event>` bare lifecycle marker (e.g. `DOWNLOAD_START`). */
 export function e2eEvent(event: string): void {
   console.log(`E2E: ${event}`);

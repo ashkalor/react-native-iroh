@@ -4,6 +4,7 @@ import { Endpoint } from "react-native-iroh";
 import BenchSection from "./src/BenchSection";
 import CollectionsSection from "./src/CollectionsSection";
 import DownloadSection from "./src/DownloadSection";
+import GossipChatSection from "./src/GossipChatSection";
 import { e2eReady, e2eReport } from "./src/markers";
 import { APP_STORE_DIR } from "./src/paths";
 import ShareSection from "./src/ShareSection";
@@ -84,6 +85,7 @@ function App(): React.JSX.Element {
           <>
             <ShareSection endpoint={state.endpoint} />
             <DownloadSection endpoint={state.endpoint} />
+            <GossipChatSection endpoint={state.endpoint} />
           </>
         ) : null}
         <CollectionsSection />

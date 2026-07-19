@@ -71,22 +71,41 @@ under `endpoint.blobs`. The complete v0.1 protocol surface:
 - Downloads are capped per endpoint (default 4) and queued FIFO beyond the
   cap; progress events are coalesced natively so slow consumers never
   buffer unboundedly.
+- `blobs.shareCollection(paths)` bundles several files under one ticket;
+  `blobs.downloadCollection(ticket, destDir)` fetches them all with a live
+  per-file progress breakdown.
 - Every failure (sync throw or rejection) is a typed `IrohError` with a
   stable numeric `code` and discriminated `kind`.
 
+### iroh-gossip (available now)
+
+Epidemic pub/sub: peers that subscribe to the same topic form a swarm and
+broadcast messages to one another, namespaced under `endpoint.gossip`.
+
+- `gossip.subscribe(topic, options?)` joins the topic derived from a free-form
+  label (its BLAKE3 hash) and returns a `GossipSubscription` synchronously: an
+  async-iterable `messages` log, an async-iterable `neighbors` stream,
+  `broadcast(text)`, and `unsubscribe()`.
+- `messages` is a bounded FIFO (non-conflating, unlike the address stream):
+  every message is delivered in order, and under overflow the oldest unread
+  messages are dropped so the live tail keeps flowing (a `lagged` signal is
+  logged). Configure the buffer with `options.capacity`.
+- `broadcast(text)` sends UTF-8 up to 4096 bytes per message; oversize payloads
+  reject with kind `"gossip-message-too-large"`.
+- On the `"minimal"` preset supply `options.bootstrap` peers (their
+  `EndpointAddr`s) so endpoints can find each other; on `"n0"` discovery can
+  resolve peers without one.
+
 ### Roadmap
 
-Planned protocol work, honestly labeled: none of this exists in v0.1, and
-no dates are attached.
+Planned protocol work, honestly labeled: none of this exists yet, and no dates
+are attached.
 
-- **Collections** (iroh-blobs hash sequences): share a set of files under
-  a single ticket.
-- **Gossip** (`iroh-gossip`): epidemic pub/sub broadcast overlays.
 - **Docs** (`iroh-docs`): multi-writer replicated key-value documents.
 
-Raw QUIC connections and custom ALPN protocols are likewise not exposed in
-v0.1: today's API is `Endpoint` plus `iroh-blobs`. If a protocol matters
-to you, open an issue.
+Raw QUIC connections and custom ALPN protocols are likewise not exposed
+today: the API is `Endpoint` plus `iroh-blobs` and `iroh-gossip`. If a
+protocol matters to you, open an issue.
 
 ## Status
 
@@ -291,6 +310,29 @@ plain string, which is validated with `parseTicket` first) into absolute
 wait in a FIFO queue. `options.signal` accepts a standard `AbortSignal`:
 aborting it cancels the transfer (aborting after settle is a no-op).
 
+#### `endpoint.gossip.subscribe(topic, options?): GossipSubscription`
+
+Subscribes to the gossip topic derived from `topic` (a free-form label; peers
+that pass the same label join the same topic) and returns a `GossipSubscription`
+synchronously. `options.bootstrap` is a list of peer `EndpointAddr`s to seed the
+swarm with (required on the `minimal` preset; optional on `n0`, where discovery
+can resolve peers), and `options.capacity` sizes the message buffer. Throws an
+`IrohError` synchronously for a stale endpoint (kind `"invalid-handle"`) or a
+malformed bootstrap address (kind `"gossip-subscribe"`).
+
+`GossipSubscription` members:
+
+| Member            | Type                                 | Meaning                                                                                                                                                                       |
+| ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `messages`        | `AsyncIterable<GossipMessage>`       | Received messages, in arrival order. A bounded FIFO (non-conflating): under overflow the oldest unread messages are dropped so the live tail keeps flowing. Ends on teardown. |
+| `neighbors`       | `AsyncIterable<GossipNeighborEvent>` | Swarm membership changes (`{ type: "up" \| "down"; endpointId }`). Ends on teardown.                                                                                          |
+| `broadcast(text)` | `(text: string) => Promise<void>`    | Broadcasts UTF-8 `text` (up to 4096 bytes) to every peer; rejects with kind `"gossip-message-too-large"` if oversize, or `"gossip-broadcast"` on failure.                     |
+| `unsubscribe()`   | `() => void`                         | Leaves the topic and ends both iterators. Idempotent; also run automatically when the endpoint closes.                                                                        |
+
+`GossipMessage` has `text` (the UTF-8 payload) and `from` (the id of the
+neighbor that delivered it). Messages are also capped at 4096 bytes per the
+gossip protocol's default.
+
 #### `endpoint.close(): Promise<void>`
 
 Closes the endpoint: shuts down its router, sockets and blob store.
@@ -346,17 +388,20 @@ API.
 
 Error codes are stable across releases:
 
-| Code   | Kind             | Meaning                                                             |
-| ------ | ---------------- | ------------------------------------------------------------------- |
-| `1000` | `internal`       | Unclassified native failure (also the fallback for untagged errors) |
-| `1001` | `invalid-handle` | Operation on an unknown or already-closed endpoint handle           |
-| `1002` | `invalid-ticket` | Ticket string failed to parse                                       |
-| `1003` | `invalid-path`   | Path is not usable (not absolute, not readable, ...)                |
-| `2000` | `endpoint-bind`  | Endpoint failed to bind its sockets / come online                   |
-| `3000` | `blob-import`    | Importing a file into the blob store failed                         |
-| `3001` | `blob-download`  | Download failed                                                     |
-| `3002` | `blob-export`    | Writing the downloaded blob to `destPath` failed                    |
-| `3003` | `cancelled`      | Transfer was cancelled                                              |
+| Code   | Kind                       | Meaning                                                             |
+| ------ | -------------------------- | ------------------------------------------------------------------- |
+| `1000` | `internal`                 | Unclassified native failure (also the fallback for untagged errors) |
+| `1001` | `invalid-handle`           | Operation on an unknown or already-closed endpoint handle           |
+| `1002` | `invalid-ticket`           | Ticket string failed to parse                                       |
+| `1003` | `invalid-path`             | Path is not usable (not absolute, not readable, ...)                |
+| `2000` | `endpoint-bind`            | Endpoint failed to bind its sockets / come online                   |
+| `3000` | `blob-import`              | Importing a file into the blob store failed                         |
+| `3001` | `blob-download`            | Download failed                                                     |
+| `3002` | `blob-export`              | Writing the downloaded blob to `destPath` failed                    |
+| `3003` | `cancelled`                | Transfer was cancelled                                              |
+| `4000` | `gossip-subscribe`         | Subscribing to a gossip topic failed (e.g. a bad bootstrap address) |
+| `4001` | `gossip-broadcast`         | Broadcasting a gossip message failed                                |
+| `4002` | `gossip-message-too-large` | Gossip payload exceeded the 4096-byte per-message limit             |
 
 Exported error types: `IrohErrorCode` (union of the numeric codes),
 `IrohErrorKind` (union of the kind strings), `IrohErrorCase` (the
@@ -364,21 +409,22 @@ discriminated `code`/`kind` pairing).
 
 ### Other exports
 
-| Export                                         | Kind          | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEFAULT_MAX_CONCURRENT_DOWNLOADS`             | `const` (`4`) | Default download-concurrency cap per endpoint.                                                                                                                                                                                                                                                                                                                                                                            |
-| `IROH_VERSION`                                 | `const`       | The exact version of the iroh Rust crate compiled into this package (e.g. `"1.0.2"`). A unit test pins it to the crate manifest, so it cannot drift.                                                                                                                                                                                                                                                                      |
-| `parseTicket(s)`                               | function      | Validates a string's blob-ticket shape (`blob` prefix, base32 charset, minimum length) and returns it as a `BlobTicket`; throws `IrohError` kind `"invalid-ticket"` on failure. `blobs.download` runs the same check on plain strings.                                                                                                                                                                                    |
-| `getIrohErrorCode(error)`                      | function      | Extracts the numeric code from a raw-bridge error message, or `undefined`. Retained for users of the raw escape hatch; the class API throws `IrohError`, which carries `code`/`kind` directly.                                                                                                                                                                                                                            |
-| `getIroh()`                                    | function      | Unstable escape hatch: returns the raw Nitro hybrid object with the full native surface (`createEndpoint`, `endpointId`, `isEndpointOpen`, `closeEndpoint`, `shareBlob`, `downloadBlob`, `cancelDownload`), without the queueing, error typing, or lifecycle handling of `Endpoint`. The binding is created lazily on first call (never at import). Its errors carry `[iroh:<code>]` message prefixes. Prefer `Endpoint`. |
-| `IrohSpec`                                     | type          | The interface of the raw hybrid object.                                                                                                                                                                                                                                                                                                                                                                                   |
-| `IrohBinding`                                  | type          | The structural subset of `IrohSpec` that `Endpoint` depends on; implement it to mock the native layer in tests.                                                                                                                                                                                                                                                                                                           |
-| `EndpointId`, `BlobTicket`                     | types         | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `parseTicket` (or `blobs.share`).                                                                                                                                                                                                                                       |
-| `EndpointConfig`, `NetworkPreset`              | types         | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
-| `Blobs`, `DownloadOptions`, `AbortSignalLike`  | types         | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
-| `EndpointOptions`, `Transfer`, `ProgressEvent` | types         | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `EndpointAddr`, `RelayMode`                    | types         | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
-| `DEFAULT_ONLINE_TIMEOUT_MS`                    | `const` (10s) | Default timeout for `endpoint.online()`.                                                                                                                                                                                                                                                                                                                                                                                  |
+| Export                                                                                           | Kind          | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEFAULT_MAX_CONCURRENT_DOWNLOADS`                                                               | `const` (`4`) | Default download-concurrency cap per endpoint.                                                                                                                                                                                                                                                                                                                                                                            |
+| `IROH_VERSION`                                                                                   | `const`       | The exact version of the iroh Rust crate compiled into this package (e.g. `"1.0.2"`). A unit test pins it to the crate manifest, so it cannot drift.                                                                                                                                                                                                                                                                      |
+| `parseTicket(s)`                                                                                 | function      | Validates a string's blob-ticket shape (`blob` prefix, base32 charset, minimum length) and returns it as a `BlobTicket`; throws `IrohError` kind `"invalid-ticket"` on failure. `blobs.download` runs the same check on plain strings.                                                                                                                                                                                    |
+| `getIrohErrorCode(error)`                                                                        | function      | Extracts the numeric code from a raw-bridge error message, or `undefined`. Retained for users of the raw escape hatch; the class API throws `IrohError`, which carries `code`/`kind` directly.                                                                                                                                                                                                                            |
+| `getIroh()`                                                                                      | function      | Unstable escape hatch: returns the raw Nitro hybrid object with the full native surface (`createEndpoint`, `endpointId`, `isEndpointOpen`, `closeEndpoint`, `shareBlob`, `downloadBlob`, `cancelDownload`), without the queueing, error typing, or lifecycle handling of `Endpoint`. The binding is created lazily on first call (never at import). Its errors carry `[iroh:<code>]` message prefixes. Prefer `Endpoint`. |
+| `IrohSpec`                                                                                       | type          | The interface of the raw hybrid object.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `IrohBinding`                                                                                    | type          | The structural subset of `IrohSpec` that `Endpoint` depends on; implement it to mock the native layer in tests.                                                                                                                                                                                                                                                                                                           |
+| `EndpointId`, `BlobTicket`                                                                       | types         | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `parseTicket` (or `blobs.share`).                                                                                                                                                                                                                                       |
+| `EndpointConfig`, `NetworkPreset`                                                                | types         | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
+| `Blobs`, `DownloadOptions`, `AbortSignalLike`                                                    | types         | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
+| `Gossip`, `GossipSubscription`, `GossipMessage`, `GossipNeighborEvent`, `GossipSubscribeOptions` | types         | The `endpoint.gossip` namespace interface and its subscription, message, neighbor-event, and options types.                                                                                                                                                                                                                                                                                                               |
+| `EndpointOptions`, `Transfer`, `ProgressEvent`                                                   | types         | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `EndpointAddr`, `RelayMode`                                                                      | types         | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
+| `DEFAULT_ONLINE_TIMEOUT_MS`                                                                      | `const` (10s) | Default timeout for `endpoint.online()`.                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## Performance
 

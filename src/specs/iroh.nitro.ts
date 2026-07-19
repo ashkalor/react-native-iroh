@@ -156,4 +156,45 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * no network or store access. Throws (code 1002) on a malformed ticket.
    */
   parseTicket(ticket: string): string;
+  /**
+   * Subscribes to the gossip topic derived from `topic` (its BLAKE3 hash) on
+   * `endpoint`. `bootstrapJoined` is a possibly-empty newline-joined list of
+   * bootstrap peer `EndpointAddr` JSON strings (the same shape
+   * {@link Iroh.endpointAddr} returns); their addresses seed the swarm so it
+   * can dial them by id.
+   *
+   * Set-up is validated synchronously (a stale endpoint handle throws code
+   * 1001; a malformed bootstrap address throws code 4000). Once the topic is
+   * joined, `onStart` fires once with the subscription's numeric handle (pass
+   * it to {@link gossipBroadcast} / {@link gossipUnsubscribe}). `onMessage`
+   * then fires per received message as `"<delivered-from-id> <utf8-payload>"`
+   * (split on the first space), and `onNeighbor` per swarm event: `"up <id>"`,
+   * `"down <id>"`, or `"lagged"` (the receiver fell behind and dropped
+   * messages).
+   *
+   * Mirrors {@link watchAddr}'s onStart-returns-handle primitive; structured
+   * inputs/outputs cross the bridge as delimited/JSON strings.
+   */
+  gossipSubscribe(
+    endpoint: number,
+    topic: string,
+    bootstrapJoined: string,
+    onStart: (subId: number) => void,
+    onMessage: (message: string) => void,
+    onNeighbor: (event: string) => void,
+  ): void;
+  /**
+   * Broadcasts `payload` (UTF-8) to every peer in the subscription's swarm.
+   * Rejects with code 4002 if the payload exceeds the per-message size limit
+   * (4096 bytes), code 1001 if the subscription is unknown/already ended, or
+   * code 4001 if the swarm broadcast fails. Resolves once the message has been
+   * handed to the swarm (peer delivery is best effort).
+   */
+  gossipBroadcast(subId: number, payload: string): Promise<void>;
+  /**
+   * Ends a subscription started with {@link gossipSubscribe}, leaving the
+   * topic's swarm. Idempotent: ending an unknown or already-ended subscription
+   * is a no-op.
+   */
+  gossipUnsubscribe(subId: number): void;
 }

@@ -17,6 +17,7 @@ pub type Result<T> = std::result::Result<T, IrohError>;
 /// | 1xxx  | generic / infrastructure |
 /// | 2xxx  | endpoint lifecycle |
 /// | 3xxx  | blob transfer |
+/// | 4xxx  | gossip |
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum IrohError {
@@ -47,6 +48,16 @@ pub enum IrohError {
     /// The transfer was cancelled by the caller.
     #[error("transfer cancelled")]
     Cancelled,
+    /// Subscribing to a gossip topic failed (bad bootstrap address, or the
+    /// gossip actor could not join the topic).
+    #[error("failed to subscribe to gossip topic: {0}")]
+    GossipSubscribe(String),
+    /// Broadcasting a message to a gossip topic failed.
+    #[error("failed to broadcast gossip message: {0}")]
+    GossipBroadcast(String),
+    /// A gossip payload exceeded the topic's maximum message size.
+    #[error("gossip message too large: {0}")]
+    GossipMessageTooLarge(String),
 }
 
 impl IrohError {
@@ -66,6 +77,9 @@ impl IrohError {
             IrohError::BlobDownload(_) => 3001,
             IrohError::BlobExport(_) => 3002,
             IrohError::Cancelled => 3003,
+            IrohError::GossipSubscribe(_) => 4000,
+            IrohError::GossipBroadcast(_) => 4001,
+            IrohError::GossipMessageTooLarge(_) => 4002,
         }
     }
 }
@@ -88,6 +102,9 @@ mod tests {
             (IrohError::BlobDownload("x".into()), 3001),
             (IrohError::BlobExport("x".into()), 3002),
             (IrohError::Cancelled, 3003),
+            (IrohError::GossipSubscribe("x".into()), 4000),
+            (IrohError::GossipBroadcast("x".into()), 4001),
+            (IrohError::GossipMessageTooLarge("x".into()), 4002),
         ];
         for (err, code) in cases {
             assert_eq!(err.code(), code, "code changed for {err:?}");

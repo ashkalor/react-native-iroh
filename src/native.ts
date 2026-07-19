@@ -23,6 +23,9 @@ export type IrohBinding = Pick<
   | "shareCollection"
   | "collectionManifest"
   | "parseTicket"
+  | "gossipSubscribe"
+  | "gossipBroadcast"
+  | "gossipUnsubscribe"
 >;
 
 let singleton: IrohSpec | undefined;

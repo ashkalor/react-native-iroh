@@ -23,6 +23,7 @@ mod coalesce;
 pub mod endpoint;
 pub mod error;
 mod ffi;
+pub mod gossip;
 mod hybrid_iroh;
 pub mod registry;
 mod runtime;
