@@ -8,7 +8,7 @@ import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
  * Default cap on concurrently active downloads per endpoint. See
  * {@link EndpointOptions.maxConcurrentDownloads}.
  */
-export const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 4;
+export const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 32;
 
 /**
  * `Symbol.asyncDispose`, with a `Symbol.for` fallback for engines that lack
@@ -104,16 +104,17 @@ export interface EndpointOptions {
    */
   blobStoreDir?: string;
   /**
-   * Cap on concurrently active downloads for this endpoint; further
-   * downloads wait in a FIFO queue. Defaults to
-   * {@link DEFAULT_MAX_CONCURRENT_DOWNLOADS} (values below 1 are clamped to
-   * 1, non-integers are floored, and non-finite values such as `NaN` or
-   * `Infinity` fall back to the default).
+   * Optional app-level throttle on concurrently active downloads for this
+   * endpoint; further downloads wait in a FIFO queue. Defaults to
+   * {@link DEFAULT_MAX_CONCURRENT_DOWNLOADS}. Values below 1 are clamped to 1
+   * and non-integers are floored; `Infinity` means unlimited (no gate), while
+   * `NaN` falls back to the default.
    *
-   * Rationale: each in-flight native operation occupies a thread in the
-   * native Promise thread pool (which grows from 3 to at most 10 threads),
-   * so many concurrent long transfers would starve other native calls. Keep
-   * this well below 10 unless you know your workload.
+   * Rationale: native downloads no longer each occupy a blocking thread in the
+   * native Promise pool. The bridge now completes Promises via callbacks off
+   * the JS thread, so there is no native concurrency cap to guard against.
+   * This remains purely as an application-level throttle for pacing many
+   * concurrent long transfers; pass `Infinity` to disable it entirely.
    */
   maxConcurrentDownloads?: number;
 }
@@ -175,15 +176,17 @@ export class Endpoint {
     binding: IrohBinding = getIroh(),
   ): Promise<Endpoint> {
     const preset = options.preset ?? "n0";
-    const requestedMax = Math.floor(
-      options.maxConcurrentDownloads ?? DEFAULT_MAX_CONCURRENT_DOWNLOADS,
-    );
-    // Non-finite requests (NaN, Infinity) would leave the concurrency gate
-    // unusable (`active < NaN` is never true, deadlocking the queue), so fall
-    // back to the default rather than trusting the arithmetic.
-    const maxConcurrentDownloads = Number.isFinite(requestedMax)
-      ? Math.max(1, requestedMax)
-      : DEFAULT_MAX_CONCURRENT_DOWNLOADS;
+    const requestedMax = options.maxConcurrentDownloads ?? DEFAULT_MAX_CONCURRENT_DOWNLOADS;
+    // `Infinity` is an explicit opt-out: an unlimited gate (`active < Infinity`
+    // is always true) pumps every queued transfer immediately. `NaN` would
+    // instead deadlock the queue (`active < NaN` is never true), so it falls
+    // back to the default. Finite values are floored and clamped to at least 1.
+    const maxConcurrentDownloads =
+      requestedMax === Number.POSITIVE_INFINITY
+        ? Number.POSITIVE_INFINITY
+        : Number.isFinite(requestedMax)
+          ? Math.max(1, Math.floor(requestedMax))
+          : DEFAULT_MAX_CONCURRENT_DOWNLOADS;
     const config: EndpointConfig =
       options.blobStoreDir === undefined
         ? { preset }

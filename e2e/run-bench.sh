@@ -146,13 +146,19 @@ kill -0 "$SERVER_PID" 2>/dev/null || fail "plan server did not start (see $ARTIF
 # the on-device dd runs with bs=1024 and no tail handling.
 MIX_MANIFEST="$SERVE_DIR/manifest-mix.txt"
 SINGLE_MANIFEST="$SERVE_DIR/manifest-single.txt"
+STRESS_MANIFEST="$SERVE_DIR/manifest-stress.txt"
 {
   for i in $(seq 0 59); do printf 'mix-300k-%02d.bin 307200\n' "$i"; done
   for i in $(seq 0 29); do printf 'mix-1m-%02d.bin 1048576\n' "$i"; done
   for i in $(seq 0 9); do printf 'mix-3m-%02d.bin 3145728\n' "$i"; done
 } > "$MIX_MANIFEST"
 printf 'single-100m.bin 104857600\n' > "$SINGLE_MANIFEST"
-cat "$MIX_MANIFEST" "$SINGLE_MANIFEST" > "$SERVE_DIR/manifest-all.txt"
+# Stress corpus: 12 equal 4MiB files. Downloaded with the default (omitted)
+# cap so all 12 are admitted at once; the app's BENCH: CONCURRENCY marker then
+# reports peakActive, the proof that the lifted cap and callback-completed
+# promises run all 12 transfers in parallel rather than serializing them.
+for i in $(seq 0 11); do printf 'stress-4m-%02d.bin 4194304\n' "$i"; done > "$STRESS_MANIFEST"
+cat "$MIX_MANIFEST" "$SINGLE_MANIFEST" "$STRESS_MANIFEST" > "$SERVE_DIR/manifest-all.txt"
 
 # Provisioning script: runs under `run-as` (cwd = app data dir), creates any
 # missing/wrong-sized source file from /dev/urandom.
@@ -314,8 +320,30 @@ run_bench "$DEVICE_A" mix-mcd4 4 manifest-mix.txt 10
 run_bench "$DEVICE_A" mix-mcd8 8 manifest-mix.txt 10
 run_bench "$DEVICE_A" mix-mcd1 1 manifest-mix.txt 10
 run_bench "$DEVICE_A" single-100m 4 manifest-single.txt 1
+# Cap-lift proof: 12 files, cap 32 (the new default) so none of them queue.
+run_bench "$DEVICE_A" stress-12 32 manifest-stress.txt 3
 if [ -n "$DEVICE_B" ]; then
   run_bench "$DEVICE_B" mix-mcd4-b 4 manifest-mix.txt 10
+fi
+
+# --- Cap-lift concurrency assertion (stress-12) ---------------------------
+# The stress run downloads 12 files with a cap of 32, so all are admitted at
+# once. Assert from the app's BENCH: CONCURRENCY marker that every download
+# reported progress and that many transfers were active simultaneously -
+# impossible under the old thread-blocking bridge, which pinned one native
+# pool thread per in-flight download.
+STRESS_LOG="$ARTIFACTS/bench-$DEVICE_A-stress-12.txt"
+if [ -f "$STRESS_LOG" ]; then
+  STRESS_CONC="$(grep "BENCH: CONCURRENCY" "$STRESS_LOG" | tail -1)"
+  stress_peak="$(printf '%s' "$STRESS_CONC" | sed -nE 's/.* peakActive=([0-9]+).*/\1/p')"
+  stress_progressed="$(printf '%s' "$STRESS_CONC" | sed -nE 's/.* progressed=([0-9]+).*/\1/p')"
+  log "stress-12 concurrency: ${STRESS_CONC:-<no CONCURRENCY marker>}"
+  if [ "${stress_progressed:-0}" -ne 12 ] || [ "${stress_peak:-0}" -lt 8 ]; then
+    log "ASSERT FAILED: stress-12 peakActive=${stress_peak:-?} progressed=${stress_progressed:-?} (want progressed=12, peakActive>=8)"
+    OVERALL=1
+  else
+    log "stress-12 cap-lift PASS: 12/12 progressed, peakActive=$stress_peak concurrent"
+  fi
 fi
 
 # --- Summary --------------------------------------------------------------
