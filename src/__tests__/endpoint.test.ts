@@ -117,6 +117,213 @@ describe("Endpoint identity and lifecycle", () => {
   });
 });
 
+describe("Endpoint.create relayMode", () => {
+  it("passes bare relay-mode keywords through as strings", async () => {
+    for (const relayMode of ["default", "disabled", "staging"] as const) {
+      const mock = createMockBinding();
+      await Endpoint.create({ relayMode }, mock.binding);
+      expect(mock.configs).toEqual([{ preset: "n0", relayMode }]);
+    }
+  });
+
+  it("serializes a custom relay list as a newline-delimited string", async () => {
+    const mock = createMockBinding();
+    await Endpoint.create(
+      { relayMode: { custom: ["https://a.example/", "https://b.example/"] } },
+      mock.binding,
+    );
+    expect(mock.configs).toEqual([
+      { preset: "n0", relayMode: "custom\nhttps://a.example/\nhttps://b.example/" },
+    ]);
+  });
+
+  it("omits relayMode from the config when not provided", async () => {
+    const mock = createMockBinding();
+    await Endpoint.create({ preset: "minimal" }, mock.binding);
+    expect(mock.configs).toEqual([{ preset: "minimal" }]);
+  });
+
+  it("rejects an empty custom relay list synchronously with a typed IrohError", async () => {
+    const mock = createMockBinding();
+    const error = expectIrohError(
+      await captureRejection(Endpoint.create({ relayMode: { custom: [] } }, mock.binding)),
+    );
+    expect(error.code).toBe(2000);
+    // Never reached native.
+    expect(mock.configs).toHaveLength(0);
+  });
+});
+
+describe("Endpoint.addr", () => {
+  it("parses the native JSON snapshot into a typed EndpointAddr", async () => {
+    const mock = createMockBinding();
+    mock.addrJson = JSON.stringify({
+      id: "endpoint-1",
+      relayUrls: ["https://relay.example/"],
+      directAddrs: ["127.0.0.1:5000", "[::1]:5000"],
+    });
+    const endpoint = await Endpoint.create({}, mock.binding);
+    expect(endpoint.addr).toEqual({
+      id: "endpoint-1",
+      relayUrls: ["https://relay.example/"],
+      directAddrs: ["127.0.0.1:5000", "[::1]:5000"],
+    });
+    expect(mock.addrCalls).toEqual([1]);
+  });
+
+  it("wraps native failures in a typed IrohError", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    mock.failures.endpointAddr = new Error("[iroh:1001] stale handle");
+    let caught: unknown;
+    try {
+      void endpoint.addr;
+    } catch (error) {
+      caught = error;
+    }
+    expect(expectIrohError(caught).kind).toBe("invalid-handle");
+  });
+});
+
+describe("Endpoint.watchAddr", () => {
+  const addrJson = (host: string): string =>
+    JSON.stringify({ id: "endpoint-1", relayUrls: [], directAddrs: [host] });
+
+  it("starts the native watch lazily and delivers parsed changes", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    expect(mock.watches).toHaveLength(0);
+
+    const seen: string[] = [];
+    endpoint.watchAddr((addr) => {
+      seen.push(addr.directAddrs[0] ?? "");
+    });
+    // First subscriber starts exactly one native watch.
+    expect(mock.watches).toHaveLength(1);
+    expect(mock.watches[0]!.endpoint).toBe(1);
+
+    mock.watches[0]!.onChange(addrJson("10.0.0.1:1"));
+    mock.watches[0]!.onChange(addrJson("10.0.0.2:2"));
+    expect(seen).toEqual(["10.0.0.1:1", "10.0.0.2:2"]);
+  });
+
+  it("shares one native watch across subscribers and stops it when the last detaches", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const first = endpoint.watchAddr(() => undefined);
+    const second = endpoint.watchAddr(() => undefined);
+    // Both share a single native subscription.
+    expect(mock.watches).toHaveLength(1);
+
+    first();
+    expect(mock.stoppedWatches).toEqual([]);
+    second();
+    // The last unsubscribe stops the native watch.
+    expect(mock.stoppedWatches).toEqual([1]);
+
+    // A later subscriber restarts a fresh native watch.
+    endpoint.watchAddr(() => undefined);
+    expect(mock.watches).toHaveLength(2);
+    expect(mock.watches[1]!.watchId).toBe(2);
+  });
+
+  it("ignores a malformed change payload without tearing the stream down", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const seen: string[] = [];
+    endpoint.watchAddr((addr) => seen.push(addr.directAddrs[0] ?? ""));
+    mock.watches[0]!.onChange("not json{");
+    mock.watches[0]!.onChange(addrJson("10.0.0.9:9"));
+    expect(seen).toEqual(["10.0.0.9:9"]);
+  });
+
+  it("unsubscribe is idempotent and does not double-stop the native watch", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const unsubscribe = endpoint.watchAddr(() => undefined);
+    unsubscribe();
+    unsubscribe();
+    expect(mock.stoppedWatches).toEqual([1]);
+  });
+
+  it("closing the endpoint stops the native watch", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    endpoint.watchAddr(() => undefined);
+    await endpoint.close();
+    expect(mock.stoppedWatches).toEqual([1]);
+  });
+
+  it("surfaces a watch-start failure by closing the stream with the error", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    mock.failures.watchAddr = new Error("[iroh:1001] stale handle");
+    // Listening triggers the (failing) native start; rather than hanging, the
+    // stream is closed with the typed error so consumers observe the failure.
+    endpoint.watchAddr(() => undefined);
+    const iterator = endpoint.addrChanges[Symbol.asyncIterator]();
+    const error = expectIrohError(await captureRejection(iterator.next()));
+    expect(error.kind).toBe("invalid-handle");
+    // Once the terminal error has been observed once, the stream is done.
+    expect((await iterator.next()).done).toBe(true);
+  });
+});
+
+describe("Endpoint.addrChanges", () => {
+  const addrJson = (host: string): string =>
+    JSON.stringify({ id: "endpoint-1", relayUrls: [], directAddrs: [host] });
+
+  it("conflates changes for a slow consumer and ends on close", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const iterator = endpoint.addrChanges[Symbol.asyncIterator]();
+    // Iterating is a subscriber: it starts the native watch.
+    expect(mock.watches).toHaveLength(1);
+
+    mock.watches[0]!.onChange(addrJson("1.1.1.1:1"));
+    mock.watches[0]!.onChange(addrJson("2.2.2.2:2"));
+    const first = await iterator.next();
+    expect(first.value?.directAddrs).toEqual(["2.2.2.2:2"]);
+
+    await endpoint.close();
+    expect((await iterator.next()).done).toBe(true);
+  });
+});
+
+describe("Endpoint.online", () => {
+  it("resolves when the native online wait resolves and passes the default timeout", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const pending = endpoint.online();
+    await flush();
+    expect(mock.onlineCalls).toHaveLength(1);
+    expect(mock.onlineCalls[0]!.timeoutMs).toBe(10_000);
+    mock.onlineCalls[0]!.deferred.resolve();
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it("forwards a custom timeout", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const pending = endpoint.online({ timeoutMs: 250 });
+    await flush();
+    expect(mock.onlineCalls[0]!.timeoutMs).toBe(250);
+    mock.onlineCalls[0]!.deferred.resolve();
+    await pending;
+  });
+
+  it("wraps a native timeout rejection in a typed IrohError", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const pending = endpoint.online({ timeoutMs: 5 });
+    await flush();
+    mock.onlineCalls[0]!.deferred.reject(new Error("[iroh:2000] did not come online"));
+    const error = expectIrohError(await captureRejection(pending));
+    expect(error.code).toBe(2000);
+    expect(error.kind).toBe("endpoint-bind");
+  });
+});
+
 describe("Endpoint.blobs.share", () => {
   it("resolves with the native ticket", async () => {
     const mock = createMockBinding();

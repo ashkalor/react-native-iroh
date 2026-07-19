@@ -225,11 +225,12 @@ Creates an endpoint: binds sockets and loads the blob store.
 
 `EndpointOptions` (all fields optional):
 
-| Option                   | Type                | Default   | Meaning                                                                                                                                                                                                                            |
-| ------------------------ | ------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `preset`                 | `"n0" \| "minimal"` | `"n0"`    | Which of iroh's endpoint presets to bind with. `n0` uses n0's relay and discovery infrastructure (production). `minimal` uses only the mandatory configuration: peers are only reachable via direct addresses embedded in tickets. |
-| `blobStoreDir`           | `string`            | in-memory | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                       |
-| `maxConcurrentDownloads` | `number`            | `4`       | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored, and non-finite values (`NaN`, `Infinity`) fall back to the default.     |
+| Option                   | Type                                                           | Default        | Meaning                                                                                                                                                                                                                                                              |
+| ------------------------ | -------------------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preset`                 | `"n0" \| "minimal"`                                            | `"n0"`         | Which of iroh's endpoint presets to bind with. `n0` uses n0's relay and discovery infrastructure (production). `minimal` uses only the mandatory configuration: peers are only reachable via direct addresses embedded in tickets.                                   |
+| `relayMode`              | `"default" \| "disabled" \| "staging" \| { custom: string[] }` | preset default | Overrides which relay servers the endpoint uses (discovery is left to the preset). `"disabled"` runs a LAN-only endpoint reachable only through direct addresses; `{ custom: [...] }` supplies HTTPS relay URLs (at least one). Omit to inherit the preset's relays. |
+| `blobStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                                         |
+| `maxConcurrentDownloads` | `number`                                                       | `4`            | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored, and non-finite values (`NaN`, `Infinity`) fall back to the default.                                       |
 
 `create` also accepts a second, advanced `binding` parameter (an
 `IrohBinding`) that substitutes the native module, primarily for tests.
@@ -243,6 +244,36 @@ code and stays valid after `close()`.
 #### `endpoint.isOpen: boolean`
 
 Whether the endpoint is live (created and not yet closed).
+
+#### `endpoint.addr: EndpointAddr`
+
+A synchronous snapshot of the endpoint's current address: its `id` plus the
+`relayUrls` and `directAddrs` (`host:port` strings) it is currently reachable
+through. The value evolves over time as relays connect and interfaces change;
+observe it live with `watchAddr` / `addrChanges`.
+
+#### `endpoint.watchAddr(listener): () => void`
+
+Subscribes to `EndpointAddr` changes. The listener fires with the current
+address soon after subscribing and again on each change. Returns an
+unsubscribe function (idempotent). The underlying native watch runs only while
+at least one subscriber (listener or `addrChanges` iterator) is attached, and
+is torn down on `close()`.
+
+#### `endpoint.addrChanges: AsyncIterable<EndpointAddr>`
+
+An `AsyncIterable` of address changes. Each `for await` gets an independent,
+latest-value-conflating iterator (a slow consumer observes only the newest
+address); iteration ends when the endpoint closes. Break out of the loop to
+detach early.
+
+#### `endpoint.online(options?): Promise<void>`
+
+Resolves once the endpoint has a connected home relay, rejecting with an
+`IrohError` (kind `"endpoint-bind"`) if the wait exceeds `options.timeoutMs`
+(default `DEFAULT_ONLINE_TIMEOUT_MS`, 10s). On relay-less endpoints
+(`relayMode: "disabled"`, or the `minimal` preset) no home relay can connect,
+so this always rejects on timeout.
 
 #### `endpoint.blobs.share(path: string): Promise<BlobTicket>`
 
@@ -291,9 +322,12 @@ Handle for one download started with `blobs.download`.
 | `cancel()`             | `() => void`                                                   | Requests cancellation. Idempotent and safe at any point: a queued transfer fails immediately with kind `"cancelled"`; an active transfer is cancelled natively and rejects with code `3003`. No-op after settling.                                                       |
 | `onProgress(listener)` | `(event: ProgressEvent) => void` listener; returns unsubscribe | Subscribes to progress events. Called synchronously on the JS thread with already-coalesced events, so keep it cheap. Subscribing after settling is a no-op.                                                                                                             |
 
-`ProgressEvent` has a single field, `bytesReceived`: cumulative payload
-bytes received so far, monotonically non-decreasing. The blob's total size
-is not reported in v0.1.0.
+`ProgressEvent` has `bytesReceived` (cumulative payload bytes received so far,
+monotonically non-decreasing) and an optional `totalBytes`. iroh's download
+stream reports only cumulative bytes with no advertised total, and this library
+does not add a pre-download size probe, so `totalBytes` is currently always
+`undefined`; the field is wired end-to-end so a future native total can flow
+through without an API change.
 
 ### IrohError
 
@@ -343,6 +377,8 @@ discriminated `code`/`kind` pairing).
 | `EndpointConfig`, `NetworkPreset`              | types         | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
 | `Blobs`, `DownloadOptions`, `AbortSignalLike`  | types         | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
 | `EndpointOptions`, `Transfer`, `ProgressEvent` | types         | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `EndpointAddr`, `RelayMode`                    | types         | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
+| `DEFAULT_ONLINE_TIMEOUT_MS`                    | `const` (10s) | Default timeout for `endpoint.online()`.                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## Performance
 

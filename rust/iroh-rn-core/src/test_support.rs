@@ -30,6 +30,7 @@ pub fn create_minimal_endpoint(blob_store_dir: Option<PathBuf>) -> EndpointHandl
     create_endpoint_blocking(EndpointConfig {
         preset: NetworkPreset::Minimal,
         blob_store_dir,
+        relay_mode: None,
     })
     .expect("endpoint created")
 }

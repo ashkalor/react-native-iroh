@@ -23,6 +23,20 @@ export interface EndpointConfig {
    * blobs in memory (they are lost when the endpoint closes).
    */
   blobStoreDir?: string;
+  /**
+   * Relay configuration, carried as a single delimited string (the Phase 2
+   * convention for structured bridge inputs, matching newline-joined paths):
+   *
+   * - the bare words `"default"`, `"disabled"`, or `"staging"` select a
+   *   preset relay map;
+   * - `"custom\n<url>\n<url>..."` (the literal tag `custom` followed by one
+   *   or more newline-separated HTTPS relay URLs) supplies a custom map.
+   *
+   * Omit to inherit the network preset's default relay behavior. When set it
+   * overrides the preset's relays while leaving discovery untouched. Parse
+   * failures surface as an endpoint-bind error (code 2000).
+   */
+  relayMode?: string;
 }
 
 /**
@@ -47,6 +61,37 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
   endpointId(endpoint: number): string;
   /** Whether `endpoint` refers to a live (not yet closed) endpoint. */
   isEndpointOpen(endpoint: number): boolean;
+  /**
+   * Returns the endpoint's current address as a JSON object string
+   * `{ id, relayUrls, directAddrs }` (see the `EndpointAddr` TS type).
+   * Synchronous: a snapshot of the latest observed address, no network I/O.
+   */
+  endpointAddr(endpoint: number): string;
+  /**
+   * Registers a watcher for the endpoint's address. `onStart` fires once,
+   * synchronously, with the watch's numeric handle (pass it to
+   * {@link stopWatchAddr}); `onChange` then fires with each new address as a
+   * JSON `EndpointAddr` string. Mirrors {@link downloadBlob}'s `onStart`
+   * (f64 handle) + {@link stopWatchAddr} (cancel by id) primitives. Throws
+   * (code 1001) if the endpoint handle is stale.
+   */
+  watchAddr(
+    endpoint: number,
+    onStart: (watchId: number) => void,
+    onChange: (addr: string) => void,
+  ): void;
+  /**
+   * Stops a watcher started with {@link watchAddr}, aborting its background
+   * task. Idempotent: stopping an already-stopped or unknown watch is a no-op.
+   */
+  stopWatchAddr(watchId: number): void;
+  /**
+   * Resolves once the endpoint has a connected home relay, or rejects (code
+   * 2000) if `timeoutMs` elapses first. On relay-less endpoints (the
+   * `disabled` relay mode, or a `minimal` preset) it always times out, since
+   * no home relay can ever connect.
+   */
+  endpointOnline(endpoint: number, timeoutMs: number): Promise<void>;
   /**
    * Closes an endpoint: shuts down its router, sockets and blob store. The
    * handle is invalid from this point on.

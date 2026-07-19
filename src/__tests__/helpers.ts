@@ -45,6 +45,21 @@ export interface DownloadCall {
   deferred: Deferred<void>;
 }
 
+/** One recorded native watchAddr subscription, drivable by the test. */
+export interface WatchCall {
+  endpoint: number;
+  watchId: number;
+  onStart: (watchId: number) => void;
+  onChange: (addr: string) => void;
+}
+
+/** One recorded native endpointOnline call, resolvable by the test. */
+export interface OnlineCall {
+  endpoint: number;
+  timeoutMs: number;
+  deferred: Deferred<void>;
+}
+
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
@@ -56,6 +71,12 @@ export interface MockBinding {
   shareCollectionCalls: { endpoint: number; pathsJoined: string }[];
   manifestCalls: { endpoint: number; ticket: string }[];
   parseTicketCalls: string[];
+  addrCalls: number[];
+  watches: WatchCall[];
+  stoppedWatches: number[];
+  onlineCalls: OnlineCall[];
+  /** JSON string that {@link IrohBinding.endpointAddr} returns. */
+  addrJson: string;
   /** Ticket string that {@link IrohBinding.shareCollection} resolves with. */
   collectionTicket: string;
   /** JSON that {@link IrohBinding.collectionManifest} resolves with. */
@@ -66,6 +87,9 @@ export interface MockBinding {
   failures: {
     createEndpoint?: Error;
     isEndpointOpen?: Error;
+    endpointAddr?: Error;
+    watchAddr?: Error;
+    endpointOnline?: Error;
     closeEndpoint?: Error;
     shareBlob?: Error;
     shareCollection?: Error;
@@ -77,6 +101,7 @@ export interface MockBinding {
 /** Builds a fully controllable in-memory implementation of the native bridge. */
 export function createMockBinding(): MockBinding {
   let nextHandle = 1;
+  let nextWatchId = 1;
   const open = new Set<number>();
   const mock: MockBinding = {
     binding: {
@@ -99,6 +124,34 @@ export function createMockBinding(): MockBinding {
           throw mock.failures.isEndpointOpen;
         }
         return open.has(endpoint);
+      },
+      endpointAddr: (endpoint) => {
+        mock.addrCalls.push(endpoint);
+        if (mock.failures.endpointAddr !== undefined) {
+          throw mock.failures.endpointAddr;
+        }
+        return mock.addrJson;
+      },
+      watchAddr: (endpoint, onStart, onChange) => {
+        if (mock.failures.watchAddr !== undefined) {
+          throw mock.failures.watchAddr;
+        }
+        const watchId = nextWatchId;
+        nextWatchId += 1;
+        mock.watches.push({ endpoint, watchId, onStart, onChange });
+        // Native watchAddr delivers the subscription id synchronously.
+        onStart(watchId);
+      },
+      stopWatchAddr: (watchId) => {
+        mock.stoppedWatches.push(watchId);
+      },
+      endpointOnline: (endpoint, timeoutMs) => {
+        if (mock.failures.endpointOnline !== undefined) {
+          return Promise.reject(mock.failures.endpointOnline);
+        }
+        const call: OnlineCall = { endpoint, timeoutMs, deferred: deferred<void>() };
+        mock.onlineCalls.push(call);
+        return call.deferred.promise;
       },
       closeEndpoint: (endpoint) => {
         mock.closeCalls.push(endpoint);
@@ -161,6 +214,15 @@ export function createMockBinding(): MockBinding {
     shareCollectionCalls: [],
     manifestCalls: [],
     parseTicketCalls: [],
+    addrCalls: [],
+    watches: [],
+    stoppedWatches: [],
+    onlineCalls: [],
+    addrJson: JSON.stringify({
+      id: "endpoint-1",
+      relayUrls: [],
+      directAddrs: ["127.0.0.1:1234"],
+    }),
     collectionTicket: `blob${"c".repeat(56)}`,
     manifestJson: "[]",
     ticketInfo: { hash: "a".repeat(64), format: "raw", nodeId: "node-mock" },

@@ -1,4 +1,5 @@
 import { IrohError } from "./errors";
+import { Watchable } from "./watchable";
 
 /**
  * A single progress report for an in-flight download.
@@ -6,9 +7,16 @@ import { IrohError } from "./errors";
 export interface ProgressEvent {
   /**
    * Cumulative payload bytes received so far. Monotonically non-decreasing.
-   * The blob's total size is unknown in v0.1.0.
    */
   readonly bytesReceived: number;
+  /**
+   * The transfer's total size in bytes, when known. iroh's download stream
+   * reports only cumulative bytes (no advertised total), and this library does
+   * not add a pre-download size probe, so this is currently always
+   * `undefined`. The field is wired end-to-end so a future native total can
+   * flow through without an API change.
+   */
+  readonly totalBytes?: number;
 }
 
 /**
@@ -104,93 +112,18 @@ type StartDownload = (
   onProgress: (bytesReceived: number) => void,
 ) => Promise<void>;
 
-interface Waiter {
-  resolve(result: IteratorResult<ProgressEvent, undefined>): void;
-  reject(error: IrohError): void;
-}
-
-const DONE: IteratorReturnResult<undefined> = { value: undefined, done: true };
-
-/**
- * Latest-value-conflating async iterator over a transfer's progress stream.
- * At most one undelivered event is retained per iterator; a newer event
- * overwrites it. Pending `next()` calls are resolved in FIFO order.
- */
-class ProgressIterator implements AsyncIterableIterator<ProgressEvent> {
-  private pending: ProgressEvent | null = null;
-  private readonly waiters: Waiter[] = [];
-  private terminal: { error: IrohError | null } | null = null;
-  private errorDelivered = false;
-
-  constructor(private readonly detach: () => void) {}
-
-  /** Delivers an event: hands it to the oldest waiter, or conflates. */
-  push(event: ProgressEvent): void {
-    const waiter = this.waiters.shift();
-    if (waiter === undefined) {
-      this.pending = event;
-      return;
-    }
-    waiter.resolve({ value: event, done: false });
-  }
-
-  /** Marks the stream terminal; the first waiter observes a failure, the rest end. */
-  finish(error: IrohError | null): void {
-    if (this.terminal !== null) {
-      return;
-    }
-    this.terminal = { error };
-    for (const waiter of this.waiters.splice(0)) {
-      if (error !== null && !this.errorDelivered) {
-        this.errorDelivered = true;
-        waiter.reject(error);
-      } else {
-        waiter.resolve(DONE);
-      }
-    }
-  }
-
-  next(): Promise<IteratorResult<ProgressEvent, undefined>> {
-    if (this.pending !== null) {
-      const event = this.pending;
-      this.pending = null;
-      return Promise.resolve({ value: event, done: false });
-    }
-    if (this.terminal !== null) {
-      if (this.terminal.error !== null && !this.errorDelivered) {
-        this.errorDelivered = true;
-        return Promise.reject(this.terminal.error);
-      }
-      return Promise.resolve(DONE);
-    }
-    return new Promise<IteratorResult<ProgressEvent, undefined>>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
-  }
-
-  return(): Promise<IteratorResult<ProgressEvent, undefined>> {
-    this.detach();
-    this.pending = null;
-    if (this.terminal === null) {
-      this.terminal = { error: null };
-    }
-    for (const waiter of this.waiters.splice(0)) {
-      waiter.resolve(DONE);
-    }
-    return Promise.resolve(DONE);
-  }
-
-  [Symbol.asyncIterator](): AsyncIterableIterator<ProgressEvent> {
-    return this;
-  }
-}
-
 /**
  * The progress fan-out shared by every transfer: the settlement Promise
  * (`promise` / `done`), the callback listeners, and the conflating async
  * iterators. It owns the `Transfer` "read side" so that both a single-blob
  * {@link TransferController} and an aggregate {@link CollectionTransfer} share
  * one implementation of it rather than each reimplementing the plumbing.
+ *
+ * This is the terminal decorator over the generic {@link Watchable}: the
+ * watchable supplies the reused push / conflate / detach machinery, and this
+ * class adds the once-only settlement (resolve on success, reject with an
+ * {@link IrohError} on failure) that a progress stream needs and an address
+ * stream does not.
  *
  * Not part of the public API surface.
  */
@@ -202,9 +135,7 @@ class ProgressHub {
   private resolvePromise!: () => void;
   private rejectPromise!: (error: IrohError) => void;
   private settled = false;
-  private terminalError: IrohError | null = null;
-  private readonly listeners = new Set<(event: ProgressEvent) => void>();
-  private readonly iterators = new Set<ProgressIterator>();
+  private readonly watchable = new Watchable<ProgressEvent>();
 
   constructor() {
     this.promise = new Promise<void>((resolve, reject) => {
@@ -216,9 +147,7 @@ class ProgressHub {
     // their own handler to `promise` to avoid unhandled-rejection noise.
     this.promise.catch(() => undefined);
     this.done = this.promise;
-    this.progress = {
-      [Symbol.asyncIterator]: () => this.createIterator(),
-    };
+    this.progress = this.watchable.stream;
   }
 
   get isSettled(): boolean {
@@ -226,34 +155,12 @@ class ProgressHub {
   }
 
   onProgress(listener: (event: ProgressEvent) => void): () => void {
-    if (this.settled) {
-      return () => undefined;
-    }
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return this.watchable.listen(listener);
   }
 
   /** Delivers a progress event to every listener and iterator. */
   dispatch(event: ProgressEvent): void {
-    if (this.settled) {
-      return;
-    }
-    // Set iteration tolerates delete-during-iteration, so an unsubscribe (or
-    // iterator detach) from inside a callback needs no defensive copy.
-    for (const listener of this.listeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        // A throwing listener must not break other consumers or the native
-        // callback; surface it without propagating.
-        console.error("react-native-iroh: onProgress listener threw", error);
-      }
-    }
-    for (const iterator of this.iterators) {
-      iterator.push(event);
-    }
+    this.watchable.push(event);
   }
 
   /** Terminates the stream: resolves on success, rejects with `error`. */
@@ -262,30 +169,12 @@ class ProgressHub {
       return;
     }
     this.settled = true;
-    this.terminalError = error;
-    this.listeners.clear();
-    const iterators = [...this.iterators];
-    this.iterators.clear();
-    for (const iterator of iterators) {
-      iterator.finish(error);
-    }
+    this.watchable.close(error);
     if (error !== null) {
       this.rejectPromise(error);
     } else {
       this.resolvePromise();
     }
-  }
-
-  private createIterator(): ProgressIterator {
-    const iterator = new ProgressIterator(() => {
-      this.iterators.delete(iterator);
-    });
-    if (this.settled) {
-      iterator.finish(this.terminalError);
-    } else {
-      this.iterators.add(iterator);
-    }
-    return iterator;
   }
 }
 

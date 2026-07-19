@@ -1,10 +1,12 @@
-export { DEFAULT_MAX_CONCURRENT_DOWNLOADS, Endpoint } from "./endpoint";
+export { DEFAULT_MAX_CONCURRENT_DOWNLOADS, DEFAULT_ONLINE_TIMEOUT_MS, Endpoint } from "./endpoint";
 export type {
   AbortSignalLike,
   Blobs,
   DownloadOptions,
+  EndpointAddr,
   EndpointId,
   EndpointOptions,
+  RelayMode,
 } from "./endpoint";
 export { getIrohErrorCode, IrohError } from "./errors";
 export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";

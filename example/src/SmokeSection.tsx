@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { Endpoint, IrohError, parseTicket } from "react-native-iroh";
+import type { EndpointAddr } from "react-native-iroh";
 import { smokeAborted, smokeReport, smokeResult } from "./markers";
 import { FILES_DIR, SYSTEM_FILE_CANDIDATES, shareFirstReadable } from "./paths";
 import { sectionStyles } from "./theme";
@@ -25,21 +26,67 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
     }
   };
 
+  // relayMode "disabled" runs a relay-less LAN endpoint: peers are reachable
+  // only through the direct addresses embedded in tickets.
   const provider = await Endpoint.create({
     preset: "minimal",
+    relayMode: "disabled",
     blobStoreDir: `${FILES_DIR}/iroh-smoke/provider-store`,
   });
-  check("Endpoint.create provider", provider.isOpen, "provider endpoint open");
+  check("Endpoint.create provider", provider.isOpen, "provider endpoint (relay disabled) open");
   const receiver = await Endpoint.create({
     preset: "minimal",
+    relayMode: "disabled",
     blobStoreDir: `${FILES_DIR}/iroh-smoke/receiver-store`,
   });
-  check("Endpoint.create receiver", receiver.isOpen, "receiver endpoint open");
+  check("Endpoint.create receiver", receiver.isOpen, "receiver endpoint (relay disabled) open");
 
   check(
     "endpoint id",
     provider.id.length > 0 && receiver.id.length > 0 && provider.id !== receiver.id,
     `provider=${provider.id.slice(0, 12)}... receiver=${receiver.id.slice(0, 12)}...`,
+  );
+
+  // Observability: the address snapshot is consistent with the id, and a
+  // relay-disabled endpoint reports no home relays.
+  const addr = provider.addr;
+  check(
+    "endpoint addr",
+    addr.id === provider.id && addr.relayUrls.length === 0,
+    `id matches, relays=${addr.relayUrls.length}, direct=${addr.directAddrs.length}`,
+  );
+
+  // watchAddr delivers the current address soon after subscribing.
+  const firstAddr = await new Promise<EndpointAddr | null>((resolve) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(null);
+    }, 3000);
+    const unsubscribe = provider.watchAddr((next) => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(next);
+    });
+  });
+  check(
+    "endpoint watchAddr",
+    firstAddr !== null && firstAddr.id === provider.id,
+    firstAddr === null ? "no address delivered" : `observed id ${firstAddr.id.slice(0, 12)}...`,
+  );
+
+  // online() on a relay-disabled endpoint can never connect a home relay, so
+  // it rejects on timeout (endpoint-bind). That rejection is the status line.
+  let onlineOutcome = "resolved";
+  try {
+    await provider.online({ timeoutMs: 500 });
+  } catch (error) {
+    onlineOutcome =
+      error instanceof IrohError ? `rejected (${error.kind})` : `rejected (${String(error)})`;
+  }
+  check(
+    "endpoint online (no relay)",
+    onlineOutcome === "rejected (endpoint-bind)",
+    `relay disabled -> ${onlineOutcome}`,
   );
 
   const attempt = await shareFirstReadable(provider, SYSTEM_FILE_CANDIDATES);

@@ -55,6 +55,10 @@ namespace margelo::nitro::iroh {
       virtual std::shared_ptr<Promise<double>> createEndpoint(const EndpointConfig& config) = 0;
       virtual std::string endpointId(double endpoint) = 0;
       virtual bool isEndpointOpen(double endpoint) = 0;
+      virtual std::string endpointAddr(double endpoint) = 0;
+      virtual void watchAddr(double endpoint, const std::function<void(double /* watchId */)>& onStart, const std::function<void(const std::string& /* addr */)>& onChange) = 0;
+      virtual void stopWatchAddr(double watchId) = 0;
+      virtual std::shared_ptr<Promise<void>> endpointOnline(double endpoint, double timeoutMs) = 0;
       virtual std::shared_ptr<Promise<void>> closeEndpoint(double endpoint) = 0;
       virtual std::shared_ptr<Promise<std::string>> shareBlob(double endpoint, const std::string& path) = 0;
       virtual std::shared_ptr<Promise<void>> downloadBlob(double endpoint, const std::string& ticket, const std::string& destPath, const std::function<void(double /* transferId */)>& onStart, const std::function<void(double /* bytesReceived */)>& onProgress) = 0;

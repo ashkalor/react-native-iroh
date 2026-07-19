@@ -44,10 +44,11 @@ namespace margelo::nitro::iroh {
   public:
     NetworkPreset preset     SWIFT_PRIVATE;
     std::optional<std::string> blobStoreDir     SWIFT_PRIVATE;
+    std::optional<std::string> relayMode     SWIFT_PRIVATE;
 
   public:
     EndpointConfig() = default;
-    explicit EndpointConfig(NetworkPreset preset, std::optional<std::string> blobStoreDir): preset(preset), blobStoreDir(blobStoreDir) {}
+    explicit EndpointConfig(NetworkPreset preset, std::optional<std::string> blobStoreDir, std::optional<std::string> relayMode): preset(preset), blobStoreDir(blobStoreDir), relayMode(relayMode) {}
 
   public:
     friend bool operator==(const EndpointConfig& lhs, const EndpointConfig& rhs) = default;
@@ -64,13 +65,15 @@ namespace margelo::nitro {
       jsi::Object obj = arg.asObject(runtime);
       return margelo::nitro::iroh::EndpointConfig(
         JSIConverter<margelo::nitro::iroh::NetworkPreset>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "preset"))),
-        JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir")))
+        JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir"))),
+        JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "relayMode")))
       );
     }
     static inline jsi::Value toJSI(jsi::Runtime& runtime, const margelo::nitro::iroh::EndpointConfig& arg) {
       jsi::Object obj(runtime);
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "preset"), JSIConverter<margelo::nitro::iroh::NetworkPreset>::toJSI(runtime, arg.preset));
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir"), JSIConverter<std::optional<std::string>>::toJSI(runtime, arg.blobStoreDir));
+      obj.setProperty(runtime, PropNameIDCache::get(runtime, "relayMode"), JSIConverter<std::optional<std::string>>::toJSI(runtime, arg.relayMode));
       return obj;
     }
     static inline bool canConvert(jsi::Runtime& runtime, const jsi::Value& value) {
@@ -83,6 +86,7 @@ namespace margelo::nitro {
       }
       if (!JSIConverter<margelo::nitro::iroh::NetworkPreset>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "preset")))) return false;
       if (!JSIConverter<std::optional<std::string>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "blobStoreDir")))) return false;
+      if (!JSIConverter<std::optional<std::string>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "relayMode")))) return false;
       return true;
     }
   };
