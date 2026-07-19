@@ -41,13 +41,22 @@ jobs:
       - name: Install npm dependencies (bun)
         run: bun install --frozen-lockfile
 
+      # Publishing uses npm trusted publishing (OIDC): no token secret exists.
+      # The @semantic-release/npm plugin shells out to npm, which needs
+      # npm >= 11.5.1 on Node >= 22.14 for OIDC exchange.
+      - name: Setup Node for OIDC publish
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Ensure OIDC-capable npm
+        run: npm install -g npm@11 && npm --version
+
       - name: Build lib
         run: bun run build
 
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           GIT_AUTHOR_NAME: ${{ github.actor }}
           GIT_AUTHOR_EMAIL: "${{ github.actor }}@users.noreply.github.com"
