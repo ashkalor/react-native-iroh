@@ -277,30 +277,42 @@ if printf '%s\n' "$COLLECTION" | grep -q "^E2E: FAIL collection-"; then
 fi
 
 # --- Gossip chat roundtrip ------------------------------------------------
-# Two-device gossip: A joins the shared topic (empty bootstrap) and logs its
-# address via "E2E: GOSSIP_ADDR ..."; the harness extracts it (like the ticket
-# hand-off above) and hands it to B as the bootstrap peer through a Maestro env
-# var. Both broadcast on the topic and each asserts it received the peer's
-# message ("E2E: PASS gossip-roundtrip"). Both flows run concurrently so the
-# broadcasts overlap; gossip is not store-and-forward, so a peer must be present
-# when a message is sent. Skipped in single-device loopback (a swarm needs two
-# distinct endpoints reachable through the relay).
+# Two-device gossip: A joins the shared topic (empty bootstrap) and logs a
+# dialable address via "E2E: GOSSIP_ADDR ..."; the harness extracts it (like the
+# ticket hand-off above) and hands it to B as the bootstrap peer through a
+# Maestro env var. Both flows drive a sustained series of broadcasts, running
+# concurrently (A in the background) so the pings overlap. Each device's app
+# emits "E2E: PASS gossip-roundtrip" when the peer's message arrives; the
+# roundtrip is asserted from that logcat marker, NOT from an in-flow visual
+# receive-gate (which A, joining first, can never satisfy during its own run).
+# A's app keeps its subscription alive after its flow ends, so late pings from B
+# still land. Skipped in single-device loopback (a swarm needs two distinct
+# endpoints reachable through the relay).
 
 if [ "$DEVICE_B" != "$DEVICE_A" ]; then
   "$ADB" -s "$DEVICE_A" logcat -c
   "$ADB" -s "$DEVICE_B" logcat -c
+  # Maestro floods logcat with view-hierarchy spam during the gossip flow's many
+  # taps and scrolls, which evicts the app's "E2E: GOSSIP_ADDR"/roundtrip markers
+  # from the small default ring buffer (256 KiB) before we can read them. Grow
+  # both devices' buffers so the markers survive the whole stanza.
+  "$ADB" -s "$DEVICE_A" logcat -G 16M 2>/dev/null || true
+  "$ADB" -s "$DEVICE_B" logcat -G 16M 2>/dev/null || true
   log "driving gossip chat: A joins and publishes its address"
 
-  # A joins with no bootstrap (in the background) and keeps chatting; its
-  # address is logged during the join step and picked up below.
+  # A joins with no bootstrap (in the background) and keeps pinging; its address
+  # is logged during the join step and picked up below.
   run_flow "$DEVICE_A" gossip -e "BOOTSTRAP=" "$E2E_DIR/flows/gossip.yaml" &
   A_GOSSIP_PID=$!
 
-  # Wait for A's address to appear on its logcat, then hand it to B.
+  # Wait for A to publish a *dialable* address: one carrying a relay (or direct)
+  # transport, not the bare pre-online id. Two emulators are NAT-isolated and
+  # reach each other only through the relay, so the address must include it.
   GOSSIP_ADDR=""
-  for _ in $(seq 1 60); do
+  for _ in $(seq 1 90); do
     GOSSIP_ADDR="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' \
-      | grep "E2E: GOSSIP_ADDR " | tail -1 | sed 's/.*E2E: GOSSIP_ADDR //')"
+      | grep "E2E: GOSSIP_ADDR " | sed 's/.*E2E: GOSSIP_ADDR //' \
+      | grep -E '"(relayUrls|directAddrs)":\["[^]]' | tail -1)"
     [ -n "$GOSSIP_ADDR" ] && break
     sleep 2
   done
@@ -308,7 +320,7 @@ if [ "$DEVICE_B" != "$DEVICE_A" ]; then
     '{'*'}') log "gossip bootstrap addr extracted (${#GOSSIP_ADDR} chars)" ;;
     *)
       wait "$A_GOSSIP_PID" 2>/dev/null || true
-      fail "could not extract E2E: GOSSIP_ADDR from $DEVICE_A logcat"
+      fail "could not extract a dialable E2E: GOSSIP_ADDR from $DEVICE_A logcat"
       ;;
   esac
 
@@ -317,10 +329,20 @@ if [ "$DEVICE_B" != "$DEVICE_A" ]; then
     || { wait "$A_GOSSIP_PID" 2>/dev/null || true; fail "gossip flow failed on $DEVICE_B"; }
   wait "$A_GOSSIP_PID" || fail "gossip flow failed on $DEVICE_A"
 
+  # Poll both devices for the roundtrip marker: the mesh/relay may need a little
+  # warm-up after the taps, and A's app keeps receiving after its flow ended.
+  log "waiting for gossip-roundtrip on both devices"
+  for _ in $(seq 1 45); do
+    a_pass="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' | grep -c "E2E: PASS gossip-roundtrip")"
+    b_pass="$("$ADB" -s "$DEVICE_B" logcat -d | tr -d '\r' | grep -c "E2E: PASS gossip-roundtrip")"
+    [ "$a_pass" -gt 0 ] && [ "$b_pass" -gt 0 ] && break
+    sleep 2
+  done
+
   for d in "$DEVICE_A" "$DEVICE_B"; do
     GOSSIP="$("$ADB" -s "$d" logcat -d | tr -d '\r' | grep -oE "E2E: (PASS|FAIL) gossip-.*")"
     log "----- gossip markers ($d) -----"
-    printf '%s\n' "$GOSSIP"
+    printf '%s\n' "$GOSSIP" | grep -E "gossip-roundtrip|gossip-join" | sort -u
     log "-------------------------------"
     printf '%s\n' "$GOSSIP" | grep -q "^E2E: PASS gossip-roundtrip" \
       || fail "gossip roundtrip did not pass on $d"

@@ -7,7 +7,7 @@ import {
   type GossipMessage,
   type GossipSubscription,
 } from "react-native-iroh";
-import { e2eGossipAddr, e2eReport } from "./markers";
+import { e2eEvent, e2eGossipAddr, e2eReport } from "./markers";
 import { sectionStyles } from "./theme";
 
 /** The fixed topic both devices join in the e2e chat roundtrip. */
@@ -37,10 +37,15 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     setState({ phase: "joining" });
     setLog([]);
     reportedRoundtrip.current = false;
+    // Confirm onJoin was reached (independent of anything below).
+    e2eEvent("GOSSIP_JOIN");
     try {
-      // On the n0 preset, wait (bounded) for a dialable address before
-      // publishing it, so a bootstrapping peer can reach us through the relay.
-      await endpoint.online().catch(() => undefined);
+      // Publish the address immediately: `endpoint.addr` is a synchronous
+      // snapshot, so the marker never hangs on a slow relay. Then wait (bounded)
+      // for a dialable relay address and publish the fuller one a bootstrapping
+      // peer can reach us through; the harness picks the relay-carrying line.
+      e2eGossipAddr(JSON.stringify(endpoint.addr));
+      await endpoint.online({ timeoutMs: 20_000 }).catch(() => undefined);
       e2eGossipAddr(JSON.stringify(endpoint.addr));
 
       let peers: EndpointAddr[] | undefined;
