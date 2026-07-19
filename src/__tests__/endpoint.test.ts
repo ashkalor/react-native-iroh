@@ -456,3 +456,155 @@ describe("Endpoint download queue", () => {
     expect(mock.downloads).toHaveLength(1);
   });
 });
+
+describe("Endpoint.blobs.shareCollection", () => {
+  it("joins paths with newlines and resolves with the native ticket", async () => {
+    const mock = createMockBinding();
+    mock.collectionTicket = testTicket("coll");
+    const endpoint = await Endpoint.create({}, mock.binding);
+    await expect(endpoint.blobs.shareCollection(["/a.bin", "/b.bin"])).resolves.toBe(
+      testTicket("coll"),
+    );
+    expect(mock.shareCollectionCalls).toEqual([{ endpoint: 1, pathsJoined: "/a.bin\n/b.bin" }]);
+  });
+
+  it("rejects with a typed IrohError on native failure", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    mock.failures.shareCollection = new Error("[iroh:3000] import failed");
+    const error = expectIrohError(await captureRejection(endpoint.blobs.shareCollection(["/a"])));
+    expect(error.code).toBe(3000);
+    expect(error.kind).toBe("blob-import");
+  });
+});
+
+describe("Endpoint.blobs.downloadCollection", () => {
+  function setManifest(mock: ReturnType<typeof createMockBinding>): void {
+    mock.manifestJson = JSON.stringify([
+      { name: "a.bin", ticket: testTicket("childa") },
+      { name: "b.bin", ticket: testTicket("childb") },
+    ]);
+  }
+
+  it("downloads each child to destDir/name and aggregates progress and files", async () => {
+    const mock = createMockBinding();
+    setManifest(mock);
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest/");
+    await flush();
+    expect(mock.manifestCalls).toEqual([{ endpoint: 1, ticket: testTicket("coll") }]);
+    // A trailing slash on destDir is normalized away before joining names.
+    expect(mock.downloads.map((call) => call.destPath)).toEqual(["/dest/a.bin", "/dest/b.bin"]);
+
+    const aggregate: number[] = [];
+    transfer.onProgress((event) => aggregate.push(event.bytesReceived));
+    mock.downloads[0]!.onProgress(10);
+    mock.downloads[1]!.onProgress(5);
+    expect(transfer.files).toEqual([
+      { name: "a.bin", bytesReceived: 10, done: false },
+      { name: "b.bin", bytesReceived: 5, done: false },
+    ]);
+    expect(aggregate[aggregate.length - 1]).toBe(15);
+
+    mock.downloads[0]!.deferred.resolve();
+    mock.downloads[1]!.deferred.resolve();
+    await transfer.done;
+    expect(transfer.isSettled).toBe(true);
+    expect(transfer.files.every((file) => file.done)).toBe(true);
+  });
+
+  it("completes immediately for an empty collection", async () => {
+    const mock = createMockBinding();
+    mock.manifestJson = "[]";
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+    await transfer.done;
+    expect(transfer.isSettled).toBe(true);
+    expect(transfer.files).toEqual([]);
+    expect(mock.downloads).toHaveLength(0);
+  });
+
+  it("fans children out through the shared download queue (honors the cap)", async () => {
+    const mock = createMockBinding();
+    mock.manifestJson = JSON.stringify([
+      { name: "a", ticket: testTicket("ca") },
+      { name: "b", ticket: testTicket("cb") },
+      { name: "c", ticket: testTicket("cc") },
+    ]);
+    const endpoint = await Endpoint.create({ maxConcurrentDownloads: 2 }, mock.binding);
+    endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+    await flush();
+    expect(mock.downloads).toHaveLength(2);
+  });
+
+  it("fails the whole collection and cancels remaining children on a child error", async () => {
+    const mock = createMockBinding();
+    setManifest(mock);
+    const endpoint = await Endpoint.create(
+      { maxConcurrentDownloads: Number.POSITIVE_INFINITY },
+      mock.binding,
+    );
+    const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+    await flush();
+    mock.downloads[0]!.onStart(1);
+    mock.downloads[1]!.onStart(2);
+    mock.downloads[0]!.deferred.reject(new Error("[iroh:3001] boom"));
+    const error = expectIrohError(await captureRejection(transfer.done));
+    expect(error.code).toBe(3001);
+    // The still-running sibling is cancelled natively.
+    expect(mock.cancelled).toContain(2);
+  });
+
+  it("cancel before the manifest resolves settles as cancelled and starts no children", async () => {
+    const mock = createMockBinding();
+    setManifest(mock);
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+    // Cancel synchronously, before the (async) manifest fetch resolves.
+    transfer.cancel();
+    const error = expectIrohError(await captureRejection(transfer.done));
+    expect(error.code).toBe(3003);
+    expect(error.kind).toBe("cancelled");
+    await flush();
+    expect(mock.downloads).toHaveLength(0);
+  });
+
+  it("throws synchronously on a malformed collection ticket", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    let caught: unknown;
+    try {
+      endpoint.blobs.downloadCollection("definitely-not-a-ticket", "/dest");
+    } catch (error) {
+      caught = error;
+    }
+    const error = expectIrohError(caught);
+    expect(error.code).toBe(1002);
+    expect(mock.manifestCalls).toHaveLength(0);
+  });
+
+  it("rejects with a typed IrohError when the manifest fetch fails", async () => {
+    const mock = createMockBinding();
+    mock.failures.collectionManifest = new Error("[iroh:3001] connect failed");
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+    const error = expectIrohError(await captureRejection(transfer.done));
+    expect(error.code).toBe(3001);
+    expect(mock.downloads).toHaveLength(0);
+  });
+
+  it("an already-aborted signal cancels the collection before any child starts", async () => {
+    const mock = createMockBinding();
+    setManifest(mock);
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const controller = new AbortController();
+    controller.abort();
+    const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest", {
+      signal: controller.signal,
+    });
+    const error = expectIrohError(await captureRejection(transfer.done));
+    expect(error.code).toBe(3003);
+    await flush();
+    expect(mock.downloads).toHaveLength(0);
+  });
+});

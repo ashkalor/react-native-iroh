@@ -10,9 +10,9 @@ export { getIrohErrorCode, IrohError } from "./errors";
 export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";
 export type { IrohBinding } from "./native";
 export type { EndpointConfig, Iroh as IrohSpec, NetworkPreset } from "./specs/iroh.nitro";
-export { parseTicket } from "./ticket";
-export type { BlobTicket } from "./ticket";
-export type { ProgressEvent, Transfer } from "./transfer";
+export { parseTicket, validateTicketShape } from "./ticket";
+export type { BlobFormat, BlobTicket, TicketInfo } from "./ticket";
+export type { CollectionTransfer, FileProgress, ProgressEvent, Transfer } from "./transfer";
 export { IROH_VERSION } from "./version";
 
 /**

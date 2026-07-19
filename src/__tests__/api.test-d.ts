@@ -8,9 +8,9 @@ import type { EndpointId, EndpointOptions } from "../endpoint";
 import { getIrohErrorCode, IrohError } from "../errors";
 import type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "../errors";
 import type { IrohBinding } from "../native";
-import { parseTicket } from "../ticket";
-import type { BlobTicket } from "../ticket";
-import type { ProgressEvent, Transfer } from "../transfer";
+import { parseTicket, validateTicketShape } from "../ticket";
+import type { BlobFormat, BlobTicket, TicketInfo } from "../ticket";
+import type { CollectionTransfer, FileProgress, ProgressEvent, Transfer } from "../transfer";
 import { IROH_VERSION } from "../version";
 
 type Equal<A, B> =
@@ -51,12 +51,28 @@ export type Cases = [
   // Blobs namespace.
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["share"]>, Promise<BlobTicket>>>,
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["download"]>, Transfer>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["shareCollection"]>, Promise<BlobTicket>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["downloadCollection"]>, CollectionTransfer>>,
   // Branded strings: usable as strings, but plain strings do not brand.
   Expect<EndpointId extends string ? true : false>,
   Expect<BlobTicket extends string ? true : false>,
   Expect<Equal<string extends EndpointId ? true : false, false>>,
   Expect<Equal<string extends BlobTicket ? true : false, false>>,
-  Expect<Equal<ReturnType<typeof parseTicket>, BlobTicket>>,
+  // Ticket introspection.
+  Expect<Equal<ReturnType<typeof parseTicket>, TicketInfo>>,
+  Expect<Equal<ReturnType<typeof validateTicketShape>, BlobTicket>>,
+  Expect<Equal<TicketInfo["hash"], string>>,
+  Expect<Equal<TicketInfo["format"], BlobFormat>>,
+  Expect<Equal<TicketInfo["nodeId"], string>>,
+  Expect<Equal<TicketInfo["size"], number | undefined>>,
+  Expect<Equal<BlobFormat, "raw" | "hashSeq">>,
+  // Collection transfer: aggregate Transfer plus a per-file breakdown.
+  Expect<CollectionTransfer extends Transfer ? true : false>,
+  Expect<Equal<CollectionTransfer["files"], FileProgress[]>>,
+  Expect<Equal<FileProgress["name"], string>>,
+  Expect<Equal<FileProgress["bytesReceived"], number>>,
+  Expect<Equal<FileProgress["totalBytes"], number | undefined>>,
+  Expect<Equal<FileProgress["done"], boolean>>,
   // Version constant.
   Expect<typeof IROH_VERSION extends string ? true : false>,
   Expect<NotAny<typeof IROH_VERSION>>,
@@ -87,11 +103,16 @@ export function endpointIsAsyncDisposable(input: Endpoint): AsyncDisposable {
   return input;
 }
 
-/** Plain strings need parseTicket before they brand as BlobTicket. */
+/** Plain strings need validateTicketShape before they brand as BlobTicket. */
 export function brandsRequireValidation(raw: string): BlobTicket {
   // @ts-expect-error a plain string is not a BlobTicket without validation
   const unchecked: BlobTicket = raw;
   void unchecked;
+  return validateTicketShape(raw);
+}
+
+/** parseTicket decodes a string into structured, native-backed TicketInfo. */
+export function decodesTicket(raw: string): TicketInfo {
   return parseTicket(raw);
 }
 

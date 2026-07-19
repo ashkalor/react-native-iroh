@@ -1,0 +1,22 @@
+# Device A: run the collections demo (shareCollection -> one ticket ->
+# downloadCollection over minimal-preset in-process endpoints) and wait for the
+# on-screen verdict. The app-emitted "E2E: PASS collection-*" markers are
+# asserted from logcat by run-e2e.sh.
+appId: com.irohexample
+---
+# stopApp: false keeps the already-running app (and its live endpoint) alive;
+# the demo runs against its own minimal-preset endpoints and does not disturb it.
+- launchApp:
+    stopApp: false
+- scrollUntilVisible:
+    element:
+      id: "collection-run"
+    timeout: 60000
+- tapOn:
+    id: "collection-run"
+- extendedWaitUntil:
+    visible:
+      id: "collection-result"
+    timeout: 300000
+- assertVisible:
+    text: "PASS: downloaded.*"

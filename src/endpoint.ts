@@ -1,7 +1,12 @@
 import { IrohError } from "./errors";
 import { getIroh, type IrohBinding } from "./native";
-import { parseTicket, type BlobTicket } from "./ticket";
-import { TransferController, type Transfer } from "./transfer";
+import { validateTicketShape, type BlobTicket } from "./ticket";
+import {
+  CollectionTransferController,
+  TransferController,
+  type CollectionTransfer,
+  type Transfer,
+} from "./transfer";
 import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
 
 /**
@@ -83,6 +88,36 @@ export interface Blobs {
    * cancelled while queued).
    */
   download(ticket: BlobTicket | string, destPath: string, options?: DownloadOptions): Transfer;
+  /**
+   * Bundles the files at the given absolute `paths` into a single iroh-blobs
+   * collection and resolves with one shareable {@link BlobTicket} (a HashSeq
+   * ticket). Each file becomes a named child (its source base name); the
+   * receiver gets them all from the one ticket via {@link downloadCollection}.
+   * Like {@link share}, it waits (bounded) for the endpoint to come online on
+   * the `"n0"` preset. `paths` must be non-empty.
+   *
+   * @see https://docs.rs/iroh-blobs/0.103.0/iroh_blobs/format/collection/struct.Collection.html
+   */
+  shareCollection(paths: string[]): Promise<BlobTicket>;
+  /**
+   * Downloads the collection described by `ticket`, writing each child to
+   * `destDir/<name>`, and synchronously returns a {@link CollectionTransfer}:
+   * the same handle shape as {@link download} (aggregate `done` / `progress` /
+   * `onProgress` / `cancel`) plus a live per-file breakdown in
+   * {@link CollectionTransfer.files}.
+   *
+   * Children fan out through the same FIFO download queue as {@link download},
+   * so at most {@link EndpointOptions.maxConcurrentDownloads} run natively at
+   * once and each child progresses (and can fail) independently; the first
+   * child failure fails the whole collection and cancels the rest. `destDir`
+   * must be an existing absolute directory (the native layer does not create
+   * missing parents).
+   */
+  downloadCollection(
+    ticket: BlobTicket | string,
+    destDir: string,
+    options?: DownloadOptions,
+  ): CollectionTransfer;
 }
 
 /**
@@ -160,6 +195,9 @@ export class Endpoint {
     this.blobs = {
       share: (path) => this.shareBlob(path),
       download: (ticket, destPath, options) => this.downloadBlob(ticket, destPath, options),
+      shareCollection: (paths) => this.shareCollection(paths),
+      downloadCollection: (ticket, destDir, options) =>
+        this.downloadCollection(ticket, destDir, options),
     };
   }
 
@@ -235,10 +273,58 @@ export class Endpoint {
     destPath: string,
     options?: DownloadOptions,
   ): Transfer {
+    const transfer = this.createDownload(ticket, destPath);
+    // Wire the signal before the queue pump: an already-aborted signal must
+    // settle the transfer as cancelled without ever reaching native.
+    this.wireAbortSignal(transfer, options?.signal);
+    this.enqueueDownload(transfer);
+    return transfer;
+  }
+
+  /** See {@link Blobs.shareCollection}. */
+  private async shareCollection(paths: string[]): Promise<BlobTicket> {
+    try {
+      // Paths cross the bridge newline-joined (see the native spec).
+      return (await this.binding.shareCollection(this.handle, paths.join("\n"))) as BlobTicket;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Blobs.downloadCollection}. */
+  private downloadCollection(
+    ticket: BlobTicket | string,
+    destDir: string,
+    options?: DownloadOptions,
+  ): CollectionTransfer {
+    // Cheap shape check up front so pasted garbage fails synchronously.
+    const collectionTicket = validateTicketShape(ticket);
+    const dir = destDir.replace(/\/+$/, "");
+    const transfer = new CollectionTransferController(
+      async () => {
+        const manifest = await this.binding.collectionManifest(this.handle, collectionTicket);
+        return JSON.parse(manifest) as { name: string; ticket: string }[];
+      },
+      (childTicket, name) => {
+        const child = this.createDownload(childTicket, `${dir}/${name}`);
+        this.enqueueDownload(child);
+        return child;
+      },
+    );
+    this.wireAbortSignal(transfer, options?.signal);
+    return transfer;
+  }
+
+  /**
+   * Builds a queued single-blob download for `ticket` -> `destPath`, reused by
+   * both {@link download} and each child of {@link downloadCollection}. The
+   * returned controller is not yet enqueued (see {@link enqueueDownload}).
+   */
+  private createDownload(ticket: BlobTicket | string, destPath: string): TransferController {
     // Cheap shape validation up front: pasted garbage fails here with a
     // typed IrohError instead of a native round-trip.
-    const validated = parseTicket(ticket);
-    const transfer = new TransferController(
+    const validated = validateTicketShape(ticket);
+    return new TransferController(
       (onStart, onProgress) =>
         this.binding.downloadBlob(this.handle, validated, destPath, onStart, onProgress),
       (transferId) => {
@@ -249,28 +335,35 @@ export class Endpoint {
         }
       },
     );
-    // Wire the signal before the queue pump: an already-aborted signal must
-    // settle the transfer as cancelled without ever reaching native.
-    const signal = options?.signal;
-    if (signal !== undefined) {
-      if (signal.aborted) {
-        transfer.cancel();
-      } else {
-        const onAbort = (): void => {
-          transfer.cancel();
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        // Detach once settled so a long-lived signal cannot leak listeners;
-        // an abort arriving after settle is a no-op either way.
-        const detach = (): void => {
-          signal.removeEventListener("abort", onAbort);
-        };
-        transfer.done.then(detach, detach);
-      }
-    }
+  }
+
+  /** Adds a transfer to the FIFO queue and pumps the concurrency gate. */
+  private enqueueDownload(transfer: TransferController): void {
     this.downloadQueue.push(transfer);
     this.pumpDownloads();
-    return transfer;
+  }
+
+  /**
+   * Binds an `AbortSignal` to a transfer's cancellation: an already-aborted
+   * signal cancels immediately; a later abort cancels once. The listener is
+   * detached when the transfer settles so a long-lived signal cannot leak it.
+   */
+  private wireAbortSignal(transfer: Transfer, signal: AbortSignalLike | undefined): void {
+    if (signal === undefined) {
+      return;
+    }
+    if (signal.aborted) {
+      transfer.cancel();
+      return;
+    }
+    const onAbort = (): void => {
+      transfer.cancel();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    const detach = (): void => {
+      signal.removeEventListener("abort", onAbort);
+    };
+    transfer.done.then(detach, detach);
   }
 
   /**

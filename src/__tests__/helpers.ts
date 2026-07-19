@@ -1,5 +1,6 @@
 import type { EndpointConfig } from "../specs/iroh.nitro";
 import type { IrohBinding } from "../native";
+import type { TicketInfo } from "../ticket";
 
 /** A promise with its resolve/reject functions exposed. */
 export interface Deferred<T> {
@@ -52,12 +53,24 @@ export interface MockBinding {
   downloads: DownloadCall[];
   cancelled: number[];
   shareCalls: { endpoint: number; path: string }[];
+  shareCollectionCalls: { endpoint: number; pathsJoined: string }[];
+  manifestCalls: { endpoint: number; ticket: string }[];
+  parseTicketCalls: string[];
+  /** Ticket string that {@link IrohBinding.shareCollection} resolves with. */
+  collectionTicket: string;
+  /** JSON that {@link IrohBinding.collectionManifest} resolves with. */
+  manifestJson: string;
+  /** Info that {@link IrohBinding.parseTicket} returns (encoded as JSON). */
+  ticketInfo: TicketInfo;
   /** Overridable per test to make calls fail. */
   failures: {
     createEndpoint?: Error;
     isEndpointOpen?: Error;
     closeEndpoint?: Error;
     shareBlob?: Error;
+    shareCollection?: Error;
+    collectionManifest?: Error;
+    parseTicket?: Error;
   };
 }
 
@@ -117,6 +130,27 @@ export function createMockBinding(): MockBinding {
       cancelDownload: (transferId) => {
         mock.cancelled.push(transferId);
       },
+      shareCollection: (endpoint, pathsJoined) => {
+        mock.shareCollectionCalls.push({ endpoint, pathsJoined });
+        if (mock.failures.shareCollection !== undefined) {
+          return Promise.reject(mock.failures.shareCollection);
+        }
+        return Promise.resolve(mock.collectionTicket);
+      },
+      collectionManifest: (endpoint, ticket) => {
+        mock.manifestCalls.push({ endpoint, ticket });
+        if (mock.failures.collectionManifest !== undefined) {
+          return Promise.reject(mock.failures.collectionManifest);
+        }
+        return Promise.resolve(mock.manifestJson);
+      },
+      parseTicket: (ticket) => {
+        mock.parseTicketCalls.push(ticket);
+        if (mock.failures.parseTicket !== undefined) {
+          throw mock.failures.parseTicket;
+        }
+        return JSON.stringify(mock.ticketInfo);
+      },
     },
     configs: [],
     endpointIdCalls: [],
@@ -124,6 +158,12 @@ export function createMockBinding(): MockBinding {
     downloads: [],
     cancelled: [],
     shareCalls: [],
+    shareCollectionCalls: [],
+    manifestCalls: [],
+    parseTicketCalls: [],
+    collectionTicket: `blob${"c".repeat(56)}`,
+    manifestJson: "[]",
+    ticketInfo: { hash: "a".repeat(64), format: "raw", nodeId: "node-mock" },
     failures: {},
   };
   return mock;

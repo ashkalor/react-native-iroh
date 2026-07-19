@@ -41,6 +41,9 @@ extern "C" {
   void HybridIrohSpec_share_blob(void* rustPtr, double endpoint, const char* path, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
   void HybridIrohSpec_download_blob(void* rustPtr, double endpoint, const char* ticket, const char* destPath, void* onStart, void* onProgress, void(*resolve)(void*), void(*reject)(void*, char*), void* userdata);
   __FfiResult_void HybridIrohSpec_cancel_download(void* rustPtr, double transferId);
+  void HybridIrohSpec_share_collection(void* rustPtr, double endpoint, const char* pathsJoined, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_collection_manifest(void* rustPtr, double endpoint, const char* ticket, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  __FfiResult_cstr HybridIrohSpec_parse_ticket(void* rustPtr, const char* ticket);
   size_t HybridIrohSpec_memory_size(void* rustPtr);
   void HybridIrohSpec_destroy(void* rustPtr);
   void __nitrogen_free_cstring(char* ptr);
@@ -100,6 +103,19 @@ namespace margelo::nitro::iroh {
           return __promise;
         }
     inline void cancelDownload(double transferId) override { auto __ffi = HybridIrohSpec_cancel_download(_rustPtr, transferId); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } }
+    inline std::shared_ptr<Promise<std::string>> shareCollection(double endpoint, const std::string& pathsJoined) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_share_collection(_rustPtr, endpoint, pathsJoined.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> collectionManifest(double endpoint, const std::string& ticket) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_collection_manifest(_rustPtr, endpoint, ticket.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::string parseTicket(const std::string& ticket) override { auto __ffi = HybridIrohSpec_parse_ticket(_rustPtr, ticket.c_str()); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value); }
 
   public:
     inline size_t getExternalMemorySize() noexcept override {

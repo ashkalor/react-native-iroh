@@ -15,9 +15,8 @@
  * All measurements are emitted as `BENCH:` logcat markers (see markers.ts);
  * the harness greps them and prints a summary table.
  */
-import { Endpoint } from "react-native-iroh";
+import { Endpoint, parseTicket } from "react-native-iroh";
 import { benchReport, benchResult } from "./markers";
-import { extractTicketHash } from "./ticketHash";
 
 /**
  * Where the app looks for a benchmark plan. Reachable only when the harness
@@ -32,6 +31,19 @@ export interface BenchFile {
   readonly bytes: number;
 }
 
+/**
+ * How a run shares and downloads its corpus:
+ *
+ * - `"tickets"`: one ticket per file, downloaded through N independent
+ *   {@link Endpoint.blobs}`.download` transfers (the v0.1 model).
+ * - `"collection"`: all files bundled into one ticket via
+ *   {@link Endpoint.blobs}`.shareCollection`, fetched with a single
+ *   {@link Endpoint.blobs}`.downloadCollection` that fans the children out.
+ *
+ * Running the same corpus both ways is the `collection-vs-tickets` comparison.
+ */
+export type BenchMode = "tickets" | "collection";
+
 /** A single benchmark run, produced by e2e/run-bench.sh. */
 export interface BenchPlan {
   /** Identifier echoed in every marker, e.g. "mix-mcd4". */
@@ -45,6 +57,8 @@ export interface BenchPlan {
    */
   readonly workDir: string;
   readonly files: readonly BenchFile[];
+  /** How the corpus is shared and downloaded. Defaults to `"tickets"`. */
+  readonly mode: BenchMode;
   /** Consumer endpoint's download-concurrency cap for this run. */
   readonly maxConcurrentDownloads: number;
   /**
@@ -79,6 +93,7 @@ export function parseBenchPlan(payload: unknown): BenchPlan {
     srcDir?: unknown;
     workDir?: unknown;
     files?: unknown;
+    mode?: unknown;
     maxConcurrentDownloads?: unknown;
     integritySample?: unknown;
   };
@@ -91,6 +106,7 @@ export function parseBenchPlan(payload: unknown): BenchPlan {
     !Array.isArray(plan.files) ||
     plan.files.length === 0 ||
     !plan.files.every(isBenchFile) ||
+    (plan.mode !== undefined && plan.mode !== "tickets" && plan.mode !== "collection") ||
     typeof plan.maxConcurrentDownloads !== "number" ||
     typeof plan.integritySample !== "number"
   ) {
@@ -101,6 +117,8 @@ export function parseBenchPlan(payload: unknown): BenchPlan {
     srcDir: plan.srcDir,
     workDir: plan.workDir,
     files: plan.files,
+    // Absent mode defaults to the per-file ticket model (backwards compatible).
+    mode: plan.mode === "collection" ? "collection" : "tickets",
     maxConcurrentDownloads: plan.maxConcurrentDownloads,
     integritySample: plan.integritySample,
   };
@@ -169,7 +187,7 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
   const totalBytes = plan.files.reduce((sum, file) => sum + file.bytes, 0);
   emit(
     "START",
-    `run=${run} files=${plan.files.length} bytes=${totalBytes} mcd=${plan.maxConcurrentDownloads}`,
+    `run=${run} files=${plan.files.length} bytes=${totalBytes} mode=${plan.mode} mcd=${plan.maxConcurrentDownloads}`,
   );
 
   let provider: Endpoint | null = null;
@@ -188,127 +206,185 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
     const providerEndpoint = provider;
     const consumerEndpoint = consumer;
 
-    // Share phase: fire all imports concurrently, as an app sharing a batch
-    // would. Per-share latency therefore includes native pool queueing.
-    const shareStart = now();
-    const shareLatencies: number[] = [];
-    const tickets = await Promise.all(
-      plan.files.map(async (file) => {
-        const start = now();
-        const ticket = await providerEndpoint.blobs.share(`${plan.srcDir}/${file.name}`);
-        shareLatencies.push(now() - start);
-        return ticket;
-      }),
-    );
-    const shareMs = Math.round(now() - shareStart);
-    emit(
-      "SHARE",
-      `run=${run} files=${plan.files.length} ms=${shareMs} p50=${percentileMs(shareLatencies, 0.5)} p95=${percentileMs(
-        shareLatencies,
-        0.95,
-      )}`,
-    );
+    if (plan.mode === "collection") {
+      // Share phase: bundle every file into one collection ticket.
+      const paths = plan.files.map((file) => `${plan.srcDir}/${file.name}`);
+      const shareStart = now();
+      const collectionTicket = await providerEndpoint.blobs.shareCollection(paths);
+      const shareMs = Math.round(now() - shareStart);
+      emit("SHARE", `run=${run} files=${plan.files.length} ms=${shareMs} mode=collection`);
 
-    const jobs = plan.files.map((file, index) => ({
-      file,
-      ticket: tickets[index] ?? "",
-      destPath: `${plan.workDir}/dl/${file.name}`,
-    }));
+      // Download phase: a single downloadCollection fans the children out
+      // through the same FIFO queue, capped at maxConcurrentDownloads. A child
+      // counts as active between its first byte and its completion.
+      let peakActive = 0;
+      const downloadStart = now();
+      const transfer = consumerEndpoint.blobs.downloadCollection(
+        collectionTicket,
+        `${plan.workDir}/dl`,
+      );
+      transfer.onProgress(() => {
+        const active = transfer.files.filter((file) => file.bytesReceived > 0 && !file.done).length;
+        peakActive = Math.max(peakActive, active);
+      });
+      await transfer.done;
+      const downloadMs = Math.round(now() - downloadStart);
+      const mibps = totalBytes / 1048576 / Math.max(0.001, downloadMs / 1000);
+      emit(
+        "CONCURRENCY",
+        `run=${run} files=${plan.files.length} cap=${plan.maxConcurrentDownloads} peakActive=${peakActive} progressed=${transfer.files.length}`,
+      );
+      emit(
+        "DOWNLOAD",
+        `run=${run} files=${plan.files.length} bytes=${totalBytes} ms=${downloadMs} mibps=${mibps.toFixed(
+          2,
+        )} mode=collection`,
+      );
 
-    // Download phase: enqueue everything at once; the endpoint's FIFO queue
-    // admits maxConcurrentDownloads at a time.
-    //
-    // Peak concurrency is the proof that async promise bridging plus the lifted
-    // cap actually run transfers in parallel: a download counts as "active"
-    // between its first progress event and settling, and peakActive is the
-    // most that were simultaneously active. Under the old thread-blocking
-    // bridge each in-flight download pinned a native pool thread, so this
-    // could never exceed the pool size; with callback completion it tracks
-    // maxConcurrentDownloads instead.
-    let activeNow = 0;
-    let peakActive = 0;
-    let everProgressed = 0;
-    const downloadStart = now();
-    const outcomes: DownloadOutcome[] = await Promise.all(
-      jobs.map((job) => {
-        const enqueuedAt = now();
-        const transfer = consumerEndpoint.blobs.download(job.ticket, job.destPath);
-        let firstProgressAt: number | null = null;
-        const unsubscribe = transfer.onProgress(() => {
-          if (firstProgressAt === null) {
-            firstProgressAt = now();
-            everProgressed += 1;
-            activeNow += 1;
-            peakActive = Math.max(peakActive, activeNow);
-          }
-        });
-        const markSettled = (): void => {
-          if (firstProgressAt !== null) {
-            activeNow -= 1;
-          }
-        };
-        return transfer.done.then(
-          (): DownloadOutcome => {
-            markSettled();
-            unsubscribe();
-            const settledAt = now();
-            return {
-              ok: true,
-              totalMs: settledAt - enqueuedAt,
-              activeMs: settledAt - (firstProgressAt ?? enqueuedAt),
-              error: "",
-            };
-          },
-          (error: unknown): DownloadOutcome => {
-            markSettled();
-            unsubscribe();
-            return { ok: false, totalMs: 0, activeMs: 0, error: String(error) };
-          },
-        );
-      }),
-    );
-    const downloadMs = Math.round(now() - downloadStart);
-    emit(
-      "CONCURRENCY",
-      `run=${run} files=${jobs.length} cap=${plan.maxConcurrentDownloads} peakActive=${peakActive} progressed=${everProgressed}`,
-    );
-
-    const failures = outcomes.filter((outcome) => !outcome.ok);
-    if (failures.length > 0) {
-      throw new Error(`${failures.length} downloads failed; first: ${failures[0]?.error ?? "?"}`);
-    }
-    const totals = outcomes.map((outcome) => outcome.totalMs);
-    const actives = outcomes.map((outcome) => outcome.activeMs);
-    const mibps = totalBytes / 1048576 / Math.max(0.001, downloadMs / 1000);
-    emit(
-      "DOWNLOAD",
-      `run=${run} files=${jobs.length} bytes=${totalBytes} ms=${downloadMs} mibps=${mibps.toFixed(2)} p50=${percentileMs(
-        totals,
-        0.5,
-      )} p95=${percentileMs(totals, 0.95)} p50act=${percentileMs(actives, 0.5)} p95act=${percentileMs(
-        actives,
-        0.95,
-      )}`,
-    );
-
-    // Integrity sample: re-share downloaded files and compare the BLAKE3
-    // content hash embedded in the tickets. Validates exported bytes on disk
-    // without hashing the whole corpus twice in the measured path.
-    const sampleSize = Math.max(1, Math.min(plan.integritySample, jobs.length));
-    let passed = 0;
-    for (let index = 0; index < sampleSize; index += 1) {
-      const job = jobs[Math.floor((index * jobs.length) / sampleSize)];
-      if (job === undefined) {
-        continue;
+      // Integrity: re-share sampled downloaded files and compare their content
+      // hash to a fresh re-share of the matching source file.
+      const sampleSize = Math.max(1, Math.min(plan.integritySample, plan.files.length));
+      let passed = 0;
+      for (let index = 0; index < sampleSize; index += 1) {
+        const file = plan.files[Math.floor((index * plan.files.length) / sampleSize)];
+        if (file === undefined) {
+          continue;
+        }
+        const expected = parseTicket(
+          await providerEndpoint.blobs.share(`${plan.srcDir}/${file.name}`),
+        ).hash;
+        const actual = parseTicket(
+          await consumerEndpoint.blobs.share(`${plan.workDir}/dl/${file.name}`),
+        ).hash;
+        if (expected === actual) {
+          passed += 1;
+        }
       }
-      const reShareTicket = await consumerEndpoint.blobs.share(job.destPath);
-      const expected = extractTicketHash(job.ticket);
-      if (expected !== null && extractTicketHash(reShareTicket) === expected) {
-        passed += 1;
+      emit("INTEGRITY", `run=${run} pass=${passed} sample=${sampleSize}`);
+      ok = passed === sampleSize;
+    } else {
+      // Share phase: fire all imports concurrently, as an app sharing a batch
+      // would. Per-share latency therefore includes native pool queueing.
+      const shareStart = now();
+      const shareLatencies: number[] = [];
+      const tickets = await Promise.all(
+        plan.files.map(async (file) => {
+          const start = now();
+          const ticket = await providerEndpoint.blobs.share(`${plan.srcDir}/${file.name}`);
+          shareLatencies.push(now() - start);
+          return ticket;
+        }),
+      );
+      const shareMs = Math.round(now() - shareStart);
+      emit(
+        "SHARE",
+        `run=${run} files=${plan.files.length} ms=${shareMs} p50=${percentileMs(shareLatencies, 0.5)} p95=${percentileMs(
+          shareLatencies,
+          0.95,
+        )}`,
+      );
+
+      const jobs = plan.files.map((file, index) => ({
+        file,
+        ticket: tickets[index] ?? "",
+        destPath: `${plan.workDir}/dl/${file.name}`,
+      }));
+
+      // Download phase: enqueue everything at once; the endpoint's FIFO queue
+      // admits maxConcurrentDownloads at a time.
+      //
+      // Peak concurrency is the proof that async promise bridging plus the lifted
+      // cap actually run transfers in parallel: a download counts as "active"
+      // between its first progress event and settling, and peakActive is the
+      // most that were simultaneously active. Under the old thread-blocking
+      // bridge each in-flight download pinned a native pool thread, so this
+      // could never exceed the pool size; with callback completion it tracks
+      // maxConcurrentDownloads instead.
+      let activeNow = 0;
+      let peakActive = 0;
+      let everProgressed = 0;
+      const downloadStart = now();
+      const outcomes: DownloadOutcome[] = await Promise.all(
+        jobs.map((job) => {
+          const enqueuedAt = now();
+          const transfer = consumerEndpoint.blobs.download(job.ticket, job.destPath);
+          let firstProgressAt: number | null = null;
+          const unsubscribe = transfer.onProgress(() => {
+            if (firstProgressAt === null) {
+              firstProgressAt = now();
+              everProgressed += 1;
+              activeNow += 1;
+              peakActive = Math.max(peakActive, activeNow);
+            }
+          });
+          const markSettled = (): void => {
+            if (firstProgressAt !== null) {
+              activeNow -= 1;
+            }
+          };
+          return transfer.done.then(
+            (): DownloadOutcome => {
+              markSettled();
+              unsubscribe();
+              const settledAt = now();
+              return {
+                ok: true,
+                totalMs: settledAt - enqueuedAt,
+                activeMs: settledAt - (firstProgressAt ?? enqueuedAt),
+                error: "",
+              };
+            },
+            (error: unknown): DownloadOutcome => {
+              markSettled();
+              unsubscribe();
+              return { ok: false, totalMs: 0, activeMs: 0, error: String(error) };
+            },
+          );
+        }),
+      );
+      const downloadMs = Math.round(now() - downloadStart);
+      emit(
+        "CONCURRENCY",
+        `run=${run} files=${jobs.length} cap=${plan.maxConcurrentDownloads} peakActive=${peakActive} progressed=${everProgressed}`,
+      );
+
+      const failures = outcomes.filter((outcome) => !outcome.ok);
+      if (failures.length > 0) {
+        throw new Error(`${failures.length} downloads failed; first: ${failures[0]?.error ?? "?"}`);
       }
+      const totals = outcomes.map((outcome) => outcome.totalMs);
+      const actives = outcomes.map((outcome) => outcome.activeMs);
+      const mibps = totalBytes / 1048576 / Math.max(0.001, downloadMs / 1000);
+      emit(
+        "DOWNLOAD",
+        `run=${run} files=${jobs.length} bytes=${totalBytes} ms=${downloadMs} mibps=${mibps.toFixed(2)} p50=${percentileMs(
+          totals,
+          0.5,
+        )} p95=${percentileMs(totals, 0.95)} p50act=${percentileMs(actives, 0.5)} p95act=${percentileMs(
+          actives,
+          0.95,
+        )}`,
+      );
+
+      // Integrity sample: re-share downloaded files and compare the BLAKE3
+      // content hash embedded in the tickets. Validates exported bytes on disk
+      // without hashing the whole corpus twice in the measured path.
+      const sampleSize = Math.max(1, Math.min(plan.integritySample, jobs.length));
+      let passed = 0;
+      for (let index = 0; index < sampleSize; index += 1) {
+        const job = jobs[Math.floor((index * jobs.length) / sampleSize)];
+        if (job === undefined) {
+          continue;
+        }
+        const reShareTicket = await consumerEndpoint.blobs.share(job.destPath);
+        const expected = parseTicket(job.ticket).hash;
+        if (parseTicket(reShareTicket).hash === expected) {
+          passed += 1;
+        }
+      }
+      emit("INTEGRITY", `run=${run} pass=${passed} sample=${sampleSize}`);
+      ok = passed === sampleSize;
     }
-    emit("INTEGRITY", `run=${run} pass=${passed} sample=${sampleSize}`);
-    ok = passed === sampleSize;
   } catch (error) {
     emit("ERROR", `run=${run} ${String(error)}`);
     ok = false;

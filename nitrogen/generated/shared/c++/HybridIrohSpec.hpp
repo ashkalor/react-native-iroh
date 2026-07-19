@@ -59,6 +59,9 @@ namespace margelo::nitro::iroh {
       virtual std::shared_ptr<Promise<std::string>> shareBlob(double endpoint, const std::string& path) = 0;
       virtual std::shared_ptr<Promise<void>> downloadBlob(double endpoint, const std::string& ticket, const std::string& destPath, const std::function<void(double /* transferId */)>& onStart, const std::function<void(double /* bytesReceived */)>& onProgress) = 0;
       virtual void cancelDownload(double transferId) = 0;
+      virtual std::shared_ptr<Promise<std::string>> shareCollection(double endpoint, const std::string& pathsJoined) = 0;
+      virtual std::shared_ptr<Promise<std::string>> collectionManifest(double endpoint, const std::string& ticket) = 0;
+      virtual std::string parseTicket(const std::string& ticket) = 0;
 
     protected:
       // Hybrid Setup
