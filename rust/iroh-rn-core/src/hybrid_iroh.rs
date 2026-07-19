@@ -30,8 +30,9 @@ use crate::{
     },
     coalesce::Coalescer,
     endpoint::{
-        endpoint_close, endpoint_create, endpoint_id, endpoint_is_open, EndpointConfig,
-        EndpointHandle, NetworkPreset,
+        endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
+        endpoint_online, stop_watch_addr, watch_addr, EndpointAddrInfo, EndpointConfig,
+        EndpointHandle, NetworkPreset, WatchHandle,
     },
     error::IrohError,
 };
@@ -104,6 +105,28 @@ fn ticket_info_to_json(info: &TicketInfo) -> String {
     out
 }
 
+/// Serializes an [`EndpointAddrInfo`] as a JSON object string for the bridge.
+fn endpoint_addr_to_json(info: &EndpointAddrInfo) -> String {
+    let push_string_array = |out: &mut String, values: &[String]| {
+        out.push('[');
+        for (i, value) in values.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            push_json_string(out, value);
+        }
+        out.push(']');
+    };
+    let mut out = String::from("{\"id\":");
+    push_json_string(&mut out, &info.id);
+    out.push_str(",\"relayUrls\":");
+    push_string_array(&mut out, &info.relay_urls);
+    out.push_str(",\"directAddrs\":");
+    push_string_array(&mut out, &info.direct_addrs);
+    out.push('}');
+    out
+}
+
 /// Serializes the collection children as a JSON array string for the bridge.
 fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
     let mut out = String::from("[");
@@ -127,12 +150,14 @@ impl HybridIrohSpec for HybridIroh {
             BridgeNetworkPreset::N0 => NetworkPreset::N0,
             BridgeNetworkPreset::Minimal => NetworkPreset::Minimal,
         };
-        // Path validation (absolute blob store dir) happens in the core.
+        // Path validation (absolute blob store dir) and relay-mode parsing
+        // both happen in the core.
         let blob_store_dir = config.blob_store_dir.map(PathBuf::from);
         endpoint_create(
             EndpointConfig {
                 preset,
                 blob_store_dir,
+                relay_mode: config.relay_mode,
             },
             move |result| {
                 promise(
@@ -150,6 +175,45 @@ impl HybridIrohSpec for HybridIroh {
 
     fn is_endpoint_open(&self, endpoint: f64) -> Result<bool, String> {
         Ok(endpoint_is_open(EndpointHandle::from_raw(endpoint as u64)))
+    }
+
+    fn endpoint_addr(&self, endpoint: f64) -> Result<String, String> {
+        endpoint_addr(EndpointHandle::from_raw(endpoint as u64))
+            .map(|info| endpoint_addr_to_json(&info))
+            .map_err(encode_error)
+    }
+
+    fn watch_addr(
+        &self,
+        endpoint: f64,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_change: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        let handle = watch_addr(EndpointHandle::from_raw(endpoint as u64), move |info| {
+            on_change(endpoint_addr_to_json(&info))
+        })
+        .map_err(encode_error)?;
+        // Mirror download_blob: hand the subscription's numeric handle back
+        // synchronously via on_start before any change events are delivered.
+        on_start(handle.raw() as f64);
+        Ok(())
+    }
+
+    fn stop_watch_addr(&self, watch_id: f64) -> Result<(), String> {
+        // Idempotent: unknown or already-stopped watches are a no-op.
+        stop_watch_addr(WatchHandle::from_raw(watch_id as u64));
+        Ok(())
+    }
+
+    fn endpoint_online(&self, endpoint: f64, timeout_ms: f64, promise: Completer<()>) {
+        let timeout = Duration::from_millis(timeout_ms.max(0.0) as u64);
+        endpoint_online(
+            EndpointHandle::from_raw(endpoint as u64),
+            timeout,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
     }
 
     fn close_endpoint(&self, endpoint: f64, promise: Completer<()>) {
@@ -290,6 +354,7 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: store_dir.map(|p| p.to_string_lossy().into_owned()),
+                    relay_mode: None,
                 },
                 done,
             )
@@ -322,6 +387,7 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: Some("relative/store".into()),
+                    relay_mode: None,
                 },
                 done,
             )
@@ -460,5 +526,72 @@ mod tests {
 
         block_on(|done| hybrid.close_endpoint(provider, done)).unwrap();
         block_on(|done| hybrid.close_endpoint(receiver, done)).unwrap();
+    }
+
+    #[test]
+    fn endpoint_addr_json_serializes_expected_shape() {
+        let info = EndpointAddrInfo {
+            id: "node-id".into(),
+            relay_urls: vec!["https://relay.example/".into()],
+            direct_addrs: vec!["127.0.0.1:1234".into(), "[::1]:1234".into()],
+        };
+        let json = super::endpoint_addr_to_json(&info);
+        assert_eq!(
+            json,
+            r#"{"id":"node-id","relayUrls":["https://relay.example/"],"directAddrs":["127.0.0.1:1234","[::1]:1234"]}"#
+        );
+    }
+
+    #[test]
+    fn endpoint_addr_via_trait_returns_json_object() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+        let json = hybrid.endpoint_addr(endpoint).expect("addr json");
+        assert!(json.starts_with("{\"id\":\""));
+        assert!(json.contains("\"relayUrls\":"));
+        assert!(json.contains("\"directAddrs\":"));
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
+    }
+
+    #[test]
+    fn watch_addr_via_trait_delivers_start_and_change() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+
+        let started = Arc::new(Mutex::new(None::<f64>));
+        let started_sink = Arc::clone(&started);
+        let (tx, rx) = mpsc::channel::<String>();
+        hybrid
+            .watch_addr(
+                endpoint,
+                Box::new(move |id| {
+                    *started_sink.lock().unwrap() = Some(id);
+                }),
+                Box::new(move |json| {
+                    tx.send(json).ok();
+                }),
+            )
+            .expect("watch registered");
+
+        let watch_id = started.lock().unwrap().expect("on_start fired");
+        assert!(watch_id >= 1.0);
+        let json = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an address change was delivered");
+        assert!(json.starts_with("{\"id\":\""));
+
+        assert_eq!(hybrid.stop_watch_addr(watch_id), Ok(()));
+        // Stopping an unknown watch is a no-op.
+        assert_eq!(hybrid.stop_watch_addr(watch_id), Ok(()));
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
+    }
+
+    #[test]
+    fn endpoint_online_via_trait_times_out_on_minimal() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+        let err = block_on(|done| hybrid.endpoint_online(endpoint, 200.0, done)).unwrap_err();
+        assert!(err.starts_with("[iroh:2000] "), "unexpected error: {err}");
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
     }
 }

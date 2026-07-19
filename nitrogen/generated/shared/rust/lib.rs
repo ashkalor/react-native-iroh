@@ -17,6 +17,7 @@
 
 pub mod endpoint_config;
 pub mod func_void_double;
+pub mod func_void_std__string;
 pub mod hybrid_iroh_spec;
 pub mod network_preset;
 pub mod nitro_buffer;

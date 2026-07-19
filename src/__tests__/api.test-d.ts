@@ -4,7 +4,7 @@
  * match the test runner's `*.test.ts` pattern) and is excluded from builds.
  */
 import { Endpoint } from "../endpoint";
-import type { EndpointId, EndpointOptions } from "../endpoint";
+import type { EndpointAddr, EndpointId, EndpointOptions, RelayMode } from "../endpoint";
 import { getIrohErrorCode, IrohError } from "../errors";
 import type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "../errors";
 import type { IrohBinding } from "../native";
@@ -48,6 +48,14 @@ export type Cases = [
   Expect<Equal<typeof endpoint.id, EndpointId>>,
   Expect<Equal<typeof endpoint.isOpen, boolean>>,
   Expect<Equal<ReturnType<typeof endpoint.close>, Promise<void>>>,
+  // Observability surface.
+  Expect<Equal<typeof endpoint.addr, EndpointAddr>>,
+  Expect<Equal<ReturnType<typeof endpoint.watchAddr>, () => void>>,
+  Expect<Equal<typeof endpoint.addrChanges, AsyncIterable<EndpointAddr>>>,
+  Expect<Equal<ReturnType<typeof endpoint.online>, Promise<void>>>,
+  Expect<Equal<EndpointAddr["id"], EndpointId>>,
+  Expect<Equal<EndpointAddr["relayUrls"], readonly string[]>>,
+  Expect<Equal<EndpointAddr["directAddrs"], readonly string[]>>,
   // Blobs namespace.
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["share"]>, Promise<BlobTicket>>>,
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["download"]>, Transfer>>,
@@ -83,11 +91,12 @@ export type Cases = [
   Expect<Equal<typeof transfer.isSettled, boolean>>,
   Expect<Equal<ReturnType<typeof transfer.cancel>, void>>,
   Expect<Equal<ReturnType<typeof transfer.onProgress>, () => void>>,
-  Expect<Equal<ProgressEvent, { readonly bytesReceived: number }>>,
+  Expect<Equal<ProgressEvent, { readonly bytesReceived: number; readonly totalBytes?: number }>>,
   // Config optionality.
   Expect<Equal<typeof options.preset, "n0" | "minimal">>,
   Expect<Equal<typeof options.blobStoreDir, string>>,
   Expect<Equal<typeof options.maxConcurrentDownloads, number>>,
+  Expect<Equal<typeof options.relayMode, RelayMode>>,
   // Nothing on the public surface degrades to `any`.
   Expect<NotAny<typeof endpoint.id>>,
   Expect<NotAny<Awaited<typeof transfer.done>>>,
@@ -182,4 +191,34 @@ export async function progressIsAsyncIterable(input: Transfer): Promise<number> 
     latest = event.bytesReceived;
   }
   return latest;
+}
+
+/** relayMode accepts the bare keywords and a custom URL list; garbage is rejected. */
+export async function relayModeSignatures(): Promise<void> {
+  await Endpoint.create({ relayMode: "default" });
+  await Endpoint.create({ relayMode: "disabled" });
+  await Endpoint.create({ relayMode: "staging" });
+  await Endpoint.create({ relayMode: { custom: ["https://relay.example/"] } });
+  // @ts-expect-error unknown relay mode keywords are rejected at compile time
+  await Endpoint.create({ relayMode: "custom" });
+  // @ts-expect-error a custom map must use the { custom } shape
+  await Endpoint.create({ relayMode: ["https://relay.example/"] });
+}
+
+/** The address surface: sync snapshot, live listener, async iterable, online wait. */
+export async function observabilitySignatures(input: Endpoint): Promise<void> {
+  const snapshot: EndpointAddr = input.addr;
+  void snapshot.id;
+  void snapshot.relayUrls;
+  void snapshot.directAddrs;
+  const unsubscribe: () => void = input.watchAddr((addr) => {
+    void addr.directAddrs;
+  });
+  unsubscribe();
+  for await (const addr of input.addrChanges) {
+    void addr;
+    break;
+  }
+  await input.online();
+  await input.online({ timeoutMs: 5000 });
 }

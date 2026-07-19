@@ -7,6 +7,7 @@ import {
   type CollectionTransfer,
   type Transfer,
 } from "./transfer";
+import { Watchable } from "./watchable";
 import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
 
 /**
@@ -14,6 +15,12 @@ import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
  * {@link EndpointOptions.maxConcurrentDownloads}.
  */
 export const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 32;
+
+/**
+ * Default bound (10s) on how long {@link Endpoint.online} waits for a home
+ * relay to connect before rejecting. Matches the native share/online wait.
+ */
+export const DEFAULT_ONLINE_TIMEOUT_MS = 10_000;
 
 /**
  * `Symbol.asyncDispose`, with a `Symbol.for` fallback for engines that lack
@@ -32,6 +39,69 @@ declare const EndpointIdBrand: unique symbol;
  * @see https://docs.rs/iroh/1.0.2/iroh/type.EndpointId.html
  */
 export type EndpointId = string & { readonly [EndpointIdBrand]: "EndpointId" };
+
+/**
+ * Which relay servers an endpoint uses, an additive override of the network
+ * {@link EndpointOptions.preset}'s default relays (discovery is unaffected):
+ *
+ * - `"default"`: n0's production relay map.
+ * - `"disabled"`: no relays; peers must be reachable via direct addresses.
+ * - `"staging"`: n0's staging relay map.
+ * - `{ custom: [...] }`: a custom map built from the given HTTPS relay URLs
+ *   (at least one required).
+ *
+ * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/enum.RelayMode.html
+ */
+export type RelayMode = "default" | "disabled" | "staging" | { readonly custom: readonly string[] };
+
+/**
+ * A snapshot of an endpoint's network address: its id plus the relay and
+ * direct addresses it is currently reachable through. Obtain the current value
+ * from {@link Endpoint.addr}, or observe changes via {@link Endpoint.watchAddr}
+ * / {@link Endpoint.addrChanges}.
+ *
+ * @see https://docs.rs/iroh/1.0.2/iroh/struct.EndpointAddr.html
+ */
+export interface EndpointAddr {
+  /** The endpoint's id (its public key). */
+  readonly id: EndpointId;
+  /** Home-relay URLs the endpoint is reachable through. */
+  readonly relayUrls: readonly string[];
+  /** Direct socket addresses (`host:port`) the endpoint is reachable through. */
+  readonly directAddrs: readonly string[];
+}
+
+/**
+ * Serializes a {@link RelayMode} to the single delimited string the bridge
+ * accepts (see {@link EndpointConfig.relayMode}). Throws for an empty custom
+ * list, which iroh would reject at bind time.
+ */
+function serializeRelayMode(mode: RelayMode): string {
+  if (typeof mode === "string") {
+    return mode;
+  }
+  const urls = mode.custom;
+  if (urls.length === 0) {
+    throw new IrohError(2000, "relayMode custom requires at least one relay URL");
+  }
+  // The native side splits on newlines; the leading "custom" tag disambiguates
+  // it from the bare-keyword modes.
+  return ["custom", ...urls].join("\n");
+}
+
+/** Parses the bridge's JSON `EndpointAddr` string into a typed value. */
+function parseEndpointAddr(json: string): EndpointAddr {
+  const raw = JSON.parse(json) as {
+    id: string;
+    relayUrls?: string[];
+    directAddrs?: string[];
+  };
+  return {
+    id: raw.id as EndpointId,
+    relayUrls: raw.relayUrls ?? [],
+    directAddrs: raw.directAddrs ?? [],
+  };
+}
 
 /**
  * The subset of the standard `AbortSignal` interface used by
@@ -134,6 +204,15 @@ export interface EndpointOptions {
    */
   preset?: NetworkPreset;
   /**
+   * Which relay servers this endpoint uses. Omit to inherit the
+   * {@link EndpointOptions.preset}'s default relays. Setting it overrides only
+   * the relays (discovery is left to the preset); e.g. `"disabled"` runs a
+   * LAN-only endpoint that reaches peers purely through direct addresses.
+   *
+   * @see {@link RelayMode}
+   */
+  relayMode?: RelayMode;
+  /**
    * Absolute directory path for the persistent blob store. Omit to keep
    * blobs in memory (they are lost when the endpoint closes).
    */
@@ -172,6 +251,11 @@ export class Endpoint {
   private readonly downloadQueue: TransferController[] = [];
   private activeDownloads = 0;
   private closePromise: Promise<void> | null = null;
+  // The address fan-out and its backing native watch id. Both are created
+  // lazily on the first watchAddr/addrChanges consumer and torn down on close;
+  // the native watch is (re)started only while there is at least one consumer.
+  private addressWatch: Watchable<EndpointAddr> | null = null;
+  private addressWatchId: number | null = null;
 
   /**
    * The endpoint's blob transfer API ({@link Blobs.share} /
@@ -225,10 +309,14 @@ export class Endpoint {
         : Number.isFinite(requestedMax)
           ? Math.max(1, Math.floor(requestedMax))
           : DEFAULT_MAX_CONCURRENT_DOWNLOADS;
-    const config: EndpointConfig =
-      options.blobStoreDir === undefined
-        ? { preset }
-        : { preset, blobStoreDir: options.blobStoreDir };
+    const config: EndpointConfig = { preset };
+    if (options.blobStoreDir !== undefined) {
+      config.blobStoreDir = options.blobStoreDir;
+    }
+    if (options.relayMode !== undefined) {
+      // Throws a typed IrohError synchronously for an empty custom list.
+      config.relayMode = serializeRelayMode(options.relayMode);
+    }
     try {
       const handle = await binding.createEndpoint(config);
       const id = binding.endpointId(handle) as EndpointId;
@@ -255,6 +343,122 @@ export class Endpoint {
       return this.binding.isEndpointOpen(this.handle);
     } catch (error) {
       throw IrohError.from(error);
+    }
+  }
+
+  /**
+   * The endpoint's current {@link EndpointAddr}: its id plus the relay and
+   * direct addresses currently known. A synchronous snapshot (no network I/O);
+   * the value changes over time as relays connect and interfaces come and go
+   * (observe it live with {@link watchAddr} / {@link addrChanges}).
+   *
+   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.addr
+   */
+  get addr(): EndpointAddr {
+    try {
+      return parseEndpointAddr(this.binding.endpointAddr(this.handle));
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /**
+   * Subscribes to this endpoint's {@link EndpointAddr} changes. The listener
+   * fires with the current address soon after subscribing and again on each
+   * change (relay connects, interface roams). Returns an unsubscribe function;
+   * the native watch runs only while at least one subscriber (listener or
+   * {@link addrChanges} iterator) is attached, and is torn down on
+   * {@link close}. Unsubscribe is idempotent.
+   */
+  watchAddr(listener: (addr: EndpointAddr) => void): () => void {
+    return this.addressWatchable().listen(listener);
+  }
+
+  /**
+   * An `AsyncIterable` of this endpoint's {@link EndpointAddr} changes. Each
+   * `for await` gets an independent latest-value-conflating iterator (a slow
+   * consumer observes only the newest address). The iteration ends when the
+   * endpoint is closed; break out of the loop to detach early.
+   */
+  get addrChanges(): AsyncIterable<EndpointAddr> {
+    return this.addressWatchable().stream;
+  }
+
+  /**
+   * Resolves once the endpoint has a connected home relay, rejecting with an
+   * {@link IrohError} (kind `"endpoint-bind"`) if the wait exceeds
+   * `options.timeoutMs` (default {@link DEFAULT_ONLINE_TIMEOUT_MS}). On
+   * relay-less endpoints (`relayMode: "disabled"`, or the `"minimal"` preset)
+   * no home relay can connect, so this always rejects on timeout.
+   *
+   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.online
+   */
+  async online(options: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_ONLINE_TIMEOUT_MS;
+    try {
+      await this.binding.endpointOnline(this.handle, timeoutMs);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /**
+   * The address fan-out, created lazily. Its {@link Watchable} hooks start the
+   * native watch when the first consumer attaches and stop it when the last
+   * one detaches, so an endpoint whose address is never observed costs nothing.
+   */
+  private addressWatchable(): Watchable<EndpointAddr> {
+    if (this.addressWatch === null) {
+      this.addressWatch = new Watchable<EndpointAddr>({
+        onActive: () => this.startNativeAddrWatch(),
+        onIdle: () => this.stopNativeAddrWatch(),
+      });
+    }
+    return this.addressWatch;
+  }
+
+  /** Starts the native address watch feeding {@link addressWatch}. */
+  private startNativeAddrWatch(): void {
+    if (this.addressWatchId !== null) {
+      return;
+    }
+    try {
+      this.binding.watchAddr(
+        this.handle,
+        (watchId) => {
+          this.addressWatchId = watchId;
+        },
+        (json) => {
+          const watchable = this.addressWatch;
+          if (watchable === null) {
+            return;
+          }
+          try {
+            watchable.push(parseEndpointAddr(json));
+          } catch {
+            // A malformed address payload is dropped rather than tearing the
+            // stream down; the next well-formed change supersedes it.
+          }
+        },
+      );
+    } catch (error) {
+      // The watch could not start (e.g. a stale handle): close the fan-out so
+      // pending iterators reject and listeners stop, rather than hanging.
+      this.addressWatch?.close(IrohError.from(error));
+    }
+  }
+
+  /** Stops the native address watch, if one is running. Idempotent. */
+  private stopNativeAddrWatch(): void {
+    if (this.addressWatchId === null) {
+      return;
+    }
+    const watchId = this.addressWatchId;
+    this.addressWatchId = null;
+    try {
+      this.binding.stopWatchAddr(watchId);
+    } catch {
+      // stopWatchAddr is idempotent natively; ignore teardown races.
     }
   }
 
@@ -384,6 +588,9 @@ export class Endpoint {
         for (const queued of this.downloadQueue.splice(0)) {
           queued.cancel();
         }
+        // Stop the native address watch and end any addrChanges iterators.
+        this.stopNativeAddrWatch();
+        this.addressWatch?.close();
       };
       this.closePromise = this.binding.closeEndpoint(this.handle).then(
         () => {

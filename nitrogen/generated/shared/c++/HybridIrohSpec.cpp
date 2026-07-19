@@ -17,6 +17,10 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("createEndpoint", &HybridIrohSpec::createEndpoint);
       prototype.registerHybridMethod("endpointId", &HybridIrohSpec::endpointId);
       prototype.registerHybridMethod("isEndpointOpen", &HybridIrohSpec::isEndpointOpen);
+      prototype.registerHybridMethod("endpointAddr", &HybridIrohSpec::endpointAddr);
+      prototype.registerHybridMethod("watchAddr", &HybridIrohSpec::watchAddr);
+      prototype.registerHybridMethod("stopWatchAddr", &HybridIrohSpec::stopWatchAddr);
+      prototype.registerHybridMethod("endpointOnline", &HybridIrohSpec::endpointOnline);
       prototype.registerHybridMethod("closeEndpoint", &HybridIrohSpec::closeEndpoint);
       prototype.registerHybridMethod("shareBlob", &HybridIrohSpec::shareBlob);
       prototype.registerHybridMethod("downloadBlob", &HybridIrohSpec::downloadBlob);
