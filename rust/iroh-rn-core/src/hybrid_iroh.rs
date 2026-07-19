@@ -392,10 +392,9 @@ mod tests {
         let src = dir.path().join("payload.bin");
         std::fs::write(&src, b"parse me").expect("write");
         let endpoint = create_minimal(&hybrid, Some(&dir.path().join("store")));
-        let ticket = block_on(|done| {
-            hybrid.share_blob(endpoint, src.to_string_lossy().into_owned(), done)
-        })
-        .expect("shared");
+        let ticket =
+            block_on(|done| hybrid.share_blob(endpoint, src.to_string_lossy().into_owned(), done))
+                .expect("shared");
         let json = hybrid.parse_ticket(ticket).expect("parses");
         assert!(json.starts_with("{\"hash\":\""));
         assert!(json.contains("\"format\":\"raw\""));

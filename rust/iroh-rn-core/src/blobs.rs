@@ -584,7 +584,10 @@ mod tests {
         assert_eq!(info.hash.len(), 64);
         assert!(info.hash.chars().all(|c| c.is_ascii_hexdigit()));
         // The node id is the sharing endpoint's own id.
-        assert_eq!(info.node_id, crate::endpoint::endpoint_id(endpoint).unwrap());
+        assert_eq!(
+            info.node_id,
+            crate::endpoint::endpoint_id(endpoint).unwrap()
+        );
         assert_eq!(info.size, None);
 
         assert!(matches!(
@@ -627,7 +630,10 @@ mod tests {
         collection_share(provider, paths, move |result| {
             tx.send(result).ok();
         });
-        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("collection shared");
+        let ticket = rx
+            .recv_timeout(TIMEOUT)
+            .unwrap()
+            .expect("collection shared");
         assert_eq!(parse_ticket(&ticket).unwrap().format, "hashSeq");
 
         // Fetch the manifest on the receiver.
@@ -657,9 +663,7 @@ mod tests {
                 },
             )
             .expect("child download started");
-            rx.recv_timeout(TIMEOUT)
-                .unwrap()
-                .expect("child downloaded");
+            rx.recv_timeout(TIMEOUT).unwrap().expect("child downloaded");
             let expected = files
                 .iter()
                 .find(|(name, _)| *name == entry.name)
