@@ -217,6 +217,17 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
 
     // Download phase: enqueue everything at once; the endpoint's FIFO queue
     // admits maxConcurrentDownloads at a time.
+    //
+    // Peak concurrency is the proof that async promise bridging plus the lifted
+    // cap actually run transfers in parallel: a download counts as "active"
+    // between its first progress event and settling, and peakActive is the
+    // most that were simultaneously active. Under the old thread-blocking
+    // bridge each in-flight download pinned a native pool thread, so this
+    // could never exceed the pool size; with callback completion it tracks
+    // maxConcurrentDownloads instead.
+    let activeNow = 0;
+    let peakActive = 0;
+    let everProgressed = 0;
     const downloadStart = now();
     const outcomes: DownloadOutcome[] = await Promise.all(
       jobs.map((job) => {
@@ -226,10 +237,19 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
         const unsubscribe = transfer.onProgress(() => {
           if (firstProgressAt === null) {
             firstProgressAt = now();
+            everProgressed += 1;
+            activeNow += 1;
+            peakActive = Math.max(peakActive, activeNow);
           }
         });
+        const markSettled = (): void => {
+          if (firstProgressAt !== null) {
+            activeNow -= 1;
+          }
+        };
         return transfer.done.then(
           (): DownloadOutcome => {
+            markSettled();
             unsubscribe();
             const settledAt = now();
             return {
@@ -240,6 +260,7 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
             };
           },
           (error: unknown): DownloadOutcome => {
+            markSettled();
             unsubscribe();
             return { ok: false, totalMs: 0, activeMs: 0, error: String(error) };
           },
@@ -247,6 +268,10 @@ export async function runBenchPlan(plan: BenchPlan, log: (line: string) => void)
       }),
     );
     const downloadMs = Math.round(now() - downloadStart);
+    emit(
+      "CONCURRENCY",
+      `run=${run} files=${jobs.length} cap=${plan.maxConcurrentDownloads} peakActive=${peakActive} progressed=${everProgressed}`,
+    );
 
     const failures = outcomes.filter((outcome) => !outcome.ok);
     if (failures.length > 0) {

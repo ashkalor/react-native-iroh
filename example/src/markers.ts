@@ -29,8 +29,9 @@ export function e2eEvent(event: string): void {
 
 /**
  * `BENCH: <TAG> <detail>` machine-readable benchmark marker. Tags in use:
- * START, SHARE, DOWNLOAD, INTEGRITY, ERROR (see example/src/bench.ts); the
- * detail is space-separated `key=value` pairs the harness parses.
+ * START, SHARE, DOWNLOAD, CONCURRENCY, INTEGRITY, ERROR (see
+ * example/src/bench.ts); the detail is space-separated `key=value` pairs the
+ * harness parses.
  */
 export function benchReport(tag: string, detail: string): void {
   console.log(`BENCH: ${tag} ${detail}`);
