@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import QRCode from "react-native-qrcode-svg";
 import { IrohError, type Endpoint, type EndpointAddr } from "react-native-iroh";
 import { useGossip } from "react-native-iroh/hooks";
 import { e2eEvent, e2eGossipAddr, e2eReport } from "./markers";
@@ -42,6 +43,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     setAddr(endpoint.addr);
     return endpoint.watchAddr(setAddr);
   }, [endpoint]);
+  const addrJson = JSON.stringify(addr);
 
   const { messages, broadcast, status, error } = useGossip(
     request === null ? null : endpoint,
@@ -117,10 +119,14 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       </Text>
 
       <Text style={[sectionStyles.dimText, styles.label]}>
-        This device&apos;s address (long-press to copy, paste on the other device):
+        This device&apos;s address. Scan it with the other device&apos;s camera, or long-press the
+        text to copy it, then paste it there as the bootstrap peer.
       </Text>
+      <View style={styles.qrWrap} testID="gossip-addr-qr">
+        <QRCode value={addrJson} size={220} ecl="L" quietZone={8} />
+      </View>
       <Text style={styles.addr} selectable testID="gossip-addr">
-        {JSON.stringify(addr)}
+        {addrJson}
       </Text>
 
       {!joined ? (
@@ -193,6 +199,13 @@ const styles = StyleSheet.create({
   label: {
     marginTop: 8,
     marginBottom: 4,
+  },
+  qrWrap: {
+    alignSelf: "center",
+    backgroundColor: "#ffffff",
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 8,
   },
   addr: {
     fontFamily: "monospace",
