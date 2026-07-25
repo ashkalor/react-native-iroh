@@ -15,14 +15,14 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                 | Android                          | iOS                      |
-| ------------------------------------------------------- | -------------------------------- | ------------------------ |
-| Endpoint create / close                                 | Validated (device + emulator)    | Validated (device + sim) |
-| Blob share / download (`blobs.share` / `.download`)     | Validated (device + emulator)    | Validated (device + sim) |
-| Collections (`shareCollection` / `downloadCollection`)  | Validated (emulator)             | Not yet validated        |
-| Relay mode (`relayMode`)                                | Validated (emulator)             | Validated (simulator)    |
-| Address observability (`addr` / `watchAddr` / `online`) | Validated (emulator)             | Not yet validated        |
-| Gossip (`gossip.subscribe` / `broadcast`)               | Code-complete, roundtrip pending | Not yet validated        |
+| Feature                                                 | Android                       | iOS                      |
+| ------------------------------------------------------- | ----------------------------- | ------------------------ |
+| Endpoint create / close                                 | Validated (device + emulator) | Validated (device + sim) |
+| Blob share / download (`blobs.share` / `.download`)     | Validated (device + emulator) | Validated (device + sim) |
+| Collections (`shareCollection` / `downloadCollection`)  | Validated (emulator)          | Not yet validated        |
+| Relay mode (`relayMode`)                                | Validated (emulator)          | Validated (simulator)    |
+| Address observability (`addr` / `watchAddr` / `online`) | Validated (emulator)          | Not yet validated        |
+| Gossip (`gossip.subscribe` / `broadcast`)               | Validated (device)            | Validated (device)       |
 
 ### Cross-platform transfer
 
@@ -32,6 +32,21 @@ phone downloaded it, observed progress, then re-shared what it received so the
 two BLAKE3 content hashes could be compared. They matched, so the received bytes
 were verified identical rather than merely present. This is the one test that
 exercises both native builds against each other instead of against themselves.
+
+### Cross-platform gossip
+
+The same two devices have also joined a shared gossip topic and exchanged
+messages. The iPhone joined first and the Android phone bootstrapped to it, both
+by pasting the full `EndpointAddr` and, separately, by supplying only the
+endpoint id and letting n0's discovery resolve its addresses. Both worked.
+
+Gossip topic membership is created only by a local join, so the second device
+cannot bootstrap into a topic the first has not joined yet: an inbound join for
+an unknown topic is dropped rather than refused. That ordering is a property of
+the protocol, not of this example.
+
+The automated two-device gossip flow in `e2e/` has still never been driven to
+completion; the validation above was performed by hand.
 
 ## What "validated" means here
 
