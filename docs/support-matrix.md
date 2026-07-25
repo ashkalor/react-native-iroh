@@ -53,9 +53,9 @@ completion; the validation above was performed by hand.
 Android support is validated on the emulator gate the maintainers run in-session:
 endpoint lifecycle, blob and collection transfer, relay-mode selection, and the
 address / online observability surface all passed a real loopback (and, where
-applicable, cross-emulator) run. Gossip is code-complete and unit-tested, but its
-device-to-device roundtrip has not been driven through the gate yet, so it is
-listed as roundtrip pending rather than validated.
+applicable, cross-emulator) run. Gossip is the exception to the emulator rule: it
+was validated by hand between two physical devices rather than through the gate,
+because the automated flow has never been driven to completion.
 
 iOS is validated on the maintainer's Mac, not by CI (iOS runners are billed at
 10x). The rows marked "Validated (simulator)" were exercised on an iOS simulator
@@ -70,11 +70,11 @@ JavaScript loaded over Metro.
 
 The device rows are narrower than the simulator and emulator rows, and the
 difference matters. On physical hardware the maintainers have exercised endpoint
-creation and a blob transfer between an iPhone and an Android phone, and nothing
-else. Collections, relay-mode selection, address observability and gossip have
-only been driven on the emulator and simulator. The code paths are
-platform-agnostic Rust plus the shared TypeScript layer, so they are expected to
-work, but "expected" is not "validated" and the matrix reflects that.
+creation, a blob transfer, and a gossip topic between an iPhone and an Android
+phone, and nothing else. Collections, relay-mode selection and address
+observability have only been driven on the emulator and simulator. The code paths
+are platform-agnostic Rust plus the shared TypeScript layer, so they are expected
+to work, but "expected" is not "validated" and the matrix reflects that.
 
 The network path the cross-platform transfer actually took (a direct hole-punched
 route, or a relay) was not recorded, so relay fallback and NAT traversal remain
