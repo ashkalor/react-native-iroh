@@ -40,6 +40,10 @@ relays disabled, a full loopback share / download / integrity roundtrip between
 them, cancellation and close semantics, all reporting ALL PASS. iroh itself binds
 and reports online through Network.framework there.
 
+Both platforms are validated against apps compiled from the committed sources,
+including the Rust core, rather than a previously installed binary with fresh
+JavaScript loaded over Metro.
+
 Two limits are worth stating plainly. First, this is the simulator: a run on
 physical iOS hardware (which needs one-time signing and device trust) has not
 happened yet, so NAT traversal and radio behavior are unproven on iOS. Second,
