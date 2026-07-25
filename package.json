@@ -57,6 +57,17 @@
   "module": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "react-native": "src/index",
+  "exports": {
+    ".": {
+      "types": "./lib/typescript/src/index.d.ts",
+      "default": "./lib/commonjs/index.js"
+    },
+    "./hooks": {
+      "types": "./lib/typescript/src/hooks/index.d.ts",
+      "default": "./lib/commonjs/hooks/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -79,8 +90,10 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.11.0",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/git": "^10.0.1",
+    "@testing-library/react": "^16.3.2",
     "@types/jest": "^30.0.0",
     "@types/react": "19.2.17",
     "conventional-changelog-conventionalcommits": "^10.2.1",
@@ -89,6 +102,7 @@
     "oxfmt": "^0.59.0",
     "oxlint": "^1.74.0",
     "react": "19.2.7",
+    "react-dom": "19.2.7",
     "react-native": "0.86.0",
     "react-native-builder-bob": "^0.43.0",
     "react-native-nitro-modules": "0.36.1",

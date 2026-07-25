@@ -10,6 +10,18 @@ export type {
   RelayMode,
 } from "./endpoint";
 export { getIrohErrorCode, IrohError } from "./errors";
+// The hook functions live behind the `react-native-iroh/hooks` subpath so the
+// root entry stays free of any `react` import; only their (react-free) public
+// result types are surfaced here for convenience.
+export type {
+  EndpointStatus,
+  GossipStatus,
+  TransferStatus,
+  UseEndpointResult,
+  UseGossipOptions,
+  UseGossipResult,
+  UseTransferState,
+} from "./hooks";
 export type {
   GossipMessage,
   GossipNeighborEvent,
