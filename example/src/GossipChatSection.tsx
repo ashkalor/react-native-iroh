@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
-import { IrohError, type Endpoint, type EndpointAddr } from "react-native-iroh";
+import { IrohError, type Endpoint, type EndpointAddr, type EndpointId } from "react-native-iroh";
 import { useGossip } from "react-native-iroh/hooks";
 import { e2eEvent, e2eGossipAddr, e2eReport } from "./markers";
 import { sectionStyles } from "./theme";
@@ -18,23 +18,36 @@ const MAX_LOG_LINES = 200;
 type JoinRequest = { topic: string; bootstrap?: readonly EndpointAddr[] };
 
 /**
- * Parses a bootstrap address that arrived by copy/paste or a QR scan.
+ * Parses whatever the other device handed over: either a bare endpoint id, or a
+ * full `EndpointAddr` JSON object.
  *
- * Getting it here is lossy in practice: scanning the code with a camera app, or
- * selecting the wrapped text on the other device, routinely injects newlines
- * into the middle of the JSON, and a raw control character inside a JSON string
- * is a parse error. None of the fields (endpoint id, relay URLs, socket
- * addresses) can legitimately contain one, so stripping them is safe and makes
- * the paste work the way a user expects.
+ * An id on its own is enough whenever the endpoint has discovery, which the
+ * `"n0"` preset this app uses does: it publishes its own addresses to n0's DNS
+ * and resolves other endpoints' the same way, so the peer only needs to know
+ * WHO to look for. The full address is the fallback for endpoints with no
+ * discovery (the `"minimal"` preset), where the addresses have to travel with
+ * the id because nothing can look them up.
+ *
+ * Either form arrives lossily: scanning with a camera app, or selecting wrapped
+ * text, routinely injects line breaks. A raw control character inside a JSON
+ * string is a parse error, and none of these fields can legitimately contain
+ * one, so they are stripped first.
  */
-function parseBootstrapAddr(pasted: string): EndpointAddr {
-  const cleaned = [...pasted].filter((character) => character.charCodeAt(0) > 0x1f).join("");
+function parseBootstrapPeer(pasted: string): EndpointAddr {
+  const cleaned = [...pasted]
+    .filter((character) => character.charCodeAt(0) > 0x1f)
+    .join("")
+    .trim();
+  if (!cleaned.startsWith("{")) {
+    if (!/^[0-9a-z]{52,64}$/i.test(cleaned)) {
+      throw new Error(`"${cleaned.slice(0, 24)}..." is not an endpoint id`);
+    }
+    return { id: cleaned as EndpointId, relayUrls: [], directAddrs: [] };
+  }
   try {
     return JSON.parse(cleaned) as EndpointAddr;
   } catch {
-    throw new Error(
-      "bootstrap peer is not a valid address: copy the whole line the other device shows, including both braces",
-    );
+    throw new Error("bootstrap peer is neither an endpoint id nor a full address object");
   }
 }
 
@@ -56,16 +69,6 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
   const [draft, setDraft] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
   const reportedRoundtrip = useRef(false);
-
-  // The address the other device needs as its bootstrap peer. Watched rather
-  // than read once: the relay URL only appears once the endpoint is online, and
-  // a bootstrap address without it is not dialable across NAT.
-  const [addr, setAddr] = useState<EndpointAddr>(() => endpoint.addr);
-  useEffect(() => {
-    setAddr(endpoint.addr);
-    return endpoint.watchAddr(setAddr);
-  }, [endpoint]);
-  const addrJson = JSON.stringify(addr);
 
   const { messages, broadcast, status, error } = useGossip(
     request === null ? null : endpoint,
@@ -90,7 +93,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       const pasted = bootstrapText.trim();
       setRequest({
         topic: topic.trim(),
-        bootstrap: pasted.length > 0 ? [parseBootstrapAddr(pasted)] : undefined,
+        bootstrap: pasted.length > 0 ? [parseBootstrapPeer(pasted)] : undefined,
       });
     } catch (caught) {
       const message = caught instanceof IrohError ? caught.message : String(caught);
@@ -157,13 +160,12 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
 
           <Text style={styles.step}>
             2. On the FIRST device, leave the box below empty. On the SECOND device, scan the first
-            device&apos;s code with your camera (or long-press its address to copy) and paste it
-            here.
+            device&apos;s code with your camera (or long-press its id to copy) and paste it here.
           </Text>
           <TextInput
             testID="gossip-bootstrap"
             style={styles.input}
-            placeholder="empty on the first device, paste the other address on the second"
+            placeholder="empty on the first device, paste the other id on the second"
             autoCapitalize="none"
             autoCorrect={false}
             multiline
@@ -217,14 +219,15 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       )}
 
       <Text style={styles.step}>
-        This device&apos;s address. The other device needs it to find this one: scan the code with
-        its camera, or long-press the text to copy it.
+        This device&apos;s id. The other device needs it to find this one: scan the code with its
+        camera, or long-press the text to copy it. The addresses do not travel with it because
+        discovery looks them up from the id.
       </Text>
       <View style={styles.qrWrap} testID="gossip-addr-qr">
-        <QRCode value={addrJson} size={220} ecl="L" quietZone={8} />
+        <QRCode value={endpoint.id} size={220} ecl="M" quietZone={8} />
       </View>
       <Text style={styles.addr} selectable testID="gossip-addr">
-        {addrJson}
+        {endpoint.id}
       </Text>
 
       {shownError !== undefined && shownError !== null ? (
