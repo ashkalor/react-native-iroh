@@ -14,9 +14,7 @@
 use std::{net::SocketAddr, sync::LazyLock};
 
 use bytes::Bytes;
-use iroh::{
-    address_lookup::memory::MemoryLookup, EndpointAddr, EndpointId, RelayUrl, TransportAddr,
-};
+use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use iroh_gossip::{
     api::{Event, GossipSender},
     proto::{TopicId, DEFAULT_MAX_MESSAGE_SIZE},
@@ -104,23 +102,30 @@ fn parse_endpoint_addr(json: &str) -> Result<EndpointAddr> {
         .map_err(|e| IrohError::GossipSubscribe(format!("invalid bootstrap endpoint id: {e}")))?;
 
     let mut transports: Vec<TransportAddr> = Vec::new();
-    if let Some(relays) = value.get("relayUrls").and_then(|v| v.as_array()) {
-        for relay in relays.iter().filter_map(|v| v.as_str()) {
-            let url: RelayUrl = relay.parse().map_err(|e| {
-                IrohError::GossipSubscribe(format!("invalid bootstrap relay url {relay:?}: {e}"))
-            })?;
-            transports.push(TransportAddr::Relay(url));
-        }
+    for relay in json_strings(&value, "relayUrls") {
+        let url: RelayUrl = relay.parse().map_err(|e| {
+            IrohError::GossipSubscribe(format!("invalid bootstrap relay url {relay:?}: {e}"))
+        })?;
+        transports.push(TransportAddr::Relay(url));
     }
-    if let Some(directs) = value.get("directAddrs").and_then(|v| v.as_array()) {
-        for direct in directs.iter().filter_map(|v| v.as_str()) {
-            let socket: SocketAddr = direct.parse().map_err(|e| {
-                IrohError::GossipSubscribe(format!("invalid bootstrap direct addr {direct:?}: {e}"))
-            })?;
-            transports.push(TransportAddr::Ip(socket));
-        }
+    for direct in json_strings(&value, "directAddrs") {
+        let socket: SocketAddr = direct.parse().map_err(|e| {
+            IrohError::GossipSubscribe(format!("invalid bootstrap direct addr {direct:?}: {e}"))
+        })?;
+        transports.push(TransportAddr::Ip(socket));
     }
     Ok(EndpointAddr::from_parts(id, transports))
+}
+
+/// The string members of `value[key]`, or nothing when the key is absent, not
+/// an array, or holds non-string entries.
+fn json_strings<'a>(value: &'a serde_json::Value, key: &str) -> impl Iterator<Item = &'a str> {
+    value
+        .get(key)
+        .and_then(|found| found.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str())
 }
 
 /// Subscribes to the gossip topic derived from `topic` on `endpoint`.
@@ -153,18 +158,11 @@ pub fn gossip_subscribe(
     let peer_ids: Vec<EndpointId> = bootstrap.iter().map(|addr| addr.id).collect();
 
     // Seed the bootstrap peers' addresses so gossip can dial them by id even
-    // without discovery (e.g. minimal-preset / LAN-only endpoints). Populate
-    // the lookup before handing it to the endpoint so we need no handle to it.
-    if !bootstrap.is_empty() {
-        let lookup = MemoryLookup::new();
-        for addr in bootstrap {
-            lookup.add_endpoint_info(addr);
-        }
-        state
-            .endpoint
-            .address_lookup()
-            .map_err(|e| IrohError::GossipSubscribe(format!("address lookup unavailable: {e}")))?
-            .add(lookup);
+    // without discovery (e.g. minimal-preset / LAN-only endpoints). The
+    // endpoint owns one lookup for the host's whole lifetime, so repeated
+    // subscribes update it in place instead of growing its lookup chain.
+    for addr in bootstrap {
+        state.bootstrap_lookup.add_endpoint_info(addr);
     }
 
     runtime().spawn(async move {
@@ -306,6 +304,36 @@ mod tests {
         ));
     }
 
+    /// Repeated subscribes must accumulate bootstrap addresses in the
+    /// endpoint's single lookup rather than stacking a new lookup onto its
+    /// resolver chain per subscribe.
+    #[test]
+    fn repeated_subscribes_share_one_bootstrap_lookup() {
+        let endpoint = create_minimal_endpoint(None);
+        let (first, second) = (create_and_take_addr(), create_and_take_addr());
+
+        for addr_json in [&first.1, &second.1] {
+            gossip_subscribe(
+                endpoint,
+                "chat".into(),
+                addr_json.clone(),
+                |_| {},
+                |_| {},
+                |_| {},
+            )
+            .expect("subscribe started");
+        }
+
+        let lookup = &endpoint_state(endpoint).expect("state").bootstrap_lookup;
+        for (id, _) in [&first, &second] {
+            assert!(
+                lookup.get_endpoint_info(*id).is_some(),
+                "both subscribes' bootstrap peers resolve from the same lookup"
+            );
+        }
+        close_endpoint_blocking(endpoint).expect("close");
+    }
+
     #[test]
     fn broadcast_on_unknown_subscription_reports_invalid_handle() {
         let (tx, rx) = mpsc::channel();
@@ -396,8 +424,6 @@ mod tests {
         close_endpoint_blocking(bob).expect("close bob");
     }
 
-    // --- test helpers -----------------------------------------------------
-
     type Collected = (GossipHandle, mpsc::Receiver<String>, mpsc::Receiver<String>);
 
     /// Subscribes and returns the handle plus channels of received messages and
@@ -465,5 +491,18 @@ mod tests {
         let id = crate::endpoint::endpoint_id(endpoint).expect("id");
         close_endpoint_blocking(endpoint).expect("close");
         id
+    }
+
+    /// A closed endpoint's id paired with the bootstrap JSON naming it.
+    fn create_and_take_addr() -> (EndpointId, String) {
+        let endpoint = create_minimal_endpoint(None);
+        let id: EndpointId = endpoint_addr(endpoint)
+            .expect("addr")
+            .id
+            .parse()
+            .expect("endpoint id parses");
+        let json = addr_json(endpoint);
+        close_endpoint_blocking(endpoint).expect("close");
+        (id, json)
     }
 }

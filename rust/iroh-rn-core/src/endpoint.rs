@@ -8,8 +8,8 @@
 use std::{path::PathBuf, sync::Arc, sync::LazyLock, time::Duration};
 
 use iroh::{
-    endpoint::presets, protocol::Router, Endpoint, EndpointAddr, RelayMode, RelayUrl,
-    TransportAddr, Watcher,
+    address_lookup::memory::MemoryLookup, endpoint::presets, protocol::Router, Endpoint,
+    EndpointAddr, RelayMode, RelayUrl, TransportAddr, Watcher,
 };
 use iroh_blobs::{
     api::blobs::{ExportMode, ImportMode},
@@ -171,6 +171,11 @@ pub(crate) struct EndpointState {
     /// accepts incoming gossip connections into it; [`crate::gossip`] drives
     /// its subscriptions.
     pub(crate) gossip: Gossip,
+    /// Addresses supplied by the host (gossip bootstrap peers), so the endpoint
+    /// can dial those peers by id without a discovery service. Registered once
+    /// with the endpoint's address-lookup chain at creation; entries are added
+    /// to it thereafter.
+    pub(crate) bootstrap_lookup: MemoryLookup,
     router: Router,
 }
 
@@ -246,11 +251,18 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .spawn();
 
+    let bootstrap_lookup = MemoryLookup::new();
+    endpoint
+        .address_lookup()
+        .map_err(|e| IrohError::EndpointBind(format!("address lookup unavailable: {e}")))?
+        .add(bootstrap_lookup.clone());
+
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
         preset: config.preset,
         gossip,
+        bootstrap_lookup,
         router,
     });
     Ok(EndpointHandle(handle))
