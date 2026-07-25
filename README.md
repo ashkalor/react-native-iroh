@@ -462,6 +462,10 @@ an all-ABI AAR is about 36 MB. Use Android App Bundles so each device
 downloads only its own ABI. The iOS static library adds a comparable
 single-architecture cost after App Store thinning.
 
+For an honest, per-feature view of what has actually been validated on each
+platform (as opposed to merely compiling), see the
+[support matrix](./docs/support-matrix.md).
+
 ## Example app
 
 `example/` contains a complete share/download app: device A shares a file
