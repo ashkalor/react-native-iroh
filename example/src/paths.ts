@@ -65,6 +65,25 @@ export function ensureFallbackSource(): string {
   return fromFileUri(file.uri);
 }
 
+/**
+ * Wipes and recreates the smoke suite's scratch directory, returning its plain
+ * path.
+ *
+ * The suite builds blob stores under here. Re-running it against stores left by
+ * an earlier run does not merely dirty the results, it breaks the run: the
+ * export step fails with an I/O error on Android and the download hangs on iOS.
+ * App data survives `adb install -r`, so a fresh build is not a fresh state and
+ * the suite has to clear its own workspace.
+ */
+export function resetSmokeDir(): string {
+  const dir = new Directory(`${DOC_BASE_URI}/iroh-smoke`);
+  if (dir.exists) {
+    dir.delete();
+  }
+  dir.create({ intermediates: true });
+  return fromFileUri(dir.uri);
+}
+
 /** Outcome of {@link shareFirstReadable}. */
 export type ShareAttempt =
   | { ok: true; ticket: string; source: string }
