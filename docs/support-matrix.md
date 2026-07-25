@@ -15,14 +15,14 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                 | Android                          | iOS               |
-| ------------------------------------------------------- | -------------------------------- | ----------------- |
-| Endpoint create / close                                 | Validated                        | Not yet validated |
-| Blob share / download (`blobs.share` / `.download`)     | Validated                        | Not yet validated |
-| Collections (`shareCollection` / `downloadCollection`)  | Validated                        | Not yet validated |
-| Relay mode (`relayMode`)                                | Validated                        | Not yet validated |
-| Address observability (`addr` / `watchAddr` / `online`) | Validated                        | Not yet validated |
-| Gossip (`gossip.subscribe` / `broadcast`)               | Code-complete, roundtrip pending | Not yet validated |
+| Feature                                                 | Android                          | iOS                   |
+| ------------------------------------------------------- | -------------------------------- | --------------------- |
+| Endpoint create / close                                 | Validated                        | Validated (simulator) |
+| Blob share / download (`blobs.share` / `.download`)     | Validated                        | Validated (simulator) |
+| Collections (`shareCollection` / `downloadCollection`)  | Validated                        | Not yet validated     |
+| Relay mode (`relayMode`)                                | Validated                        | Validated (simulator) |
+| Address observability (`addr` / `watchAddr` / `online`) | Validated                        | Not yet validated     |
+| Gossip (`gossip.subscribe` / `broadcast`)               | Code-complete, roundtrip pending | Not yet validated     |
 
 ## What "validated" means here
 
@@ -33,11 +33,20 @@ applicable, cross-emulator) run. Gossip is code-complete and unit-tested, but it
 device-to-device roundtrip has not been driven through the gate yet, so it is
 listed as roundtrip pending rather than validated.
 
-iOS has not been validated on any feature yet: that pass runs on the maintainer's
-Mac (iOS is not exercised by CI, which would be billed at 10x). The code paths are
-platform-agnostic Rust plus the shared TypeScript layer, so they are expected to
-work, but "expected" is not "validated" and the matrix reflects that until the Mac
-session lands.
+iOS is validated on the maintainer's Mac, not by CI (iOS runners are billed at
+10x). The rows marked "Validated (simulator)" were exercised on an iOS simulator
+by the same in-app smoke suite the Android gate runs: two endpoints created with
+relays disabled, a full loopback share / download / integrity roundtrip between
+them, cancellation and close semantics, all reporting ALL PASS. iroh itself binds
+and reports online through Network.framework there.
+
+Two limits are worth stating plainly. First, this is the simulator: a run on
+physical iOS hardware (which needs one-time signing and device trust) has not
+happened yet, so NAT traversal and radio behavior are unproven on iOS. Second,
+collections, address observability, and gossip have their own device flows that
+have only been driven on Android so far. The code paths are platform-agnostic
+Rust plus the shared TypeScript layer, so they are expected to work, but
+"expected" is not "validated" and the matrix reflects that.
 
 ## React hooks
 

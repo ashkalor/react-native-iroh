@@ -40,12 +40,12 @@ export interface EndpointConfig {
 }
 
 /**
- * The react-native-iroh native bridge (v0.1.0 surface).
+ * The react-native-iroh native bridge.
  *
  * Errors: every rejected Promise (and every thrown sync error) carries a
  * message of the form `[iroh:<code>] <detail>`, where `<code>` is a stable
- * numeric error code (1000-1003 generic, 2000 endpoint, 3000-3003 blobs).
- * Parse it with `/\[iroh:(\d+)\]/`.
+ * numeric error code (1000-1003 generic, 2000 endpoint, 3000-3003 blobs,
+ * 4000-4002 gossip). Parse it with `/\[iroh:(\d+)\]/`.
  */
 // The published react-native-nitro-modules@0.36.1 types don't include "rust"
 // in PlatformSpec yet. Only the nitrogen fork's Rust codegen understands it.

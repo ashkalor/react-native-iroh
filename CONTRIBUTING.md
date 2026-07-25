@@ -7,7 +7,8 @@ building, so it is used in a real app rather than written as a demo. I
 open-sourced it so that nobody else has to build the same binding twice. That
 is the whole motivation, and it means contributions are genuinely welcome:
 bug reports, pull requests, documentation fixes, and especially the protocol
-bindings on the roadmap (Collections, Gossip, Docs). If a protocol or a
+bindings still on the roadmap (Docs; blobs, collections and gossip already
+ship, see `docs/support-matrix.md`). If a protocol or a
 platform detail matters to you, open an issue and let's compare notes before
 you sink time into a big change.
 
@@ -54,9 +55,14 @@ bun run typecheck        # tsc --noEmit
 bun run lint             # oxlint
 bun run format:check     # oxfmt --check
 bun test src             # TypeScript unit tests
+bun run build            # typecheck + bob build (root and ./hooks entry points)
 
 cargo fmt --check && cargo clippy && cargo test
 ```
+
+Per-feature platform support is tracked in `docs/support-matrix.md`. Keep it
+honest when a feature's verification status changes: it records what has
+actually been run on each platform, not what is expected to work.
 
 ### Building
 
@@ -107,9 +113,10 @@ NITROGEN_FORK=/path/to/nitro bun run codegen
 
 ### End-to-end tests
 
-E2E drives the example app on two Android devices/emulators with Maestro
-(share on A, download on B, integrity check via re-share). It runs locally,
-not in CI:
+E2E drives the example app on two Android devices/emulators with Maestro:
+single-blob share/download with an integrity check via re-share, a collection
+roundtrip, the endpoint smoke suite (relay mode, address, online), and a gossip
+chat roundtrip across both devices. It runs locally, not in CI:
 
 ```bash
 bun run e2e
