@@ -15,14 +15,23 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                 | Android                          | iOS                   |
-| ------------------------------------------------------- | -------------------------------- | --------------------- |
-| Endpoint create / close                                 | Validated                        | Validated (simulator) |
-| Blob share / download (`blobs.share` / `.download`)     | Validated                        | Validated (simulator) |
-| Collections (`shareCollection` / `downloadCollection`)  | Validated                        | Not yet validated     |
-| Relay mode (`relayMode`)                                | Validated                        | Validated (simulator) |
-| Address observability (`addr` / `watchAddr` / `online`) | Validated                        | Not yet validated     |
-| Gossip (`gossip.subscribe` / `broadcast`)               | Code-complete, roundtrip pending | Not yet validated     |
+| Feature                                                 | Android                          | iOS                      |
+| ------------------------------------------------------- | -------------------------------- | ------------------------ |
+| Endpoint create / close                                 | Validated (device + emulator)    | Validated (device + sim) |
+| Blob share / download (`blobs.share` / `.download`)     | Validated (device + emulator)    | Validated (device + sim) |
+| Collections (`shareCollection` / `downloadCollection`)  | Validated (emulator)             | Not yet validated        |
+| Relay mode (`relayMode`)                                | Validated (emulator)             | Validated (simulator)    |
+| Address observability (`addr` / `watchAddr` / `online`) | Validated (emulator)             | Not yet validated        |
+| Gossip (`gossip.subscribe` / `broadcast`)               | Code-complete, roundtrip pending | Not yet validated        |
+
+### Cross-platform transfer
+
+An iOS device and an Android device have transferred a blob between them, in
+that direction, on real hardware: the iPhone shared a 1 MiB file and the Android
+phone downloaded it, observed progress, then re-shared what it received so the
+two BLAKE3 content hashes could be compared. They matched, so the received bytes
+were verified identical rather than merely present. This is the one test that
+exercises both native builds against each other instead of against themselves.
 
 ## What "validated" means here
 
