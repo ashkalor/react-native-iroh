@@ -65,6 +65,16 @@ fn encode_error(err: IrohError) -> String {
     format!("[iroh:{}] {err}", err.code())
 }
 
+/// Narrows an incoming bridge endpoint handle (an `f64` on the wire) into a
+/// typed [`EndpointHandle`].
+///
+/// Every endpoint-addressed trait method receives its endpoint as an `f64`;
+/// this centralizes the one `f64 -> u64` narrowing so the cast lives in a
+/// single place rather than being repeated at each call site.
+fn endpoint_handle(endpoint: f64) -> EndpointHandle {
+    EndpointHandle::from_raw(endpoint as u64)
+}
+
 /// The completer a Promise-returning trait method receives: settles the JS
 /// Promise exactly once with the bridge-encoded result.
 type Completer<T> = Box<dyn FnOnce(Result<T, String>) + Send>;
@@ -171,15 +181,15 @@ impl HybridIrohSpec for HybridIroh {
     }
 
     fn endpoint_id(&self, endpoint: f64) -> Result<String, String> {
-        endpoint_id(EndpointHandle::from_raw(endpoint as u64)).map_err(encode_error)
+        endpoint_id(endpoint_handle(endpoint)).map_err(encode_error)
     }
 
     fn is_endpoint_open(&self, endpoint: f64) -> Result<bool, String> {
-        Ok(endpoint_is_open(EndpointHandle::from_raw(endpoint as u64)))
+        Ok(endpoint_is_open(endpoint_handle(endpoint)))
     }
 
     fn endpoint_addr(&self, endpoint: f64) -> Result<String, String> {
-        endpoint_addr(EndpointHandle::from_raw(endpoint as u64))
+        endpoint_addr(endpoint_handle(endpoint))
             .map(|info| endpoint_addr_to_json(&info))
             .map_err(encode_error)
     }
@@ -190,7 +200,7 @@ impl HybridIrohSpec for HybridIroh {
         on_start: Box<dyn Fn(f64) + Send + Sync>,
         on_change: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<(), String> {
-        let handle = watch_addr(EndpointHandle::from_raw(endpoint as u64), move |info| {
+        let handle = watch_addr(endpoint_handle(endpoint), move |info| {
             on_change(endpoint_addr_to_json(&info))
         })
         .map_err(encode_error)?;
@@ -208,24 +218,20 @@ impl HybridIrohSpec for HybridIroh {
 
     fn endpoint_online(&self, endpoint: f64, timeout_ms: f64, promise: Completer<()>) {
         let timeout = Duration::from_millis(timeout_ms.max(0.0) as u64);
-        endpoint_online(
-            EndpointHandle::from_raw(endpoint as u64),
-            timeout,
-            move |result| {
-                promise(result.map_err(encode_error));
-            },
-        );
+        endpoint_online(endpoint_handle(endpoint), timeout, move |result| {
+            promise(result.map_err(encode_error));
+        });
     }
 
     fn close_endpoint(&self, endpoint: f64, promise: Completer<()>) {
-        endpoint_close(EndpointHandle::from_raw(endpoint as u64), move |result| {
+        endpoint_close(endpoint_handle(endpoint), move |result| {
             promise(result.map_err(encode_error));
         });
     }
 
     fn share_blob(&self, endpoint: f64, path: String, promise: Completer<String>) {
         blob_share(
-            EndpointHandle::from_raw(endpoint as u64),
+            endpoint_handle(endpoint),
             PathBuf::from(path),
             move |result| {
                 promise(result.map_err(encode_error));
@@ -255,7 +261,7 @@ impl HybridIrohSpec for HybridIroh {
         let promise = Arc::new(Mutex::new(Some(promise)));
         let promise_async = Arc::clone(&promise);
         let started = blob_download(
-            EndpointHandle::from_raw(endpoint as u64),
+            endpoint_handle(endpoint),
             &ticket,
             PathBuf::from(dest_path),
             move |bytes| progress.offer(bytes),
@@ -298,27 +304,19 @@ impl HybridIrohSpec for HybridIroh {
             .filter(|segment| !segment.is_empty())
             .map(PathBuf::from)
             .collect();
-        collection_share(
-            EndpointHandle::from_raw(endpoint as u64),
-            paths,
-            move |result| {
-                promise(result.map_err(encode_error));
-            },
-        );
+        collection_share(endpoint_handle(endpoint), paths, move |result| {
+            promise(result.map_err(encode_error));
+        });
     }
 
     fn collection_manifest(&self, endpoint: f64, ticket: String, promise: Completer<String>) {
-        collection_manifest(
-            EndpointHandle::from_raw(endpoint as u64),
-            ticket,
-            move |result| {
-                promise(
-                    result
-                        .map(|entries| collection_entries_to_json(&entries))
-                        .map_err(encode_error),
-                );
-            },
-        );
+        collection_manifest(endpoint_handle(endpoint), ticket, move |result| {
+            promise(
+                result
+                    .map(|entries| collection_entries_to_json(&entries))
+                    .map_err(encode_error),
+            );
+        });
     }
 
     fn parse_ticket(&self, ticket: String) -> Result<String, String> {
@@ -340,7 +338,7 @@ impl HybridIrohSpec for HybridIroh {
         // synchronously; the subscription's handle is delivered later via
         // on_start once the topic is joined (mirrors watch_addr's primitive).
         gossip_subscribe(
-            EndpointHandle::from_raw(endpoint as u64),
+            endpoint_handle(endpoint),
             topic,
             bootstrap_joined,
             move |handle| on_start(handle.raw() as f64),

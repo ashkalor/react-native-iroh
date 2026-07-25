@@ -29,6 +29,7 @@ use crate::{
     guarded_callback,
     registry::Registry,
     runtime::runtime,
+    spawn_completing,
 };
 
 /// The largest gossip payload accepted by [`gossip_broadcast`], in bytes.
@@ -245,14 +246,16 @@ pub fn gossip_broadcast(
         guarded_callback(move || on_complete(Err(err)));
         return;
     }
-    runtime().spawn(async move {
-        let result = subscription
-            .sender
-            .broadcast(Bytes::from(bytes))
-            .await
-            .map_err(|e| IrohError::GossipBroadcast(e.to_string()));
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(
+        async move {
+            subscription
+                .sender
+                .broadcast(Bytes::from(bytes))
+                .await
+                .map_err(|e| IrohError::GossipBroadcast(e.to_string()))
+        },
+        on_complete,
+    );
 }
 
 /// Ends a gossip subscription started with [`gossip_subscribe`], leaving the

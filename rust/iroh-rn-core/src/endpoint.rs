@@ -12,6 +12,7 @@ use iroh::{
     TransportAddr, Watcher,
 };
 use iroh_blobs::{
+    api::blobs::{ExportMode, ImportMode},
     store::{fs::FsStore, mem::MemStore},
     BlobsProtocol,
 };
@@ -24,6 +25,7 @@ use crate::{
     registry::Registry,
     require_absolute,
     runtime::runtime,
+    spawn_completing,
 };
 
 /// Opaque handle to a live endpoint. `0` is never a valid handle.
@@ -135,6 +137,28 @@ impl BlobStore {
     pub(crate) fn is_persistent(&self) -> bool {
         matches!(self, BlobStore::Fs(_))
     }
+
+    /// The [`ImportMode`] for adding a local file to this store. A persistent
+    /// store references the file in place (no byte copy); an in-memory store
+    /// cannot reference and must copy the bytes in.
+    pub(crate) fn import_mode(&self) -> ImportMode {
+        if self.is_persistent() {
+            ImportMode::TryReference
+        } else {
+            ImportMode::Copy
+        }
+    }
+
+    /// The [`ExportMode`] for writing a stored blob to a destination path. A
+    /// persistent store can reference/move the file (avoiding a second byte
+    /// copy); an in-memory store must copy it out.
+    pub(crate) fn export_mode(&self) -> ExportMode {
+        if self.is_persistent() {
+            ExportMode::TryReference
+        } else {
+            ExportMode::Copy
+        }
+    }
 }
 
 /// Everything owned by one live endpoint.
@@ -164,10 +188,7 @@ pub fn endpoint_create(
     config: EndpointConfig,
     on_complete: impl FnOnce(Result<EndpointHandle>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = create_inner(config).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(create_inner(config), on_complete);
 }
 
 async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
@@ -369,16 +390,18 @@ pub fn endpoint_online(
             return;
         }
     };
-    runtime().spawn(async move {
-        let result = match tokio::time::timeout(timeout, endpoint.online()).await {
-            Ok(()) => Ok(()),
-            Err(_elapsed) => Err(IrohError::EndpointBind(format!(
-                "endpoint did not come online within {}ms",
-                timeout.as_millis()
-            ))),
-        };
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(
+        async move {
+            match tokio::time::timeout(timeout, endpoint.online()).await {
+                Ok(()) => Ok(()),
+                Err(_elapsed) => Err(IrohError::EndpointBind(format!(
+                    "endpoint did not come online within {}ms",
+                    timeout.as_millis()
+                ))),
+            }
+        },
+        on_complete,
+    );
 }
 
 /// Closes an endpoint: shuts down its router (which closes the underlying
@@ -397,10 +420,7 @@ pub fn endpoint_close(
             return;
         }
     };
-    runtime().spawn(async move {
-        let result = close_inner(state).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(close_inner(state), on_complete);
 }
 
 async fn close_inner(state: Arc<EndpointState>) -> Result<()> {

@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::LazyLock, sync::Mutex};
 
 use iroh_blobs::{
     api::{
-        blobs::{AddPathOptions, ExportOptions, ImportMode},
+        blobs::{AddPathOptions, ExportOptions},
         remote::GetProgressItem,
     },
     format::collection::Collection,
@@ -27,6 +27,7 @@ use crate::{
     registry::Registry,
     require_absolute,
     runtime::runtime,
+    spawn_completing,
 };
 
 /// How long [`blob_share`] waits for an `N0`-preset endpoint to come
@@ -67,22 +68,13 @@ pub fn blob_share(
     path: PathBuf,
     on_complete: impl FnOnce(Result<String>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = share_inner(endpoint, path).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(share_inner(endpoint, path), on_complete);
 }
 
 async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> {
     let path = require_absolute(path, "share path")?;
     let state = endpoint_state(endpoint)?;
-    // TryReference avoids copying file bytes into a persistent store; stores
-    // that cannot reference (in-memory) fall back to reading the file.
-    let mode = if state.store.is_persistent() {
-        ImportMode::TryReference
-    } else {
-        ImportMode::Copy
-    };
+    let mode = state.store.import_mode();
     let import = async {
         state
             .store
@@ -174,10 +166,7 @@ pub fn collection_share(
     paths: Vec<PathBuf>,
     on_complete: impl FnOnce(Result<String>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = collection_share_inner(endpoint, paths).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(collection_share_inner(endpoint, paths), on_complete);
 }
 
 async fn collection_share_inner(endpoint: EndpointHandle, paths: Vec<PathBuf>) -> Result<String> {
@@ -187,11 +176,7 @@ async fn collection_share_inner(endpoint: EndpointHandle, paths: Vec<PathBuf>) -
         ));
     }
     let state = endpoint_state(endpoint)?;
-    let mode = if state.store.is_persistent() {
-        ImportMode::TryReference
-    } else {
-        ImportMode::Copy
-    };
+    let mode = state.store.import_mode();
     // Import every child in order, pairing each with its source file's name.
     let import = async {
         let mut items: Vec<(String, iroh_blobs::Hash)> = Vec::with_capacity(paths.len());
@@ -261,10 +246,7 @@ pub fn collection_manifest(
     ticket: String,
     on_complete: impl FnOnce(Result<Vec<CollectionEntry>>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = collection_manifest_inner(endpoint, ticket).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(collection_manifest_inner(endpoint, ticket), on_complete);
 }
 
 async fn collection_manifest_inner(
@@ -351,24 +333,28 @@ pub fn blob_download(
         cancel: Mutex::new(Some(cancel_tx)),
     });
 
-    runtime().spawn(async move {
-        // Running the transfer as its own task turns a panic anywhere inside
-        // it into a JoinError instead of a lost completion callback.
-        let mut task = runtime().spawn(download_inner(endpoint, ticket, dest_path, on_progress));
-        let result = tokio::select! {
-            _ = cancel_rx => {
-                task.abort();
-                Err(IrohError::Cancelled)
-            }
-            joined = &mut task => match joined {
-                Ok(result) => result,
-                Err(join_err) => Err(IrohError::Internal(format!("download task failed: {join_err}"))),
-            },
-        };
-        // The handle may already be gone if the caller raced a cancel.
-        TRANSFERS.remove(handle).ok();
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(
+        async move {
+            // Running the transfer as its own task turns a panic anywhere
+            // inside it into a JoinError instead of a lost completion callback.
+            let mut task =
+                runtime().spawn(download_inner(endpoint, ticket, dest_path, on_progress));
+            let result = tokio::select! {
+                _ = cancel_rx => {
+                    task.abort();
+                    Err(IrohError::Cancelled)
+                }
+                joined = &mut task => match joined {
+                    Ok(result) => result,
+                    Err(join_err) => Err(IrohError::Internal(format!("download task failed: {join_err}"))),
+                },
+            };
+            // The handle may already be gone if the caller raced a cancel.
+            TRANSFERS.remove(handle).ok();
+            result
+        },
+        on_complete,
+    );
 
     Ok(TransferHandle(handle))
 }
@@ -436,13 +422,7 @@ async fn download_inner(
     }
 
     // Export the verified blob out of the store to the destination path.
-    // TryReference lets a persistent store move/reference the file instead of
-    // copying the bytes a second time.
-    let mode = if state.store.is_persistent() {
-        iroh_blobs::api::blobs::ExportMode::TryReference
-    } else {
-        iroh_blobs::api::blobs::ExportMode::Copy
-    };
+    let mode = state.store.export_mode();
     state
         .store
         .api()
