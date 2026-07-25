@@ -1,12 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
-import {
-  IrohError,
-  type Endpoint,
-  type EndpointAddr,
-  type GossipMessage,
-  type GossipSubscription,
-} from "react-native-iroh";
+import { IrohError, type Endpoint, type EndpointAddr } from "react-native-iroh";
+import { useGossip } from "react-native-iroh/hooks";
 import { e2eEvent, e2eGossipAddr, e2eReport } from "./markers";
 import { sectionStyles } from "./theme";
 
@@ -14,32 +9,37 @@ import { sectionStyles } from "./theme";
 const TOPIC = "react-native-iroh-e2e-chat";
 
 /** Chat lines kept on screen, so a long-running topic cannot grow state without
- * bound (the `useGossip` hook caps its own retention the same way). */
+ * bound. */
 const MAX_LOG_LINES = 200;
 
-type ChatState =
-  | { phase: "idle" }
-  | { phase: "joining" }
-  | { phase: "joined"; sub: GossipSubscription }
-  | { phase: "error"; message: string };
+/** What the user asked to join with, or `null` before they pressed Join. This
+ * gates {@link useGossip}, which subscribes as soon as it has an endpoint. */
+type JoinRequest = { bootstrap?: readonly EndpointAddr[] };
 
 /**
- * Gossip chat demo: join a fixed topic, stream the message log with
- * `for await (const m of sub.messages)`, and broadcast from a send box. On the
- * `"n0"` preset the relay traverses NAT so two emulators can chat; device B
- * bootstraps to device A by pasting A's `E2E: GOSSIP_ADDR` JSON into the
- * bootstrap box before joining.
+ * Gossip chat demo, written on the `react-native-iroh/hooks` layer: `useGossip`
+ * owns the subscription, drains both streams into capped state, and tears the
+ * topic down when this component unmounts. On the `"n0"` preset the relay
+ * traverses NAT so two emulators can chat; device B bootstraps to device A by
+ * pasting A's `E2E: GOSSIP_ADDR` JSON into the bootstrap box before joining.
  */
 function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Element {
-  const [state, setState] = useState<ChatState>({ phase: "idle" });
-  const [bootstrap, setBootstrap] = useState("");
+  const [request, setRequest] = useState<JoinRequest | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [bootstrapText, setBootstrapText] = useState("");
   const [draft, setDraft] = useState("");
-  const [log, setLog] = useState<GossipMessage[]>([]);
+  const [joinError, setJoinError] = useState<string | null>(null);
   const reportedRoundtrip = useRef(false);
 
+  const { messages, broadcast, status, error } = useGossip(
+    request === null ? null : endpoint,
+    TOPIC,
+    { bootstrap: request?.bootstrap, retain: MAX_LOG_LINES },
+  );
+
   const onJoin = useCallback(async () => {
-    setState({ phase: "joining" });
-    setLog([]);
+    setJoining(true);
+    setJoinError(null);
     reportedRoundtrip.current = false;
     e2eEvent("GOSSIP_JOIN");
     try {
@@ -51,63 +51,51 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       await endpoint.online({ timeoutMs: 20_000 }).catch(() => undefined);
       e2eGossipAddr(JSON.stringify(endpoint.addr));
 
-      let peers: EndpointAddr[] | undefined;
-      const pasted = bootstrap.trim();
-      if (pasted.length > 0) {
-        peers = [JSON.parse(pasted) as EndpointAddr];
-      }
-      const sub = endpoint.gossip.subscribe(TOPIC, peers ? { bootstrap: peers } : undefined);
-      setState({ phase: "joined", sub });
-    } catch (error) {
-      const message = error instanceof IrohError ? error.message : String(error);
+      const pasted = bootstrapText.trim();
+      setRequest({
+        bootstrap: pasted.length > 0 ? [JSON.parse(pasted) as EndpointAddr] : undefined,
+      });
+    } catch (caught) {
+      const message = caught instanceof IrohError ? caught.message : String(caught);
       e2eReport("gossip-join", false, message);
-      setState({ phase: "error", message });
+      setJoinError(message);
+    } finally {
+      setJoining(false);
     }
-  }, [endpoint, bootstrap]);
+  }, [endpoint, bootstrapText]);
 
-  // Drain the message stream into the on-screen log for as long as the
-  // subscription is live; the loop ends when the subscription is torn down.
+  // The first message received from a peer proves the roundtrip.
   useEffect(() => {
-    if (state.phase !== "joined") {
+    const first = messages[0];
+    if (first === undefined || reportedRoundtrip.current) {
       return;
     }
-    const sub = state.sub;
-    let alive = true;
-    void (async () => {
-      for await (const message of sub.messages) {
-        if (!alive) {
-          break;
-        }
-        setLog((previous) => [...previous, message].slice(-MAX_LOG_LINES));
-        // The first message received from a peer proves the roundtrip.
-        if (!reportedRoundtrip.current) {
-          reportedRoundtrip.current = true;
-          e2eReport("gossip-roundtrip", true, `from=${message.from} text=${message.text}`);
-        }
-      }
-    })();
-    return () => {
-      alive = false;
-      sub.unsubscribe();
-    };
-  }, [state]);
+    reportedRoundtrip.current = true;
+    e2eReport("gossip-roundtrip", true, `from=${first.from} text=${first.text}`);
+  }, [messages]);
+
+  // A subscription that fails after Join was pressed reports on the same marker
+  // the synchronous failure path uses.
+  useEffect(() => {
+    if (status === "error" && error !== undefined) {
+      e2eReport("gossip-join", false, error.message);
+    }
+  }, [status, error]);
 
   const onSend = useCallback(async () => {
-    if (state.phase !== "joined") {
-      return;
-    }
     const text = draft.trim().length > 0 ? draft.trim() : `ping from ${endpoint.id.slice(0, 8)}`;
     setDraft("");
     try {
-      await state.sub.broadcast(text);
+      await broadcast(text);
       e2eReport("gossip-send", true, `text=${text}`);
-    } catch (error) {
-      const message = error instanceof IrohError ? error.message : String(error);
+    } catch (caught) {
+      const message = caught instanceof IrohError ? caught.message : String(caught);
       e2eReport("gossip-send", false, message);
     }
-  }, [state, draft, endpoint]);
+  }, [broadcast, draft, endpoint]);
 
-  const joined = state.phase === "joined";
+  const joined = request !== null && status !== "error";
+  const shownError = joinError ?? (status === "error" ? error?.message : undefined);
   return (
     <View style={sectionStyles.section}>
       <Text style={sectionStyles.heading}>Gossip Chat</Text>
@@ -126,19 +114,17 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
             autoCapitalize="none"
             autoCorrect={false}
             multiline
-            value={bootstrap}
-            onChangeText={setBootstrap}
+            value={bootstrapText}
+            onChangeText={setBootstrapText}
           />
           <TouchableOpacity
             testID="gossip-join"
             accessibilityRole="button"
             style={[sectionStyles.button, styles.button]}
-            disabled={state.phase === "joining"}
+            disabled={joining}
             onPress={onJoin}
           >
-            <Text style={sectionStyles.buttonLabel}>
-              {state.phase === "joining" ? "Joining..." : "Join Topic"}
-            </Text>
+            <Text style={sectionStyles.buttonLabel}>{joining ? "Joining..." : "Join Topic"}</Text>
           </TouchableOpacity>
         </>
       ) : (
@@ -163,10 +149,10 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
             </TouchableOpacity>
           </View>
           <Text style={sectionStyles.dimText} testID="gossip-status">
-            Joined - {log.length} received
+            Joined - {messages.length} received
           </Text>
           <View style={styles.chatLog} testID="gossip-log">
-            {log.map((message, index) => (
+            {messages.map((message, index) => (
               <Text key={index} style={styles.chatLine} numberOfLines={2}>
                 {message.from.slice(0, 8)}: {message.text}
               </Text>
@@ -175,9 +161,9 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         </>
       )}
 
-      {state.phase === "error" ? (
+      {shownError !== undefined && shownError !== null ? (
         <Text style={sectionStyles.errorText} testID="gossip-error">
-          {state.message}
+          {shownError}
         </Text>
       ) : null}
     </View>
