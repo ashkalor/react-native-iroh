@@ -20,8 +20,11 @@ type JoinRequest = { bootstrap?: readonly EndpointAddr[] };
  * Gossip chat demo, written on the `react-native-iroh/hooks` layer: `useGossip`
  * owns the subscription, drains both streams into capped state, and tears the
  * topic down when this component unmounts. On the `"n0"` preset the relay
- * traverses NAT so two emulators can chat; device B bootstraps to device A by
- * pasting A's `E2E: GOSSIP_ADDR` JSON into the bootstrap box before joining.
+ * traverses NAT so two devices can chat.
+ *
+ * Gossip has no global discovery, so the two peers cannot find each other from
+ * the topic alone: device A joins first and shows its address, and device B
+ * pastes that address into the bootstrap box before joining.
  */
 function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Element {
   const [request, setRequest] = useState<JoinRequest | null>(null);
@@ -30,6 +33,15 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
   const [draft, setDraft] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
   const reportedRoundtrip = useRef(false);
+
+  // The address the other device needs as its bootstrap peer. Watched rather
+  // than read once: the relay URL only appears once the endpoint is online, and
+  // a bootstrap address without it is not dialable across NAT.
+  const [addr, setAddr] = useState<EndpointAddr>(() => endpoint.addr);
+  useEffect(() => {
+    setAddr(endpoint.addr);
+    return endpoint.watchAddr(setAddr);
+  }, [endpoint]);
 
   const { messages, broadcast, status, error } = useGossip(
     request === null ? null : endpoint,
@@ -104,6 +116,13 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         address first.
       </Text>
 
+      <Text style={[sectionStyles.dimText, styles.label]}>
+        This device&apos;s address (long-press to copy, paste on the other device):
+      </Text>
+      <Text style={styles.addr} selectable testID="gossip-addr">
+        {JSON.stringify(addr)}
+      </Text>
+
       {!joined ? (
         <>
           <Text style={[sectionStyles.dimText, styles.label]}>Bootstrap peer (device B only):</Text>
@@ -174,6 +193,14 @@ const styles = StyleSheet.create({
   label: {
     marginTop: 8,
     marginBottom: 4,
+  },
+  addr: {
+    fontFamily: "monospace",
+    fontSize: 10,
+    color: "#1a1a2e",
+    backgroundColor: "#f7f8fb",
+    borderRadius: 6,
+    padding: 8,
   },
   input: {
     borderWidth: StyleSheet.hairlineWidth,
