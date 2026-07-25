@@ -360,6 +360,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				REACT_NATIVE_PATH = "$(SRCROOT)/../../node_modules/react-native";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					/usr/lib/swift,
 					"$(inherited)",
@@ -427,6 +428,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				REACT_NATIVE_PATH = "$(SRCROOT)/../../node_modules/react-native";
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					/usr/lib/swift,
 					"$(inherited)",

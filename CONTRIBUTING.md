@@ -64,6 +64,34 @@ Per-feature platform support is tracked in `docs/support-matrix.md`. Keep it
 honest when a feature's verification status changes: it records what has
 actually been run on each platform, not what is expected to work.
 
+### iOS example build
+
+Three settings in `example/ios/IrohExample.xcodeproj` exist for reasons that are
+not obvious from the file, and removing any of them breaks the build outright:
+
+- `IPHONEOS_DEPLOYMENT_TARGET = 16.4` matches the Podfile. The Expo pods declare
+  a 16.4 minimum, so a lower app target fails with "module 'Expo' has a minimum
+  deployment target of iOS 16.4". This is the example only; the library podspec
+  keeps its lower minimum.
+- `REACT_NATIVE_PATH` points at the workspace-root `node_modules`. The "Bundle
+  React Native code and images" phase interpolates it, and nothing else in the
+  project or the CocoaPods xcconfigs defines it, so without it the phase runs
+  `/scripts/xcode/with-environment.sh` and fails.
+- `SWIFT_ENABLE_EXPLICIT_MODULES = NO`. Xcode's explicit Swift module builds do
+  not resolve `React_RCTAppDelegate` against RN 0.86's prebuilt React Core plus
+  the Expo umbrella, failing with "unable to resolve module dependency".
+
+Build the simulator app arm64-only. The pod's nitrogen cargo phase builds a
+single Rust slice keyed on `$ARCHS`, so a generic or multi-arch simulator
+destination fails to link:
+
+```bash
+xcodebuild -workspace IrohExample.xcworkspace -scheme IrohExample \
+  -configuration Debug -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,name=iPhone 17" \
+  ONLY_ACTIVE_ARCH=YES ARCHS=arm64 EXCLUDED_ARCHS=x86_64 build
+```
+
 ### Packaging
 
 The package ships a CommonJS build and a real ESM build, each with its own type
