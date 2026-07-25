@@ -17,12 +17,7 @@
  * Not part of the public API surface.
  */
 
-const DONE: IteratorReturnResult<undefined> = { value: undefined, done: true };
-
-interface Waiter<T> {
-  resolve(result: IteratorResult<T, undefined>): void;
-  reject(error: unknown): void;
-}
+import { DONE, WaiterQueue } from "./waiter-queue";
 
 /**
  * A latest-value-conflating async iterator over a {@link Watchable}. At most
@@ -33,20 +28,15 @@ interface Waiter<T> {
  */
 class ConflatingIterator<T> implements AsyncIterableIterator<T> {
   private pending: { value: T } | null = null;
-  private readonly waiters: Waiter<T>[] = [];
-  private terminal: { error: unknown } | null = null;
-  private errorDelivered = false;
+  private readonly consumers = new WaiterQueue<T>();
 
   constructor(private readonly detach: () => void) {}
 
   /** Delivers a value: hands it to the oldest waiter, or conflates. */
   push(value: T): void {
-    const waiter = this.waiters.shift();
-    if (waiter === undefined) {
+    if (!this.consumers.handOff(value)) {
       this.pending = { value };
-      return;
     }
-    waiter.resolve({ value, done: false });
   }
 
   /**
@@ -54,18 +44,7 @@ class ConflatingIterator<T> implements AsyncIterableIterator<T> {
    * waiter (exactly once); every other waiter ends. `null` ends gracefully.
    */
   finish(error: unknown | null): void {
-    if (this.terminal !== null) {
-      return;
-    }
-    this.terminal = { error };
-    for (const waiter of this.waiters.splice(0)) {
-      if (error !== null && !this.errorDelivered) {
-        this.errorDelivered = true;
-        waiter.reject(error);
-      } else {
-        waiter.resolve(DONE);
-      }
-    }
+    this.consumers.settle(error);
   }
 
   next(): Promise<IteratorResult<T, undefined>> {
@@ -74,27 +53,13 @@ class ConflatingIterator<T> implements AsyncIterableIterator<T> {
       this.pending = null;
       return Promise.resolve({ value, done: false });
     }
-    if (this.terminal !== null) {
-      if (this.terminal.error !== null && !this.errorDelivered) {
-        this.errorDelivered = true;
-        return Promise.reject(this.terminal.error);
-      }
-      return Promise.resolve(DONE);
-    }
-    return new Promise<IteratorResult<T, undefined>>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
+    return this.consumers.settledResult() ?? this.consumers.park();
   }
 
   return(): Promise<IteratorResult<T, undefined>> {
     this.detach();
     this.pending = null;
-    if (this.terminal === null) {
-      this.terminal = { error: null };
-    }
-    for (const waiter of this.waiters.splice(0)) {
-      waiter.resolve(DONE);
-    }
+    this.consumers.settle(null);
     return Promise.resolve(DONE);
   }
 

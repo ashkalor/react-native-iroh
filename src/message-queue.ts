@@ -19,16 +19,11 @@
  * Not part of the public API surface.
  */
 
+import { DONE, WaiterQueue } from "./waiter-queue";
+
 /** Default capacity: how many undelivered values a queue buffers before it
  * starts dropping the oldest. */
 export const DEFAULT_MESSAGE_QUEUE_CAPACITY = 1024;
-
-const DONE: IteratorReturnResult<undefined> = { value: undefined, done: true };
-
-interface Waiter<T> {
-  resolve(result: IteratorResult<T, undefined>): void;
-  reject(error: unknown): void;
-}
 
 /** Construction options for a {@link MessageQueue}. */
 export interface MessageQueueOptions {
@@ -55,10 +50,7 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
   private readonly capacity: number;
   private readonly onLagged?: (totalDropped: number) => void;
   private readonly buffer: T[] = [];
-  private readonly waiters: Waiter<T>[] = [];
-  private closed = false;
-  private terminalError: unknown | null = null;
-  private errorDelivered = false;
+  private readonly consumers = new WaiterQueue<T>();
   private droppedCount = 0;
 
   constructor(options: MessageQueueOptions = {}) {
@@ -68,7 +60,7 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
 
   /** Whether the queue has been closed (settled). */
   get isClosed(): boolean {
-    return this.closed;
+    return this.consumers.isSettled;
   }
 
   /** Running total of values dropped to overflow or upstream lag. */
@@ -83,15 +75,13 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
    * surfaced. No-op once closed.
    */
   push(value: T): void {
-    if (this.closed) {
+    if (this.consumers.isSettled) {
       return;
     }
-    // Invariant: waiters accumulate only while the buffer is empty (next()
-    // drains the buffer before parking a waiter), so at most one of the two is
-    // ever non-empty. Hand off to the oldest waiter first, preserving order.
-    const waiter = this.waiters.shift();
-    if (waiter !== undefined) {
-      waiter.resolve({ value, done: false });
+    // Invariant: consumers park only while the buffer is empty (next() drains
+    // the buffer before parking), so at most one of the two ever holds
+    // anything. Hand off to the oldest waiter first, preserving order.
+    if (this.consumers.handOff(value)) {
       return;
     }
     this.buffer.push(value);
@@ -107,7 +97,7 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
    * discard a buffered value; it only advances the dropped count and signal.
    */
   markLagged(): void {
-    if (this.closed) {
+    if (this.consumers.isSettled) {
       return;
     }
     this.recordDrop();
@@ -119,36 +109,18 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
    * gracefully. Any buffered-but-undelivered values are discarded. Idempotent.
    */
   close(error: unknown | null = null): void {
-    if (this.closed) {
+    if (this.consumers.isSettled) {
       return;
     }
-    this.closed = true;
-    this.terminalError = error;
     this.buffer.length = 0;
-    for (const waiter of this.waiters.splice(0)) {
-      if (error !== null && !this.errorDelivered) {
-        this.errorDelivered = true;
-        waiter.reject(error);
-      } else {
-        waiter.resolve(DONE);
-      }
-    }
+    this.consumers.settle(error);
   }
 
   next(): Promise<IteratorResult<T, undefined>> {
     if (this.buffer.length > 0) {
       return Promise.resolve({ value: this.buffer.shift() as T, done: false });
     }
-    if (this.closed) {
-      if (this.terminalError !== null && !this.errorDelivered) {
-        this.errorDelivered = true;
-        return Promise.reject(this.terminalError);
-      }
-      return Promise.resolve(DONE);
-    }
-    return new Promise<IteratorResult<T, undefined>>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
+    return this.consumers.settledResult() ?? this.consumers.park();
   }
 
   /** Detaches the consumer (e.g. `break` out of a `for await`): closes the
