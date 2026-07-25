@@ -53,13 +53,17 @@ Both platforms are validated against apps compiled from the committed sources,
 including the Rust core, rather than a previously installed binary with fresh
 JavaScript loaded over Metro.
 
-Two limits are worth stating plainly. First, this is the simulator: a run on
-physical iOS hardware (which needs one-time signing and device trust) has not
-happened yet, so NAT traversal and radio behavior are unproven on iOS. Second,
-collections, address observability, and gossip have their own device flows that
-have only been driven on Android so far. The code paths are platform-agnostic
-Rust plus the shared TypeScript layer, so they are expected to work, but
-"expected" is not "validated" and the matrix reflects that.
+The device rows are narrower than the simulator and emulator rows, and the
+difference matters. On physical hardware the maintainers have exercised endpoint
+creation and a blob transfer between an iPhone and an Android phone, and nothing
+else. Collections, relay-mode selection, address observability and gossip have
+only been driven on the emulator and simulator. The code paths are
+platform-agnostic Rust plus the shared TypeScript layer, so they are expected to
+work, but "expected" is not "validated" and the matrix reflects that.
+
+The network path the cross-platform transfer actually took (a direct hole-punched
+route, or a relay) was not recorded, so relay fallback and NAT traversal remain
+uncharacterised on real networks.
 
 ## React hooks
 
