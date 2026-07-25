@@ -309,10 +309,10 @@ if [ "$DEVICE_B" != "$DEVICE_A" ]; then
   # transport, not the bare pre-online id. Two emulators are NAT-isolated and
   # reach each other only through the relay, so the address must include it.
   GOSSIP_ADDR=""
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 240); do
     GOSSIP_ADDR="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' \
       | grep "E2E: GOSSIP_ADDR " | sed 's/.*E2E: GOSSIP_ADDR //' \
-      | grep -E '"(relayUrls|directAddrs)":\["[^]]' | tail -1)"
+      | grep -E '"relayUrls":\["[^]]' | tail -1)"
     [ -n "$GOSSIP_ADDR" ] && break
     sleep 2
   done
@@ -332,7 +332,7 @@ if [ "$DEVICE_B" != "$DEVICE_A" ]; then
   # Poll both devices for the roundtrip marker: the mesh/relay may need a little
   # warm-up after the taps, and A's app keeps receiving after its flow ended.
   log "waiting for gossip-roundtrip on both devices"
-  for _ in $(seq 1 45); do
+  for _ in $(seq 1 120); do
     a_pass="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' | grep -c "E2E: PASS gossip-roundtrip")"
     b_pass="$("$ADB" -s "$DEVICE_B" logcat -d | tr -d '\r' | grep -c "E2E: PASS gossip-roundtrip")"
     [ "$a_pass" -gt 0 ] && [ "$b_pass" -gt 0 ] && break

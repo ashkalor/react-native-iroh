@@ -199,7 +199,10 @@ to_push_path() { # to_push_path <linux-path> -> path usable by $ADB
 }
 
 for d in "${BENCH_DEVICES[@]}"; do
-  for f in manifest-all.txt manifest-mix.txt manifest-single.txt provision.sh verify.sh; do
+  # manifest-stress.txt is pushed too: the stress-12 and coll-12 runs verify
+  # against it on-device (see run_bench), so it must be present alongside the
+  # mix/single manifests or verify.sh reports a cosmetic "No such file" error.
+  for f in manifest-all.txt manifest-mix.txt manifest-single.txt manifest-stress.txt provision.sh verify.sh; do
     "$ADB" -s "$d" push "$(to_push_path "$SERVE_DIR/$f")" "/data/local/tmp/iroh-bench-$f" >/dev/null \
       || fail "push $f to $d"
   done

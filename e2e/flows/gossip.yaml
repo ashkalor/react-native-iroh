@@ -31,6 +31,13 @@ env:
     id: "gossip-bootstrap"
 - eraseText: 2000
 - inputText: ${BOOTSTRAP}
+# Dismiss the soft keyboard and scroll the join button into view: on shorter
+# emulator screens the keyboard (raised by the bootstrap input) covers it.
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: "gossip-join"
+    timeout: 20000
 - tapOn:
     id: "gossip-join"
 # Wait until we are joined (the send box appears).
@@ -48,5 +55,7 @@ env:
       - tapOn:
           id: "gossip-message"
       - inputText: "ping"
+      # Dismiss the keyboard so it does not cover the send button on short screens.
+      - hideKeyboard
       - tapOn:
           id: "gossip-send"
