@@ -13,6 +13,10 @@ import { sectionStyles } from "./theme";
 /** The fixed topic both devices join in the e2e chat roundtrip. */
 const TOPIC = "react-native-iroh-e2e-chat";
 
+/** Chat lines kept on screen, so a long-running topic cannot grow state without
+ * bound (the `useGossip` hook caps its own retention the same way). */
+const MAX_LOG_LINES = 200;
+
 type ChatState =
   | { phase: "idle" }
   | { phase: "joining" }
@@ -37,7 +41,6 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     setState({ phase: "joining" });
     setLog([]);
     reportedRoundtrip.current = false;
-    // Confirm onJoin was reached (independent of anything below).
     e2eEvent("GOSSIP_JOIN");
     try {
       // Publish the address immediately: `endpoint.addr` is a synchronous
@@ -75,7 +78,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         if (!alive) {
           break;
         }
-        setLog((previous) => [...previous, message]);
+        setLog((previous) => [...previous, message].slice(-MAX_LOG_LINES));
         // The first message received from a peer proves the roundtrip.
         if (!reportedRoundtrip.current) {
           reportedRoundtrip.current = true;
@@ -85,6 +88,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     })();
     return () => {
       alive = false;
+      sub.unsubscribe();
     };
   }, [state]);
 
