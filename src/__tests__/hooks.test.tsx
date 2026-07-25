@@ -198,7 +198,30 @@ describe("useGossip", () => {
     // Oldest dropped: only the last two are retained.
     expect(result.current.messages.map((m) => m.text)).toEqual(["2", "3"]);
 
-    await endpoint.close();
+    await act(async () => {
+      await endpoint.close();
+    });
+  });
+
+  it("reports closed and stops broadcasting when the endpoint closes underneath it", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({ preset: "minimal" }, mock.binding);
+    const { result } = renderHook(() => useGossip(endpoint, "chat"));
+    const subscribe = mock.gossipSubscribes[0]!;
+
+    await act(async () => {
+      subscribe.onMessage("peer hello");
+      await flush();
+    });
+    expect(result.current.status).toBe("joined");
+
+    // The component stays mounted; only the endpoint goes away.
+    await act(async () => {
+      await endpoint.close();
+    });
+
+    expect(result.current.status).toBe("closed");
+    await expect(result.current.broadcast("hi")).rejects.toThrow(/not active/);
   });
 
   it("stays empty and joining while the endpoint is null", async () => {

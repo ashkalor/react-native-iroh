@@ -62,13 +62,30 @@ export interface GossipSubscription {
    * unread messages are dropped so the live tail keeps flowing. Iteration ends
    * when the subscription is torn down ({@link unsubscribe} or the endpoint
    * closing); break out of the loop to stop consuming.
+   *
+   * This is ONE shared stream, not a re-iterable collection: consuming a
+   * message removes it. Two concurrent `for await` loops split the messages
+   * between them rather than each seeing every message, and `break`ing out of
+   * a loop ends the subscription. Fan out in your own code (push into state,
+   * or an event emitter) if more than one consumer needs every message.
    */
   readonly messages: AsyncIterable<GossipMessage>;
   /**
    * An `AsyncIterable` of {@link GossipNeighborEvent}s (neighbors joining and
-   * leaving the swarm). Ends with the subscription.
+   * leaving the swarm). Ends with the subscription. One shared stream, with the
+   * same single-consumer semantics as {@link messages}.
    */
   readonly neighbors: AsyncIterable<GossipNeighborEvent>;
+  /**
+   * Resolves once the topic has actually been joined and the subscription is
+   * live, which is the moment {@link broadcast} stops having to wait.
+   *
+   * Prefer this over inferring liveness from the first message or neighbor
+   * event: the first peer on a topic joins successfully and then sits alone,
+   * so no traffic arrives until someone else shows up. Rejects if the
+   * subscription is torn down before it ever started.
+   */
+  readonly joined: Promise<void>;
   /**
    * Broadcasts `text` (UTF-8) to every peer on the topic. Resolves once the
    * message is handed to the swarm (peer delivery is best effort); rejects with
@@ -105,18 +122,29 @@ export interface GossipBinding {
 }
 
 /**
- * Parses the native `onMessage` payload (`"<from-id> <utf8-text>"`, split on
- * the first space) into a {@link GossipMessage}.
+ * Splits one native callback line into its leading tag and the remainder.
+ *
+ * Every gossip line the Rust core emits is `"<tag> <rest>"` (`"<from-id>
+ * <utf8-text>"` for a message, `"up <id>"` / `"down <id>"` for a neighbor
+ * event). Only the FIRST space is a delimiter, so a payload containing spaces
+ * survives intact. A line with no space has no rest.
  */
-function parseMessage(line: string): GossipMessage {
+function splitTagged(line: string): { tag: string; rest: string; delimited: boolean } {
   const space = line.indexOf(" ");
   if (space === -1) {
-    return { text: line, from: "" as EndpointId };
+    return { tag: line, rest: "", delimited: false };
   }
-  return {
-    from: line.slice(0, space) as EndpointId,
-    text: line.slice(space + 1),
-  };
+  return { tag: line.slice(0, space), rest: line.slice(space + 1), delimited: true };
+}
+
+/** Parses the native `onMessage` payload into a {@link GossipMessage}. An
+ * undelimited line is taken as text from an unknown sender rather than
+ * discarded, so a message is never silently lost. */
+function parseMessage(line: string): GossipMessage {
+  const { tag, rest, delimited } = splitTagged(line);
+  return delimited
+    ? { from: tag as EndpointId, text: rest }
+    : { from: "" as EndpointId, text: line };
 }
 
 /**
@@ -135,6 +163,7 @@ export class GossipSubscriptionController implements GossipSubscription {
   private disposed = false;
   /** Resolves with the subscription id once onStart fires (for broadcast). */
   private readonly ready: Promise<number>;
+  readonly joined: Promise<void>;
   private resolveReady!: (subId: number) => void;
   private rejectReady!: (error: unknown) => void;
 
@@ -153,8 +182,11 @@ export class GossipSubscriptionController implements GossipSubscription {
     });
     // A broadcast issued before the id arrives awaits `ready`; if the
     // subscription is never established, that rejection must be observed
-    // somewhere, so mark it handled here.
+    // somewhere, so mark it handled here (and on the public `joined` view,
+    // which callers are free to ignore).
     this.ready.catch(() => undefined);
+    this.joined = this.ready.then(() => undefined);
+    this.joined.catch(() => undefined);
     // May throw synchronously (stale endpoint handle, bad bootstrap address):
     // let it propagate to the subscribe() caller.
     this.binding.startSubscribe(
@@ -189,11 +221,7 @@ export class GossipSubscriptionController implements GossipSubscription {
     // If the id has not arrived yet, unblock any pending broadcast; the native
     // side is unsubscribed once onStart eventually fires (see onStart).
     if (this.subId !== null) {
-      try {
-        this.binding.unsubscribe(this.subId);
-      } catch {
-        // Native unsubscribe is idempotent; ignore teardown races.
-      }
+      this.unsubscribeNativeIgnoringTeardownRaces(this.subId);
     } else {
       this.rejectReady(new IrohError(1001, "gossip subscription ended before it started"));
     }
@@ -207,11 +235,7 @@ export class GossipSubscriptionController implements GossipSubscription {
     if (this.disposed) {
       // Unsubscribed while the join was still in flight: tear the native
       // subscription down now that we have its id.
-      try {
-        this.binding.unsubscribe(subId);
-      } catch {
-        // Idempotent natively.
-      }
+      this.unsubscribeNativeIgnoringTeardownRaces(subId);
       return;
     }
     this.resolveReady(subId);
@@ -224,14 +248,18 @@ export class GossipSubscriptionController implements GossipSubscription {
       this.messageQueue.markLagged();
       return;
     }
-    const space = event.indexOf(" ");
-    if (space === -1) {
-      return;
+    const { tag, rest, delimited } = splitTagged(event);
+    if (delimited && (tag === "up" || tag === "down")) {
+      this.neighborQueue.push({ type: tag, endpointId: rest as EndpointId });
     }
-    const type = event.slice(0, space);
-    const endpointId = event.slice(space + 1) as EndpointId;
-    if (type === "up" || type === "down") {
-      this.neighborQueue.push({ type, endpointId });
-    }
+  }
+
+  /** Native unsubscribe is idempotent, and teardown can race a subscription
+   * the endpoint is closing out from under us; either way there is nothing to
+   * recover from here. */
+  private unsubscribeNativeIgnoringTeardownRaces(subId: number): void {
+    try {
+      this.binding.unsubscribe(subId);
+    } catch {}
   }
 }

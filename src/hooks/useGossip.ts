@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Endpoint } from "../endpoint";
+import { IrohError } from "../errors";
 import type {
   GossipMessage,
   GossipNeighborEvent,
@@ -10,7 +11,7 @@ import type {
 import { appendCapped, DEFAULT_RETAINED, toError } from "./internal";
 
 /** Lifecycle phase of a {@link useGossip} subscription. */
-export type GossipStatus = "joining" | "joined" | "error";
+export type GossipStatus = "joining" | "joined" | "closed" | "error";
 
 /** The reactive result of {@link useGossip}. */
 export interface UseGossipResult {
@@ -23,14 +24,19 @@ export interface UseGossipResult {
   /** Neighbor up/down events, oldest first, capped like {@link messages}. */
   readonly neighbors: GossipNeighborEvent[];
   /**
-   * Broadcasts `text` to the topic. Rejects if called before the subscription
-   * is active, or with an {@link import("../errors").IrohError} on a swarm
-   * failure (e.g. the message exceeds the size limit).
+   * Broadcasts `text` to the topic. Always rejects with an
+   * {@link import("../errors").IrohError}: kind `"invalid-handle"` when no
+   * subscription is active (before joining, or after it closed), and the swarm
+   * failure's own kind otherwise (e.g. `"gossip-message-too-large"`).
    */
   readonly broadcast: (text: string) => Promise<void>;
   /**
-   * `"joining"` until the swarm is live (the first message or neighbor-up
-   * arrives), then `"joined"`; `"error"` if subscribing or the stream fails.
+   * `"joining"` until the topic is actually joined, then `"joined"` (this
+   * tracks the native join, so the first peer on a topic reaches `"joined"`
+   * while still alone). Becomes `"closed"` if the subscription ends
+   * underneath the component (the usual cause is the endpoint being closed
+   * while this component stays mounted), after which {@link broadcast}
+   * rejects. `"error"` if subscribing or the stream fails.
    */
   readonly status: GossipStatus;
   /** The failure, present only when `status` is `"error"`. */
@@ -88,8 +94,15 @@ export function useGossip(
     }
 
     let active = true;
+    let joinedOnce = false;
     const retain = optionsRef.current?.retain ?? DEFAULT_RETAINED;
+    // Guarded: without it every received message schedules a redundant status
+    // update for the whole life of a chatty subscription.
     const markJoined = (): void => {
+      if (joinedOnce) {
+        return;
+      }
+      joinedOnce = true;
       setStatus((prev) => (prev === "error" ? prev : "joined"));
     };
     const fail = (value: unknown): void => {
@@ -98,6 +111,17 @@ export function useGossip(
       }
       setStatus("error");
       setError(toError(value));
+    };
+    // Both streams end together when the subscription is torn down. If that
+    // happens while this component is still mounted (endpoint.close(), say),
+    // the hook must stop claiming to be joined and stop routing broadcasts to
+    // a subscription that no longer exists.
+    const markClosed = (): void => {
+      if (!active) {
+        return;
+      }
+      subscriptionRef.current = null;
+      setStatus((prev) => (prev === "error" ? prev : "closed"));
     };
 
     let subscription: GossipSubscription;
@@ -109,6 +133,18 @@ export function useGossip(
     }
     subscriptionRef.current = subscription;
 
+    // The authoritative liveness signal. Traffic also marks the subscription
+    // joined below, because a message can race ahead of the join callback, but
+    // a lone first peer on a topic never sees traffic at all.
+    void subscription.joined.then(
+      () => {
+        if (active) {
+          markJoined();
+        }
+      },
+      () => undefined,
+    );
+
     void (async () => {
       try {
         for await (const message of subscription.messages) {
@@ -118,6 +154,7 @@ export function useGossip(
           markJoined();
           setMessages((prev) => appendCapped(prev, message, retain));
         }
+        markClosed();
       } catch (streamError) {
         fail(streamError);
       }
@@ -149,7 +186,7 @@ export function useGossip(
   const broadcast = useCallback(async (text: string): Promise<void> => {
     const subscription = subscriptionRef.current;
     if (subscription === null) {
-      throw new Error("react-native-iroh: gossip subscription is not active");
+      throw new IrohError(1001, "gossip subscription is not active");
     }
     await subscription.broadcast(text);
   }, []);

@@ -163,16 +163,21 @@ describe("GossipSubscriptionController teardown", () => {
     expect(() => new GossipSubscriptionController(fake.binding)).toThrow();
   });
 
-  it("honors a custom message-buffer capacity", () => {
+  it("honors a custom message-buffer capacity", async () => {
     const fake = fakeGossip(2);
     const sub = new GossipSubscriptionController(fake.binding);
     fake.onStart?.(1);
     fake.onMessage?.("a one");
     fake.onMessage?.("b two");
     fake.onMessage?.("c three");
-    // Capacity 2 keeps only the last two; no assertion beyond no-throw here,
-    // capacity behavior itself is covered by the MessageQueue tests.
-    expect(sub).toBeDefined();
+
+    const messages = sub.messages[Symbol.asyncIterator]();
+    // Capacity 2: the oldest undelivered message is dropped, the live tail survives.
+    expect((await messages.next()).value).toEqual({ from: "b", text: "two" });
+    expect((await messages.next()).value).toEqual({ from: "c", text: "three" });
+
+    sub.unsubscribe();
+    expect((await messages.next()).done).toBe(true);
   });
 });
 
