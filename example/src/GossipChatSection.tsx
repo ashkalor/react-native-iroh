@@ -15,7 +15,28 @@ const MAX_LOG_LINES = 200;
 
 /** What the user asked to join with, or `null` before they pressed Join. This
  * gates {@link useGossip}, which subscribes as soon as it has an endpoint. */
-type JoinRequest = { bootstrap?: readonly EndpointAddr[] };
+type JoinRequest = { topic: string; bootstrap?: readonly EndpointAddr[] };
+
+/**
+ * Parses a bootstrap address that arrived by copy/paste or a QR scan.
+ *
+ * Getting it here is lossy in practice: scanning the code with a camera app, or
+ * selecting the wrapped text on the other device, routinely injects newlines
+ * into the middle of the JSON, and a raw control character inside a JSON string
+ * is a parse error. None of the fields (endpoint id, relay URLs, socket
+ * addresses) can legitimately contain one, so stripping them is safe and makes
+ * the paste work the way a user expects.
+ */
+function parseBootstrapAddr(pasted: string): EndpointAddr {
+  const cleaned = [...pasted].filter((character) => character.charCodeAt(0) > 0x1f).join("");
+  try {
+    return JSON.parse(cleaned) as EndpointAddr;
+  } catch {
+    throw new Error(
+      "bootstrap peer is not a valid address: copy the whole line the other device shows, including both braces",
+    );
+  }
+}
 
 /**
  * Gossip chat demo, written on the `react-native-iroh/hooks` layer: `useGossip`
@@ -30,6 +51,7 @@ type JoinRequest = { bootstrap?: readonly EndpointAddr[] };
 function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Element {
   const [request, setRequest] = useState<JoinRequest | null>(null);
   const [joining, setJoining] = useState(false);
+  const [topic, setTopic] = useState(TOPIC);
   const [bootstrapText, setBootstrapText] = useState("");
   const [draft, setDraft] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -47,7 +69,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
 
   const { messages, broadcast, status, error } = useGossip(
     request === null ? null : endpoint,
-    TOPIC,
+    request?.topic ?? topic,
     { bootstrap: request?.bootstrap, retain: MAX_LOG_LINES },
   );
 
@@ -67,7 +89,8 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
 
       const pasted = bootstrapText.trim();
       setRequest({
-        bootstrap: pasted.length > 0 ? [JSON.parse(pasted) as EndpointAddr] : undefined,
+        topic: topic.trim(),
+        bootstrap: pasted.length > 0 ? [parseBootstrapAddr(pasted)] : undefined,
       });
     } catch (caught) {
       const message = caught instanceof IrohError ? caught.message : String(caught);
@@ -76,7 +99,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     } finally {
       setJoining(false);
     }
-  }, [endpoint, bootstrapText]);
+  }, [endpoint, bootstrapText, topic]);
 
   // The first message received from a peer proves the roundtrip.
   useEffect(() => {
@@ -114,39 +137,46 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     <View style={sectionStyles.section}>
       <Text style={sectionStyles.heading}>Gossip Chat</Text>
       <Text style={sectionStyles.dimText}>
-        Join a shared topic and broadcast messages. On device B, paste device A&apos;s bootstrap
-        address first.
-      </Text>
-
-      <Text style={[sectionStyles.dimText, styles.label]}>
-        This device&apos;s address. Scan it with the other device&apos;s camera, or long-press the
-        text to copy it, then paste it there as the bootstrap peer.
-      </Text>
-      <View style={styles.qrWrap} testID="gossip-addr-qr">
-        <QRCode value={addrJson} size={220} ecl="L" quietZone={8} />
-      </View>
-      <Text style={styles.addr} selectable testID="gossip-addr">
-        {addrJson}
+        Two devices that join the same topic can broadcast to each other. Gossip has no directory,
+        so they cannot find each other from the topic name alone: the second device has to be given
+        the first device&apos;s address.
       </Text>
 
       {!joined ? (
         <>
-          <Text style={[sectionStyles.dimText, styles.label]}>Bootstrap peer (device B only):</Text>
+          <Text style={styles.step}>1. Pick a topic. Both devices must type the same one.</Text>
+          <TextInput
+            testID="gossip-topic"
+            style={styles.input}
+            placeholder="topic name"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={topic}
+            onChangeText={setTopic}
+          />
+
+          <Text style={styles.step}>
+            2. On the FIRST device, leave the box below empty. On the SECOND device, scan the first
+            device&apos;s code with your camera (or long-press its address to copy) and paste it
+            here.
+          </Text>
           <TextInput
             testID="gossip-bootstrap"
             style={styles.input}
-            placeholder="paste E2E: GOSSIP_ADDR json"
+            placeholder="empty on the first device, paste the other address on the second"
             autoCapitalize="none"
             autoCorrect={false}
             multiline
             value={bootstrapText}
             onChangeText={setBootstrapText}
           />
+
+          <Text style={styles.step}>3. Join. The first device should join first.</Text>
           <TouchableOpacity
             testID="gossip-join"
             accessibilityRole="button"
             style={[sectionStyles.button, styles.button]}
-            disabled={joining}
+            disabled={joining || topic.trim().length === 0}
             onPress={onJoin}
           >
             <Text style={sectionStyles.buttonLabel}>{joining ? "Joining..." : "Join Topic"}</Text>
@@ -174,7 +204,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
             </TouchableOpacity>
           </View>
           <Text style={sectionStyles.dimText} testID="gossip-status">
-            Joined - {messages.length} received
+            Joined &quot;{request?.topic}&quot; - {status}, {messages.length} received
           </Text>
           <View style={styles.chatLog} testID="gossip-log">
             {messages.map((message, index) => (
@@ -185,6 +215,17 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
           </View>
         </>
       )}
+
+      <Text style={styles.step}>
+        This device&apos;s address. The other device needs it to find this one: scan the code with
+        its camera, or long-press the text to copy it.
+      </Text>
+      <View style={styles.qrWrap} testID="gossip-addr-qr">
+        <QRCode value={addrJson} size={220} ecl="L" quietZone={8} />
+      </View>
+      <Text style={styles.addr} selectable testID="gossip-addr">
+        {addrJson}
+      </Text>
 
       {shownError !== undefined && shownError !== null ? (
         <Text style={sectionStyles.errorText} testID="gossip-error">
@@ -199,6 +240,12 @@ const styles = StyleSheet.create({
   label: {
     marginTop: 8,
     marginBottom: 4,
+  },
+  step: {
+    marginTop: 12,
+    marginBottom: 6,
+    fontSize: 12,
+    color: "#41485a",
   },
   qrWrap: {
     alignSelf: "center",
