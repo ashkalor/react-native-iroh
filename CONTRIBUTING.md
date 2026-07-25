@@ -80,6 +80,12 @@ not obvious from the file, and removing any of them breaks the build outright:
 - `SWIFT_ENABLE_EXPLICIT_MODULES = NO`. Xcode's explicit Swift module builds do
   not resolve `React_RCTAppDelegate` against RN 0.86's prebuilt React Core plus
   the Expo umbrella, failing with "unable to resolve module dependency".
+- `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG`, on the Debug configuration
+  only. `AppDelegate.swift` picks the Metro URL inside `#if DEBUG`, and Swift
+  reads that from this setting rather than from clang's `-DDEBUG`. Without it a
+  Debug build silently takes the release path, looks for an embedded
+  `main.jsbundle` that debug builds never produce, and dies at launch with "No
+  script URL provided".
 
 Build the simulator app arm64-only. The pod's nitrogen cargo phase builds a
 single Rust slice keyed on `$ARCHS`, so a generic or multi-arch simulator
