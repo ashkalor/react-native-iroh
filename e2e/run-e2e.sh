@@ -26,46 +26,15 @@ E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$E2E_DIR")"
 APK="${APK:-$REPO_DIR/example/android/app/build/outputs/apk/debug/app-debug.apk}"
 ARTIFACTS="${E2E_ARTIFACTS:-/tmp/iroh-e2e-logs}"
+LOG_TAG=e2e
 
-log() { printf '[e2e] %s\n' "$*"; }
-
-dump_logs() {
-  mkdir -p "$ARTIFACTS"
-  for d in "${DEVICES[@]:-}"; do
-    [ -n "$d" ] && "$ADB" -s "$d" logcat -d > "$ARTIFACTS/logcat-$d.txt" 2>/dev/null
-  done
-  log "logcat dumps written to $ARTIFACTS"
-}
-
-fail() {
-  log "FAIL: $*"
-  dump_logs
-  exit 1
-}
+# shellcheck source=./lib.sh
+. "$E2E_DIR/lib.sh"
 
 # --- Tool discovery -------------------------------------------------------
 
-# adb is taken from PATH; override with ADB=/path/to/adb (an adb.exe under
-# /mnt/c works from WSL: APK paths are converted for it automatically).
-if [ -z "${ADB:-}" ]; then
-  if command -v adb >/dev/null 2>&1; then
-    ADB=adb
-  else
-    fail "adb not found; set ADB=/path/to/adb"
-  fi
-fi
-
-if [ -z "${MAESTRO:-}" ]; then
-  if command -v maestro >/dev/null 2>&1; then
-    MAESTRO=maestro
-  elif [ -x "$HOME/.maestro/bin/maestro" ]; then
-    MAESTRO="$HOME/.maestro/bin/maestro"
-  else
-    fail "maestro not found; install with: curl -Ls https://get.maestro.mobile.dev | bash"
-  fi
-fi
-export MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED=true
-export MAESTRO_CLI_NO_ANALYTICS=1
+discover_adb
+discover_maestro
 
 # Self-healing relaunch: force-stop the app (and Maestro's on-device driver,
 # which occasionally loses its gRPC forward), clear the log buffer so stale
@@ -105,25 +74,12 @@ run_flow() { # run_flow <device> <description> <maestro test args...>
   return 1
 }
 
-# Maestro needs JDK 17+; borrow the Gradle JDK if the ambient java is older.
-java_major="$(java -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -1)"
-if [ "${java_major:-0}" -lt 17 ]; then
-  for jdk in "$HOME"/.jdks/jdk-17* /usr/lib/jvm/temurin-17* /usr/lib/jvm/zulu-17*; do
-    if [ -x "$jdk/bin/java" ]; then
-      export JAVA_HOME="$jdk"
-      export PATH="$jdk/bin:$PATH"
-      break
-    fi
-  done
-fi
+ensure_jdk17
 
 # --- Device selection -----------------------------------------------------
 
-mapfile -t DEVICES < <("$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+list_devices
 case "${#DEVICES[@]}" in
-  0)
-    fail "no devices connected"
-    ;;
   1)
     DEVICE_A="${DEVICES[0]}"
     DEVICE_B="${DEVICES[0]}"
@@ -139,34 +95,12 @@ esac
 # --- App install + Metro --------------------------------------------------
 
 if [ "${SKIP_INSTALL:-0}" != "1" ]; then
-  [ -f "$APK" ] || fail "APK not found at $APK (build it or set SKIP_INSTALL=1)"
-  # A Windows-side adb.exe (WSL interop) cannot read Linux filesystem paths;
-  # hand it the \\wsl.localhost\ UNC form instead.
-  PUSH_SRC="$APK"
-  case "$ADB" in
-    *.exe) PUSH_SRC="$(wslpath -w "$APK")" ;;
-  esac
-  for d in "$DEVICE_A" "$DEVICE_B"; do
-    "$ADB" -s "$d" push "$PUSH_SRC" /data/local/tmp/iroh-e2e.apk >/dev/null || fail "push to $d"
-    "$ADB" -s "$d" shell pm install -r /data/local/tmp/iroh-e2e.apk >/dev/null || fail "install on $d"
-    log "installed app on $d"
-  done
+  install_app "$DEVICE_A" "$DEVICE_B"
 fi
 
 # Debug builds load JS from Metro; start it if nothing listens on 8081.
-if ! timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null; then
-  log "starting Metro"
-  (cd "$REPO_DIR/example" && nohup bun start > "$ARTIFACTS-metro.log" 2>&1 &)
-  for _ in $(seq 1 45); do
-    timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null && break
-    sleep 2
-  done
-  timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null || fail "Metro did not come up on 8081"
-fi
-
-for d in "$DEVICE_A" "$DEVICE_B"; do
-  "$ADB" -s "$d" reverse tcp:8081 tcp:8081 >/dev/null || fail "adb reverse on $d"
-done
+ensure_metro
+reverse_port 8081 "$DEVICE_A" "$DEVICE_B"
 
 # --- Fresh state + provisioning ------------------------------------------
 

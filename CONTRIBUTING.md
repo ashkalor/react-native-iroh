@@ -122,6 +122,10 @@ chat roundtrip across both devices. It runs locally, not in CI:
 bun run e2e
 ```
 
+Both harnesses (`run-e2e.sh` and `run-bench.sh`) share their setup plumbing
+(logging, tool discovery, device listing, app install, Metro) from
+`e2e/lib.sh`; each script owns only its own device-selection and assertions.
+
 The harness takes `adb` from `PATH`. When it is not there (typical on WSL,
 where the Android platform tools live on the Windows side), set
 `ADB=/path/to/adb`. A Windows `adb.exe` under `/mnt/c` works from WSL; APK
