@@ -78,7 +78,6 @@ export function useEndpoint(options?: EndpointOptions, binding?: IrohBinding): U
     };
     // optionsKey stands in for a deep compare of `options`; `binding` is a
     // stable escape hatch. optionsRef is intentionally read, not depended on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [optionsKey, binding]);
 
   return result;

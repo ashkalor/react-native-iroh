@@ -36,6 +36,14 @@ function readFiles(transfer: Transfer): FileProgress[] | undefined {
   return "files" in transfer ? (transfer as CollectionTransfer).files : undefined;
 }
 
+/** The state a transfer starts in: nothing received yet, per-file snapshot for
+ * a collection. */
+function startingState(transfer: Transfer | CollectionTransfer | null): UseTransferState {
+  return transfer === null
+    ? IDLE
+    : { status: "transferring", bytesReceived: 0, files: readFiles(transfer) };
+}
+
 /**
  * Reflects a {@link Transfer} (or {@link CollectionTransfer}) as reactive
  * component state: progress events update {@link UseTransferState.bytesReceived}
@@ -48,11 +56,7 @@ function readFiles(transfer: Transfer): FileProgress[] | undefined {
  * download and observe it in one call, see {@link useDownload}.
  */
 export function useTransfer(transfer: Transfer | CollectionTransfer | null): UseTransferState {
-  const [state, setState] = useState<UseTransferState>(() =>
-    transfer === null
-      ? IDLE
-      : { status: "transferring", bytesReceived: 0, files: readFiles(transfer) },
-  );
+  const [state, setState] = useState<UseTransferState>(() => startingState(transfer));
 
   useEffect(() => {
     if (transfer === null) {
@@ -60,11 +64,7 @@ export function useTransfer(transfer: Transfer | CollectionTransfer | null): Use
       return;
     }
     let active = true;
-    setState({
-      status: "transferring",
-      bytesReceived: 0,
-      files: readFiles(transfer),
-    });
+    setState(startingState(transfer));
 
     const unsubscribe = transfer.onProgress((event) => {
       if (!active) {

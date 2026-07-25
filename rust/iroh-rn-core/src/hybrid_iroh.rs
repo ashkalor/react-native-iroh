@@ -359,7 +359,6 @@ impl HybridIrohSpec for HybridIroh {
     }
 
     fn gossip_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
-        // Idempotent: unknown or already-ended subscriptions are a no-op.
         gossip_unsubscribe(GossipHandle::from_raw(sub_id as u64));
         Ok(())
     }
