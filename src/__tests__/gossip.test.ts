@@ -157,6 +157,36 @@ describe("GossipSubscriptionController teardown", () => {
     expect(fake.unsubscribed).toEqual([5]);
   });
 
+  it("settles everything waiting on a join that fails asynchronously", async () => {
+    const fake = fakeGossip();
+    const sub = new GossipSubscriptionController(fake.binding);
+    // A broadcast queued before the id arrives, plus a parked reader: without a
+    // failure signal both wait until the endpoint closes. Capture them before
+    // triggering, so each rejection has a handler the moment it happens.
+    const queued = captureRejection(sub.broadcast("hi"));
+    const parkedRead = captureRejection(sub.messages[Symbol.asyncIterator]().next());
+    const joined = captureRejection(sub.joined);
+
+    fake.onNeighbor?.("error the gossip actor is unavailable");
+
+    for (const settled of [joined, queued, parkedRead]) {
+      expect((await settled) as Error).toHaveProperty("message", "the gossip actor is unavailable");
+    }
+    expect(fake.broadcasts).toHaveLength(0);
+    expect(fake.disposed).toBe(1);
+  });
+
+  it("carries the gossip-subscribe kind on an async join failure", async () => {
+    const fake = fakeGossip();
+    const sub = new GossipSubscriptionController(fake.binding);
+    const joined = captureRejection(sub.joined);
+    fake.onNeighbor?.("error nope");
+
+    const error = await joined;
+    expect(error).toBeInstanceOf(IrohError);
+    expect((error as IrohError).kind).toBe("gossip-subscribe");
+  });
+
   it("propagates a synchronous startSubscribe failure", () => {
     const fake = fakeGossip();
     fake.startThrows = new Error("[iroh:1001] invalid or stale handle: 3");

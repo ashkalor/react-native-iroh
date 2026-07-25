@@ -83,9 +83,14 @@ Epidemic pub/sub: peers that subscribe to the same topic form a swarm and
 broadcast messages to one another, namespaced under `endpoint.gossip`.
 
 - `gossip.subscribe(topic, options?)` joins the topic derived from a free-form
-  label (its BLAKE3 hash) and returns a `GossipSubscription` synchronously: an
-  async-iterable `messages` log, an async-iterable `neighbors` stream,
-  `broadcast(text)`, and `unsubscribe()`.
+  label (its BLAKE3 hash) and returns a `GossipSubscription` synchronously: a
+  `joined` promise, an async-iterable `messages` log, an async-iterable
+  `neighbors` stream, `broadcast(text)`, and `unsubscribe()`.
+- The join completes asynchronously, so `await sub.joined` is how you know the
+  subscription is live. Do not infer it from the first message: the first peer
+  on a topic joins successfully and then sits alone until someone else arrives.
+  If the join fails, `joined` rejects with kind `"gossip-subscribe"` and both
+  streams end with that error.
 - `messages` is a bounded FIFO (non-conflating, unlike the address stream):
   every message is delivered in order, and under overflow the oldest unread
   messages are dropped so the live tail keeps flowing (a `lagged` signal is
@@ -353,12 +358,13 @@ malformed bootstrap address (kind `"gossip-subscribe"`).
 
 `GossipSubscription` members:
 
-| Member            | Type                                 | Meaning                                                                                                                                                                       |
-| ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `messages`        | `AsyncIterable<GossipMessage>`       | Received messages, in arrival order. A bounded FIFO (non-conflating): under overflow the oldest unread messages are dropped so the live tail keeps flowing. Ends on teardown. |
-| `neighbors`       | `AsyncIterable<GossipNeighborEvent>` | Swarm membership changes (`{ type: "up" \| "down"; endpointId }`). Ends on teardown.                                                                                          |
-| `broadcast(text)` | `(text: string) => Promise<void>`    | Broadcasts UTF-8 `text` (up to 4096 bytes) to every peer; rejects with kind `"gossip-message-too-large"` if oversize, or `"gossip-broadcast"` on failure.                     |
-| `unsubscribe()`   | `() => void`                         | Leaves the topic and ends both iterators. Idempotent; also run automatically when the endpoint closes.                                                                        |
+| Member            | Type                                 | Meaning                                                                                                                                                                                                                          |
+| ----------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `joined`          | `Promise<void>`                      | Resolves once the topic is actually joined and the subscription is live. Rejects with kind `"gossip-subscribe"` if the join fails, or if the subscription is torn down before it started.                                        |
+| `messages`        | `AsyncIterable<GossipMessage>`       | Received messages, in arrival order. A bounded FIFO (non-conflating): under overflow the oldest unread messages are dropped so the live tail keeps flowing. One shared stream: consuming a message removes it. Ends on teardown. |
+| `neighbors`       | `AsyncIterable<GossipNeighborEvent>` | Swarm membership changes (`{ type: "up" \| "down"; endpointId }`). Ends on teardown.                                                                                                                                             |
+| `broadcast(text)` | `(text: string) => Promise<void>`    | Broadcasts UTF-8 `text` (up to 4096 bytes) to every peer; rejects with kind `"gossip-message-too-large"` if oversize, or `"gossip-broadcast"` on failure.                                                                        |
+| `unsubscribe()`   | `() => void`                         | Leaves the topic and ends both iterators. Idempotent; also run automatically when the endpoint closes.                                                                                                                           |
 
 `GossipMessage` has `text` (the UTF-8 payload) and `from` (the id of the
 neighbor that delivered it). Messages are also capped at 4096 bytes per the

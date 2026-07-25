@@ -203,6 +203,27 @@ describe("useGossip", () => {
     });
   });
 
+  it("reports an error when the topic join fails after subscribe returned", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({ preset: "minimal" }, mock.binding);
+    const { result } = renderHook(() => useGossip(endpoint, "chat"));
+    const subscribe = mock.gossipSubscribes[0]!;
+
+    expect(result.current.status).toBe("joining");
+
+    await act(async () => {
+      subscribe.onNeighbor("error the gossip actor is unavailable");
+      await flush();
+    });
+
+    expect(result.current.status).toBe("error");
+    expect(result.current.error?.message).toContain("gossip actor is unavailable");
+
+    await act(async () => {
+      await endpoint.close();
+    });
+  });
+
   it("reports closed and stops broadcasting when the endpoint closes underneath it", async () => {
     const mock = createMockBinding();
     const endpoint = await Endpoint.create({ preset: "minimal" }, mock.binding);

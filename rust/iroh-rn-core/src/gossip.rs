@@ -141,8 +141,14 @@ fn json_strings<'a>(value: &'a serde_json::Value, key: &str) -> impl Iterator<It
 /// `on_start` fires once with the subscription's [`GossipHandle`] (pass it to
 /// [`gossip_broadcast`] / [`gossip_unsubscribe`]); thereafter `on_message`
 /// fires for each received message (as `"<delivered-from-id> <utf8-payload>"`)
-/// and `on_neighbor` for each swarm event (`"up <id>"`, `"down <id>"`, or
-/// `"lagged"` when the receiver fell behind and dropped messages).
+/// and `on_neighbor` for each swarm event (`"up <id>"`, `"down <id>"`,
+/// `"lagged"` when the receiver fell behind and dropped messages, or
+/// `"error <detail>"` when the join itself failed).
+///
+/// If the join fails, `on_neighbor` receives exactly one `"error <detail>"` and
+/// `on_start` never fires: the subscription is dead and the host should settle
+/// anything waiting on it. This is the only failure signal, because the join
+/// completes long after this function has returned `Ok`.
 pub fn gossip_subscribe(
     endpoint: EndpointHandle,
     topic: String,
@@ -169,10 +175,12 @@ pub fn gossip_subscribe(
         let topic = match gossip.subscribe(topic_id, peer_ids).await {
             Ok(topic) => topic,
             Err(e) => {
-                // The join set-up failed after validation passed (the gossip
-                // actor is unavailable). on_start never fires; the caller's
-                // subscription simply never starts.
+                // The join failed after synchronous validation passed. on_start
+                // will never fire, so the host must be told through the only
+                // channel it is still listening on, or a caller awaiting the
+                // join (or a broadcast queued behind it) would wait forever.
                 tracing::error!("gossip subscribe failed: {e}");
+                guarded_callback(|| on_neighbor(format!("error {e}")));
                 return;
             }
         };

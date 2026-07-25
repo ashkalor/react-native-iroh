@@ -142,7 +142,10 @@ export function useGossip(
           markJoined();
         }
       },
-      () => undefined,
+      // A join that never completes is a failure, not a teardown: surface it
+      // rather than leaving the component stuck on "joining" forever. A real
+      // teardown clears `active` first, so it stays silent.
+      (joinError: unknown) => fail(joinError),
     );
 
     void (async () => {

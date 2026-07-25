@@ -82,8 +82,12 @@ export interface GossipSubscription {
    *
    * Prefer this over inferring liveness from the first message or neighbor
    * event: the first peer on a topic joins successfully and then sits alone,
-   * so no traffic arrives until someone else shows up. Rejects if the
-   * subscription is torn down before it ever started.
+   * so no traffic arrives until someone else shows up.
+   *
+   * Rejects with an {@link IrohError} of kind `"gossip-subscribe"` if the join
+   * fails (it completes asynchronously, so `subscribe` itself can return a
+   * subscription that never becomes live), and if the subscription is torn
+   * down before it ever started.
    */
   readonly joined: Promise<void>;
   /**
@@ -92,7 +96,8 @@ export interface GossipSubscription {
    * an {@link IrohError} of kind `"gossip-message-too-large"` if `text` exceeds
    * the 4096-byte per-message limit, or `"gossip-broadcast"` on a swarm
    * failure. If called before the topic has finished joining, it waits for the
-   * join to complete first.
+   * join to complete first, and rejects with kind `"gossip-subscribe"` if that
+   * join turns out to have failed.
    */
   broadcast(text: string): Promise<void>;
   /**
@@ -249,9 +254,30 @@ export class GossipSubscriptionController implements GossipSubscription {
       return;
     }
     const { tag, rest, delimited } = splitTagged(event);
+    if (delimited && tag === "error") {
+      this.failJoin(new IrohError(4000, rest));
+      return;
+    }
     if (delimited && (tag === "up" || tag === "down")) {
       this.neighborQueue.push({ type: tag, endpointId: rest as EndpointId });
     }
+  }
+
+  /**
+   * The native join failed, so no subscription id is ever coming. Settle
+   * everything waiting on it rather than leaving `joined` and any queued
+   * broadcast pending forever, and end both streams with the failure so a
+   * `for await` consumer sees it instead of a silent close.
+   */
+  private failJoin(error: IrohError): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.rejectReady(error);
+    this.messageQueue.close(error);
+    this.neighborQueue.close(error);
+    this.binding.onDispose?.();
   }
 
   /** Native unsubscribe is idempotent, and teardown can race a subscription
