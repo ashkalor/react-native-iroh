@@ -64,6 +64,27 @@ Per-feature platform support is tracked in `docs/support-matrix.md`. Keep it
 honest when a feature's verification status changes: it records what has
 actually been run on each platform, not what is expected to work.
 
+### Packaging
+
+The package ships a CommonJS build and a real ESM build, each with its own type
+definitions, selected through `exports`. Two constraints are easy to break and
+are pinned by `src/__tests__/packaging.test.ts`:
+
+- `require` must stay listed before `import`. Node treats them as mutually
+  exclusive so their order is irrelevant there, but Metro enables both at once
+  and takes the first match, so putting `import` first silently moves React
+  Native onto the ESM build.
+- The `module` target must keep `esm: true`. That option is what emits
+  `lib/module/package.json` (`{"type":"module"}`) and the explicit `.js`
+  specifiers Node's ESM resolver requires; without it the output parses as
+  CommonJS and no ESM consumer can load it.
+
+`bob build` prints one advisory warning ("the esm option is disabled, but the
+exports['.'].require field is set"). It is expected: silencing it means emitting
+`.cjs` for the CommonJS target, which would change the entry point every
+existing consumer resolves. The CommonJS output is already unambiguous via its
+own `{"type":"commonjs"}` marker.
+
 ### Building
 
 ```bash
