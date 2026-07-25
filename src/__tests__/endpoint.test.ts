@@ -800,6 +800,24 @@ describe("Endpoint.blobs.downloadCollection", () => {
     expect(mock.downloads).toHaveLength(0);
   });
 
+  it.each([["../escape.bin"], ["nested/child.bin"], ["..\\escape.bin"], [".."], [""]])(
+    "rejects a child name that escapes destDir: %j",
+    async (name) => {
+      const mock = createMockBinding();
+      mock.manifestJson = JSON.stringify([
+        { name: "safe.bin", ticket: testTicket("safe") },
+        { name, ticket: testTicket("hostile") },
+      ]);
+      const endpoint = await Endpoint.create({}, mock.binding);
+      const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+      const error = expectIrohError(await captureRejection(transfer.done));
+      expect(error.code).toBe(1003);
+      // The whole collection fails before any child is written, including the
+      // benign sibling listed ahead of the hostile entry.
+      expect(mock.downloads).toHaveLength(0);
+    },
+  );
+
   it("an already-aborted signal cancels the collection before any child starts", async () => {
     const mock = createMockBinding();
     setManifest(mock);

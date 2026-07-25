@@ -122,6 +122,33 @@ function serializeEndpointAddr(addr: EndpointAddr): string {
 }
 
 /**
+ * Rejects a collection child name that would escape the download destination
+ * directory.
+ *
+ * Child names are chosen by whoever shared the collection, so a hostile
+ * provider could otherwise name a child `../../…` and write the downloaded
+ * blob anywhere the process can reach. A name is always a single path segment
+ * ({@link Blobs.shareCollection} emits source file base names), so anything
+ * carrying a separator or a parent reference is rejected outright rather than
+ * silently rewritten.
+ */
+function requireContainedChildName(name: string): void {
+  const contained =
+    name.length > 0 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\") &&
+    !name.includes("\0");
+  if (!contained) {
+    throw new IrohError(
+      1003,
+      `collection child name ${JSON.stringify(name)} is not a single path segment`,
+    );
+  }
+}
+
+/**
  * Gossip publish/subscribe over an endpoint: peers that subscribe to the same
  * topic form a swarm and broadcast messages to one another. Namespaced as
  * {@link Endpoint.gossip}.
@@ -297,7 +324,6 @@ export class Endpoint {
   // the native watch is (re)started only while there is at least one consumer.
   private addressWatch: Watchable<EndpointAddr> | null = null;
   private addressWatchId: number | null = null;
-  // Live gossip subscriptions, tracked so they can be torn down on close.
   private readonly gossipSubscriptions = new Set<GossipSubscriptionController>();
 
   /**
@@ -534,13 +560,7 @@ export class Endpoint {
           );
         },
         broadcast: (subId, payload) => this.binding.gossipBroadcast(subId, payload),
-        unsubscribe: (subId) => {
-          try {
-            this.binding.gossipUnsubscribe(subId);
-          } catch {
-            // Native unsubscribe is idempotent; ignore teardown races.
-          }
-        },
+        unsubscribe: (subId) => this.binding.gossipUnsubscribe(subId),
         capacity: options?.capacity,
         onDispose: () => {
           this.gossipSubscriptions.delete(controller);
@@ -598,7 +618,11 @@ export class Endpoint {
     const transfer = new CollectionTransferController(
       async () => {
         const manifest = await this.binding.collectionManifest(this.handle, collectionTicket);
-        return JSON.parse(manifest) as { name: string; ticket: string }[];
+        const entries = JSON.parse(manifest) as { name: string; ticket: string }[];
+        for (const entry of entries) {
+          requireContainedChildName(entry.name);
+        }
+        return entries;
       },
       (childTicket, name) => {
         const child = this.createDownload(childTicket, `${dir}/${name}`);
@@ -679,7 +703,6 @@ export class Endpoint {
         for (const queued of this.downloadQueue.splice(0)) {
           queued.cancel();
         }
-        // End any live gossip subscriptions (their iterators complete).
         for (const subscription of [...this.gossipSubscriptions]) {
           subscription.unsubscribe();
         }
