@@ -346,6 +346,10 @@ plain string, which is validated with `validateTicketShape` first) into absolute
 wait in a FIFO queue. `options.signal` accepts a standard `AbortSignal`:
 aborting it cancels the transfer (aborting after settle is a no-op).
 
+An existing file at `destPath` is replaced, so downloading twice to the same
+path works. A `destPath` that is a directory is rejected (kind
+`"blob-export"`) rather than being deleted.
+
 #### `endpoint.blobs.shareCollection(paths): Promise<BlobTicket>`
 
 Bundles several absolute file paths into one collection (an iroh-blobs

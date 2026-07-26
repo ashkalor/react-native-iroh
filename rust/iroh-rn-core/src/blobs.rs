@@ -422,6 +422,7 @@ async fn download_inner(
     }
 
     // Export the verified blob out of the store to the destination path.
+    clear_export_target(&dest_path).await?;
     let mode = state.store.export_mode();
     state
         .store
@@ -435,6 +436,36 @@ async fn download_inner(
         .await
         .map_err(|e| IrohError::BlobExport(e.to_string()))?;
     Ok(())
+}
+
+/// Removes an existing file at the export target so a download overwrites it.
+///
+/// Persistent stores export with [`ExportMode::TryReference`], which hard-links
+/// the blob into place and therefore fails with a bare `EEXIST` if anything is
+/// already there. Downloading twice to the same path is ordinary usage, so the
+/// destination is cleared first rather than surfacing an opaque I/O error.
+///
+/// A directory is never removed: recursively deleting whatever the caller
+/// pointed at is far more destructive than refusing, so that case fails with an
+/// explicit message instead.
+async fn clear_export_target(dest_path: &std::path::Path) -> Result<()> {
+    let metadata = match tokio::fs::symlink_metadata(dest_path).await {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(IrohError::BlobExport(format!(
+                "could not inspect destination path: {e}"
+            )))
+        }
+    };
+    if metadata.is_dir() {
+        return Err(IrohError::BlobExport(
+            "destination path is a directory".into(),
+        ));
+    }
+    tokio::fs::remove_file(dest_path).await.map_err(|e| {
+        IrohError::BlobExport(format!("could not replace existing destination file: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -544,6 +575,97 @@ mod tests {
             Err(IrohError::InvalidHandle(_))
         ));
         close(endpoint);
+    }
+
+    /// Downloading twice to the same path must succeed. Persistent stores
+    /// export with `TryReference`, which hard-links the blob and fails with a
+    /// bare `EEXIST` if anything is already at the target, so without clearing
+    /// it first the second download dies with an opaque I/O error.
+    #[test]
+    fn downloading_twice_to_the_same_path_overwrites() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, b"the payload being transferred").expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src, move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        let dest = dir.path().join("downloaded.bin");
+        for attempt in 1..=2 {
+            let (tx, rx) = mpsc::channel();
+            blob_download(
+                receiver,
+                &ticket,
+                dest.clone(),
+                |_| {},
+                move |result| {
+                    tx.send(result).ok();
+                },
+            )
+            .expect("download started");
+            rx.recv_timeout(TIMEOUT)
+                .unwrap()
+                .unwrap_or_else(|e| panic!("download attempt {attempt} failed: {e:?}"));
+            assert_eq!(
+                std::fs::read(&dest).unwrap(),
+                b"the payload being transferred"
+            );
+        }
+
+        close(provider);
+        close(receiver);
+    }
+
+    /// Clearing the target must never turn into a recursive delete of whatever
+    /// the caller pointed at.
+    #[test]
+    fn downloading_onto_a_directory_fails_without_removing_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, b"payload").expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src, move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        // An occupied directory at the destination: it must survive intact.
+        let dest = dir.path().join("occupied");
+        std::fs::create_dir(&dest).expect("mkdir");
+        std::fs::write(dest.join("keep.txt"), b"must survive").expect("write");
+
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket,
+            dest.clone(),
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+        assert!(matches!(
+            rx.recv_timeout(TIMEOUT).unwrap(),
+            Err(IrohError::BlobExport(_))
+        ));
+        assert_eq!(
+            std::fs::read(dest.join("keep.txt")).unwrap(),
+            b"must survive"
+        );
+
+        close(provider);
+        close(receiver);
     }
 
     #[test]
