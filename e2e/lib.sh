@@ -69,9 +69,26 @@ ensure_jdk17() {
   done
 }
 
-# Fills the DEVICES array with every connected device serial.
+# Fills the DEVICES array with the serials this run may drive: those named by
+# E2E_DEVICES (space- or comma-separated), else every connected device.
+#
+# The override exists because this harness is destructive: it reinstalls the app
+# and `pm clear`s its data on every device it selects. Picking up whatever is
+# attached is wrong as soon as a phone that is not a test device happens to be
+# plugged in, so there has to be a way to name the targets explicitly.
 list_devices() {
-  mapfile -t DEVICES < <("$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+  local requested d
+  if [ -n "${E2E_DEVICES:-}" ]; then
+    read -r -a requested <<<"${E2E_DEVICES//,/ }"
+    DEVICES=()
+    for d in "${requested[@]}"; do
+      [ "$("$ADB" -s "$d" get-state 2>/dev/null | tr -d '\r')" = "device" ] ||
+        fail "E2E_DEVICES names $d, which is not connected and ready"
+      DEVICES+=("$d")
+    done
+  else
+    mapfile -t DEVICES < <("$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+  fi
   [ "${#DEVICES[@]}" -gt 0 ] || fail "no devices connected"
 }
 

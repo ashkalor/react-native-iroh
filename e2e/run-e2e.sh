@@ -17,7 +17,8 @@
 # With a single device it falls back to a loopback transfer and says so.
 #
 # Env overrides: ADB, MAESTRO, APK, FILE_MB (default 5), E2E_ARTIFACTS,
-# SKIP_INSTALL=1.
+# SKIP_INSTALL=1, E2E_DEVICES (serials to drive; defaults to every connected
+# device, which this run reinstalls and wipes app data on).
 set -uo pipefail
 
 APP_ID=com.irohexample
