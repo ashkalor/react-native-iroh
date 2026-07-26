@@ -5,7 +5,7 @@ import BenchSection from "./src/BenchSection";
 import CollectionsSection from "./src/CollectionsSection";
 import DownloadSection from "./src/DownloadSection";
 import GossipChatSection from "./src/GossipChatSection";
-import { e2eReady, e2eReport } from "./src/markers";
+import { e2eReady, e2eReport, resetMarkerLog } from "./src/markers";
 import { APP_STORE_DIR } from "./src/paths";
 import ShareSection from "./src/ShareSection";
 import SmokeSection from "./src/SmokeSection";
@@ -27,6 +27,8 @@ function App(): React.JSX.Element {
   const [state, setState] = useState<EndpointState>({ phase: "starting" });
 
   useEffect(() => {
+    // One session per app start: the pulled log must describe this run only.
+    resetMarkerLog();
     let alive = true;
     let created: Endpoint | null = null;
     Endpoint.create({ blobStoreDir: APP_STORE_DIR })
