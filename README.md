@@ -564,8 +564,16 @@ platform (as opposed to merely compiling), see the
 `example/` contains a complete share/download app: device A shares a file
 and shows the ticket as a QR code and copyable string; device B pastes the
 ticket, downloads with live progress, and verifies integrity by re-sharing
-the downloaded file and comparing ticket hashes. It is also the vehicle for
-the end-to-end suite in `e2e/`.
+the downloaded file and comparing ticket hashes. It also demonstrates
+collections, gossip chat, and the `react-native-iroh/hooks` layer, and is the
+vehicle for the end-to-end suite in `e2e/`.
+
+It additionally carries a **Two-Device Test** section: pair two devices by
+endpoint id and the app runs a full cross-device suite by itself (blob and
+collection transfer, content-hash verification, the network path the traffic
+took, and the peer's own verdict), reporting pass or fail on both screens. That
+is how the device rows in the [support matrix](./docs/support-matrix.md) are
+established on real hardware.
 
 ## Acknowledgements
 

@@ -5,7 +5,6 @@ import { IrohError, type Endpoint, type EndpointAddr } from "react-native-iroh";
 import { useGossip } from "react-native-iroh/hooks";
 import { e2eEvent, e2eGossipAddr, e2eReport } from "./markers";
 import { parseBootstrapPeer } from "./peers";
-import QrScannerModal from "./QrScannerModal";
 import { sectionStyles } from "./theme";
 
 /** The fixed topic both devices join in the e2e chat roundtrip. */
@@ -36,15 +35,7 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
   const [bootstrapText, setBootstrapText] = useState("");
   const [draft, setDraft] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
   const reportedRoundtrip = useRef(false);
-
-  const onScanned = useCallback((value: string) => {
-    setScanning(false);
-    setBootstrapText(value);
-  }, []);
-
-  const onCancelScan = useCallback(() => setScanning(false), []);
 
   const { messages, broadcast, status, error } = useGossip(
     request === null ? null : endpoint,
@@ -135,28 +126,19 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
           />
 
           <Text style={styles.step}>
-            2. On the FIRST device, leave the box below empty. On the SECOND device, press Scan and
-            point it at the first device&apos;s code (or long-press that id to copy and paste it
-            here).
+            2. On the FIRST device, leave the box below empty. On the SECOND device, scan the first
+            device&apos;s code with your camera (or long-press its id to copy) and paste it here.
           </Text>
           <TextInput
             testID="gossip-bootstrap"
             style={styles.input}
-            placeholder="empty on the first device, scan or paste the other id on the second"
+            placeholder="empty on the first device, paste the other id on the second"
             autoCapitalize="none"
             autoCorrect={false}
             multiline
             value={bootstrapText}
             onChangeText={setBootstrapText}
           />
-          <TouchableOpacity
-            testID="gossip-scan"
-            accessibilityRole="button"
-            style={[sectionStyles.button, styles.button]}
-            onPress={() => setScanning(true)}
-          >
-            <Text style={sectionStyles.buttonLabel}>Scan QR Code</Text>
-          </TouchableOpacity>
 
           <Text style={styles.step}>3. Join. The first device should join first.</Text>
           <TouchableOpacity
@@ -204,8 +186,8 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       )}
 
       <Text style={styles.step}>
-        This device&apos;s id. The other device needs it to find this one: scan this code from its
-        Scan button, or long-press the text to copy it. The addresses do not travel with it because
+        This device&apos;s id. The other device needs it to find this one: scan the code with its
+        camera, or long-press the text to copy it. The addresses do not travel with it because
         discovery looks them up from the id.
       </Text>
       <View style={styles.qrWrap} testID="gossip-addr-qr">
@@ -219,14 +201,6 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         <Text style={sectionStyles.errorText} testID="gossip-error">
           {shownError}
         </Text>
-      ) : null}
-
-      {scanning ? (
-        <QrScannerModal
-          prompt="Point at the other device's endpoint id code."
-          onScanned={onScanned}
-          onCancel={onCancelScan}
-        />
       ) : null}
     </View>
   );

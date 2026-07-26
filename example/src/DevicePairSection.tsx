@@ -9,7 +9,6 @@ import {
   type PairTestRun,
   type PairTestState,
 } from "./devicePairTest";
-import QrScannerModal from "./QrScannerModal";
 import { sectionStyles } from "./theme";
 
 const STATUS_MARK: Record<Check["status"], string> = {
@@ -53,14 +52,13 @@ function CheckRow({ check }: { check: Check }): React.JSX.Element {
  * took recorded, and the peer's own verdict echoed back. Both devices run the
  * identical script, so either screen shows the whole picture.
  *
- * Pairing carries only an endpoint id (that is all the QR encodes), so a
- * successful handshake also demonstrates that discovery resolved the peer's
- * addresses rather than them being handed over.
+ * Pairing carries only an endpoint id (that is all the QR encodes, and all the
+ * paste box expects), so a successful handshake also demonstrates that discovery
+ * resolved the peer's addresses rather than them being handed over.
  */
 function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Element {
   const [state, setState] = useState<PairTestState>(INITIAL_PAIR_STATE);
   const [peerText, setPeerText] = useState("");
-  const [scanning, setScanning] = useState(false);
   const runRef = useRef<PairTestRun | null>(null);
 
   useEffect(
@@ -80,16 +78,6 @@ function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
     [endpoint],
   );
 
-  const onScanned = useCallback(
-    (value: string) => {
-      setScanning(false);
-      setPeerText(value);
-      onStart(value);
-    },
-    [onStart],
-  );
-
-  const onCancelScan = useCallback(() => setScanning(false), []);
   const onStop = useCallback(() => {
     runRef.current?.cancel();
     runRef.current = null;
@@ -108,13 +96,13 @@ function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       <Text style={sectionStyles.heading}>Two-Device Test</Text>
       <Text style={sectionStyles.dimText}>
         Install the app on both devices and open this section on each. Order matters: a gossip topic
-        only exists where it has been joined, so device 1 presses Wait first, then device 2 scans
-        device 1&apos;s code. Only device 2 scans. From there both run the same script and both
-        screens show the same results.
+        only exists where it has been joined, so device 1 presses Wait first, then device 2 is given
+        device 1&apos;s id. From there both run the same script and both screens show the same
+        results.
       </Text>
 
       <Text style={styles.step}>
-        Device 1: press this first, then let the other device scan the code below.
+        Device 1: press this first, then hand the other device the id below.
       </Text>
       <TouchableOpacity
         testID="pair-wait"
@@ -128,7 +116,10 @@ function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         </Text>
       </TouchableOpacity>
 
-      <Text style={styles.step}>This device&apos;s code. Scan it from the other device.</Text>
+      <Text style={styles.step}>
+        This device&apos;s id. Scan this code with the other device&apos;s camera app, or long-press
+        the text to copy it.
+      </Text>
       <View style={styles.qrWrap} testID="pair-qr">
         <QRCode value={endpoint.id} size={200} ecl="M" quietZone={8} />
       </View>
@@ -136,19 +127,7 @@ function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         {endpoint.id}
       </Text>
 
-      <TouchableOpacity
-        testID="pair-scan"
-        accessibilityRole="button"
-        style={[sectionStyles.button, styles.button]}
-        disabled={running}
-        onPress={() => setScanning(true)}
-      >
-        <Text style={sectionStyles.buttonLabel}>
-          {running ? "Running..." : "2. Scan Other Device & Connect"}
-        </Text>
-      </TouchableOpacity>
-
-      <Text style={styles.step}>Or paste the other device&apos;s id instead of scanning:</Text>
+      <Text style={styles.step}>Device 2: paste the other device&apos;s id here and run.</Text>
       <TextInput
         testID="pair-peer-input"
         style={styles.input}
@@ -167,7 +146,7 @@ function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         disabled={running || peerText.trim().length === 0}
         onPress={() => onStart(peerText.trim())}
       >
-        <Text style={sectionStyles.buttonLabel}>Run With Pasted Id</Text>
+        <Text style={sectionStyles.buttonLabel}>2. Connect To Pasted Id</Text>
       </TouchableOpacity>
 
       <Text style={[styles.verdict, verdictTone]} testID="pair-verdict">
@@ -196,14 +175,6 @@ function DevicePairSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         >
           <Text style={styles.stopLabel}>Stop</Text>
         </TouchableOpacity>
-      ) : null}
-
-      {scanning ? (
-        <QrScannerModal
-          prompt="Point at the other device's Two-Device Test code."
-          onScanned={onScanned}
-          onCancel={onCancelScan}
-        />
       ) : null}
     </View>
   );

@@ -53,8 +53,10 @@ completion; the validation above was performed by hand.
 The example app carries a **Two-Device Test** section so the rows above can be
 re-established on real hardware without the `e2e/` harness, which needs two
 emulators and a wired-up host. Install the app on two devices, open the section
-on both, press "Wait For Other Device" on the first, then scan its QR code from
-the second. Both devices then run the same script and display the same checks:
+on both, press "Wait For Other Device" on the first, then give the second that
+device's endpoint id: scan its QR code with the system camera app, or long-press
+the id to copy it, and paste. Both devices then run the same script and display
+the same checks:
 endpoint online, control topic joined, peer resolved from its id alone, the
 peer's blob downloaded, its bytes verified by content hash, the network path
 that carried it, the peer's collection downloaded, its children verified by

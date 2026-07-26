@@ -4,7 +4,6 @@ import { parseTicket, type Endpoint, type RemoteInfo, type Transfer } from "reac
 import { e2eEvent, e2ePath, e2eReport } from "./markers";
 import ProgressBar from "./ProgressBar";
 import { DOWNLOAD_DEST } from "./paths";
-import QrScannerModal from "./QrScannerModal";
 import { sectionStyles } from "./theme";
 
 type Phase = "idle" | "downloading" | "verifying" | "complete" | "failed";
@@ -63,24 +62,10 @@ const STATUS_LABEL: Record<Phase, string> = {
 function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Element {
   const ticketRef = useRef("");
   const [state, setState] = useState<DownloadState>(IDLE);
-  const [scanning, setScanning] = useState(false);
-  const [scanned, setScanned] = useState<{ value: string; nonce: number } | null>(null);
 
   const onTicketChange = useCallback((text: string) => {
     ticketRef.current = text;
   }, []);
-
-  // A scan has to show up in a field that is deliberately uncontrolled, so the
-  // input is remounted with a new `defaultValue` instead of being driven by
-  // state. The nonce is what forces that remount, and it is why re-scanning the
-  // same ticket still refills a field the user has since edited by hand.
-  const onScanned = useCallback((value: string) => {
-    setScanning(false);
-    ticketRef.current = value;
-    setScanned((previous) => ({ value, nonce: (previous?.nonce ?? 0) + 1 }));
-  }, []);
-
-  const onCancelScan = useCallback(() => setScanning(false), []);
 
   const onDownload = useCallback(async () => {
     // Dismiss the keyboard in-app: automation must never rely on Android's
@@ -183,14 +168,13 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
           tappable right after typing (no scrolling past the keyboard). */}
       <View style={styles.inputRow}>
         <TextInput
-          key={scanned?.nonce ?? 0}
           testID="ticket-input"
           style={styles.input}
-          placeholder="Scan or paste ticket here"
+          placeholder="Paste ticket here"
           placeholderTextColor="#9aa0ad"
           autoCapitalize="none"
           autoCorrect={false}
-          defaultValue={scanned?.value ?? ""}
+          defaultValue=""
           onChangeText={onTicketChange}
         />
         <TouchableOpacity
@@ -203,15 +187,6 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
           <Text style={sectionStyles.buttonLabel}>{busy ? "Working..." : "Download"}</Text>
         </TouchableOpacity>
       </View>
-      <TouchableOpacity
-        testID="ticket-scan"
-        accessibilityRole="button"
-        style={[sectionStyles.button, styles.scanButton]}
-        disabled={busy}
-        onPress={() => setScanning(true)}
-      >
-        <Text style={sectionStyles.buttonLabel}>Scan QR Code</Text>
-      </TouchableOpacity>
       {state.phase === "downloading" ? (
         <TouchableOpacity
           testID="cancel-button"
@@ -252,14 +227,6 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
           Path: {state.path}
         </Text>
       ) : null}
-
-      {scanning ? (
-        <QrScannerModal
-          prompt="Point at the other device's ticket code."
-          onScanned={onScanned}
-          onCancel={onCancelScan}
-        />
-      ) : null}
     </View>
   );
 }
@@ -284,9 +251,6 @@ const styles = StyleSheet.create({
   },
   downloadButton: {
     paddingHorizontal: 14,
-  },
-  scanButton: {
-    marginTop: 6,
   },
   cancelButton: {
     marginTop: 6,

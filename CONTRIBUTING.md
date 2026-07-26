@@ -191,7 +191,38 @@ ADB=/mnt/c/Android/platform-tools/adb.exe bun run e2e
 ```
 
 See `e2e/run-e2e.sh` for the full requirements and environment overrides
-(`ADB`, `MAESTRO`, `APK`, `FILE_MB`, `E2E_ARTIFACTS`, `SKIP_INSTALL`).
+(`ADB`, `MAESTRO`, `APK`, `FILE_MB`, `E2E_ARTIFACTS`, `SKIP_INSTALL`,
+`E2E_DEVICES`).
+
+The harness reinstalls the app and wipes its data on every device it selects,
+and by default it selects every device `adb` can see. Name the targets
+explicitly whenever a phone that is not a test device might be attached:
+
+```bash
+E2E_DEVICES="emulator-5554 emulator-5556" bun run e2e
+```
+
+### Two-device test (manual, no harness)
+
+The `e2e/` harness needs two emulators and a wired-up host. When what you want
+is evidence from real hardware (including across platforms), the example app
+carries a **Two-Device Test** section that runs the same ground the harness
+covers, driven by hand from both screens and reporting on-screen.
+
+Install the app on two devices and open the section on each. Press "Wait For
+Other Device" on the first, then give the second that device's endpoint id
+(scan the QR with the system camera app, or long-press the id to copy) and
+press Connect. Order matters: a gossip topic exists only where it has been
+joined locally, and an inbound join for an unknown topic is dropped, so the
+waiting device has to go first. Both devices then run the identical script and
+display the same checks, covering the blob and collection transfers, the
+content-hash verification, the network path the traffic actually took, and the
+peer's own verdict.
+
+Each device seeds its files from its own endpoint id, so the two sides can never
+share a content hash: a "transfer" that quietly returned local bytes cannot pass
+the integrity check. Pairing carries only an endpoint id, so a successful
+handshake is also evidence that discovery resolved the peer's addresses.
 
 ### Benchmarks
 
