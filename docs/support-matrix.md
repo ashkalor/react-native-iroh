@@ -15,14 +15,14 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                 | Android                       | iOS                      |
-| ------------------------------------------------------- | ----------------------------- | ------------------------ |
-| Endpoint create / close                                 | Validated (device + emulator) | Validated (device + sim) |
-| Blob share / download (`blobs.share` / `.download`)     | Validated (device + emulator) | Validated (device + sim) |
-| Collections (`shareCollection` / `downloadCollection`)  | Validated (emulator)          | Not yet validated        |
-| Relay mode (`relayMode`)                                | Validated (emulator)          | Validated (simulator)    |
-| Address observability (`addr` / `watchAddr` / `online`) | Validated (emulator)          | Not yet validated        |
-| Gossip (`gossip.subscribe` / `broadcast`)               | Validated (device)            | Validated (device)       |
+| Feature                                                                | Android                       | iOS                      |
+| ---------------------------------------------------------------------- | ----------------------------- | ------------------------ |
+| Endpoint create / close                                                | Validated (device + emulator) | Validated (device + sim) |
+| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator) | Validated (device + sim) |
+| Collections (`shareCollection` / `downloadCollection`)                 | Validated (emulator)          | Not yet validated        |
+| Relay mode (`relayMode`)                                               | Validated (emulator)          | Validated (simulator)    |
+| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (emulator)          | Not yet validated        |
+| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)       |
 
 ### Cross-platform transfer
 
@@ -47,6 +47,28 @@ the protocol, not of this example.
 
 The automated two-device gossip flow in `e2e/` has still never been driven to
 completion; the validation above was performed by hand.
+
+## Reproducing the device rows
+
+The example app carries a **Two-Device Test** section so the rows above can be
+re-established on real hardware without the `e2e/` harness, which needs two
+emulators and a wired-up host. Install the app on two devices, open the section
+on both, press "Wait For Other Device" on the first, then scan its QR code from
+the second. Both devices then run the same script and display the same checks:
+endpoint online, control topic joined, peer resolved from its id alone, the
+peer's blob downloaded, its bytes verified by content hash, the network path
+that carried it, the peer's collection downloaded, its children verified by
+size, and the peer's own verdict echoed back.
+
+Two properties make the result meaningful rather than self-confirming. Each
+device's files are seeded from its own endpoint id, so the two sides never share
+a content hash and a "transfer" that quietly returned local bytes cannot pass.
+And pairing carries only an endpoint id, because that is all the QR encodes, so
+a successful handshake is also evidence that discovery resolved the peer's
+addresses rather than them being handed over.
+
+This is a manual test by design. It is driven from both screens by a person and
+reports on-screen; nothing in CI runs it.
 
 ## What "validated" means here
 
@@ -78,7 +100,10 @@ to work, but "expected" is not "validated" and the matrix reflects that.
 
 The network path the cross-platform transfer actually took (a direct hole-punched
 route, or a relay) was not recorded, so relay fallback and NAT traversal remain
-uncharacterised on real networks.
+uncharacterised on real networks. `endpoint.remoteInfo()` now exposes that path
+and the example samples it after every download, but it landed after the device
+session above, so the recorded result does not exist yet: the claim stays
+uncharacterised until the next real-hardware run produces one.
 
 ## React hooks
 
