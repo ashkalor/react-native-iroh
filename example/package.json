@@ -4,8 +4,8 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "android": "expo run:android",
-    "ios": "expo run:ios",
+    "android": "EXPO_NO_METRO_WORKSPACE_ROOT=1 expo run:android",
+    "ios": "EXPO_NO_METRO_WORKSPACE_ROOT=1 expo run:ios",
     "lint": "eslint .",
     "start": "EXPO_NO_METRO_WORKSPACE_ROOT=1 expo start --dev-client",
     "test": "jest",
