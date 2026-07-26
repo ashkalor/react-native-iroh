@@ -3,6 +3,7 @@ import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { Endpoint } from "react-native-iroh";
 import BenchSection from "./src/BenchSection";
 import CollectionsSection from "./src/CollectionsSection";
+import DevicePairSection from "./src/DevicePairSection";
 import DownloadSection from "./src/DownloadSection";
 import GossipChatSection from "./src/GossipChatSection";
 import { e2eReady, e2eReport, resetMarkerLog } from "./src/markers";
@@ -85,6 +86,7 @@ function App(): React.JSX.Element {
         </View>
         {state.phase === "ready" ? (
           <>
+            <DevicePairSection endpoint={state.endpoint} />
             <ShareSection endpoint={state.endpoint} />
             <DownloadSection endpoint={state.endpoint} />
             <GossipChatSection endpoint={state.endpoint} />
