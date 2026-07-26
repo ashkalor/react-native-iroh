@@ -8,8 +8,19 @@ pre-commit:
     - name: lint
       glob: "*.{ts,tsx,js,jsx}"
       run: bunx oxlint {staged_files}
+    # Rust formatting is checked here so a `cargo fmt` miss cannot reach CI
+    # (it did once in Phase 2). Runs only when a *.rs file is staged; the check
+    # covers the whole crate, which is what the CI gate enforces.
+    - name: rust-format
+      glob: "*.rs"
+      run: cargo fmt --manifest-path rust/iroh-rn-core/Cargo.toml --check
 
 pre-push:
   jobs:
     - name: typecheck
       run: bunx tsc --noEmit
+    # Clippy is the slower Rust gate, so it runs on push (like typecheck) rather
+    # than on every commit. Skipped when the push touches no Rust.
+    - name: rust-clippy
+      glob: "*.rs"
+      run: cargo clippy --manifest-path rust/iroh-rn-core/Cargo.toml --all-targets -- -D warnings

@@ -45,41 +45,20 @@ CONTROL_PORT="${BENCH_PORT:-8899}"
 RUN_TIMEOUT="${BENCH_RUN_TIMEOUT:-900}"
 FILES_BASE="/data/user/0/$APP_ID/files"
 RESULTS="$ARTIFACTS/results.psv"
+LOG_TAG=bench
 
-log() { printf '[bench] %s\n' "$*"; }
-
-dump_logs() {
-  mkdir -p "$ARTIFACTS"
-  for d in "${DEVICES[@]:-}"; do
-    [ -n "$d" ] && "$ADB" -s "$d" logcat -d > "$ARTIFACTS/logcat-$d.txt" 2>/dev/null
-  done
-  log "logcat dumps written to $ARTIFACTS"
-}
-
-fail() {
-  log "FAIL: $*"
-  dump_logs
-  exit 1
-}
+# shellcheck source=./lib.sh
+. "$E2E_DIR/lib.sh"
 
 # --- Tool discovery -------------------------------------------------------
 
-if [ -z "${ADB:-}" ]; then
-  if command -v adb >/dev/null 2>&1; then
-    ADB=adb
-  else
-    fail "adb not found; set ADB=/path/to/adb"
-  fi
-fi
+discover_adb
 command -v bun >/dev/null 2>&1 || fail "bun not found (needed for the plan server)"
 
 # --- Device selection -----------------------------------------------------
 
-mapfile -t DEVICES < <("$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+list_devices
 case "${#DEVICES[@]}" in
-  0)
-    fail "no devices connected"
-    ;;
   1)
     DEVICE_A="${DEVICES[0]}"
     DEVICE_B=""
@@ -97,39 +76,16 @@ BENCH_DEVICES=("$DEVICE_A")
 # --- App install + Metro --------------------------------------------------
 
 if [ "${SKIP_INSTALL:-0}" != "1" ]; then
-  [ -f "$APK" ] || fail "APK not found at $APK (build it or set SKIP_INSTALL=1)"
-  PUSH_SRC="$APK"
-  case "$ADB" in
-    *.exe) PUSH_SRC="$(wslpath -w "$APK")" ;;
-  esac
-  for d in "${BENCH_DEVICES[@]}"; do
-    "$ADB" -s "$d" push "$PUSH_SRC" /data/local/tmp/iroh-e2e.apk >/dev/null || fail "push to $d"
-    "$ADB" -s "$d" shell pm install -r /data/local/tmp/iroh-e2e.apk >/dev/null || fail "install on $d"
-    log "installed app on $d"
-  done
+  install_app "${BENCH_DEVICES[@]}"
 fi
 
 # A Metro this script starts is killed on exit (a lingering child would keep
 # the script's process group alive in some sandboxed environments); a Metro
 # that was already running is left untouched.
-STARTED_METRO_PID=""
-if ! timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null; then
-  log "starting Metro"
-  mkdir -p "$ARTIFACTS"
-  (cd "$REPO_DIR/example" && exec bun start > "$ARTIFACTS/metro.log" 2>&1) &
-  STARTED_METRO_PID=$!
-  for _ in $(seq 1 45); do
-    timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null && break
-    sleep 2
-  done
-  timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null || fail "Metro did not come up on 8081"
-fi
+ensure_metro
 
-for d in "${BENCH_DEVICES[@]}"; do
-  "$ADB" -s "$d" reverse tcp:8081 tcp:8081 >/dev/null || fail "adb reverse 8081 on $d"
-  "$ADB" -s "$d" reverse "tcp:$CONTROL_PORT" "tcp:$CONTROL_PORT" >/dev/null \
-    || fail "adb reverse $CONTROL_PORT on $d"
-done
+reverse_port 8081 "${BENCH_DEVICES[@]}"
+reverse_port "$CONTROL_PORT" "${BENCH_DEVICES[@]}"
 
 # --- Plan server ----------------------------------------------------------
 
@@ -199,7 +155,10 @@ to_push_path() { # to_push_path <linux-path> -> path usable by $ADB
 }
 
 for d in "${BENCH_DEVICES[@]}"; do
-  for f in manifest-all.txt manifest-mix.txt manifest-single.txt provision.sh verify.sh; do
+  # manifest-stress.txt is pushed too: the stress-12 and coll-12 runs verify
+  # against it on-device (see run_bench), so it must be present alongside the
+  # mix/single manifests or verify.sh reports a cosmetic "No such file" error.
+  for f in manifest-all.txt manifest-mix.txt manifest-single.txt manifest-stress.txt provision.sh verify.sh; do
     "$ADB" -s "$d" push "$(to_push_path "$SERVE_DIR/$f")" "/data/local/tmp/iroh-bench-$f" >/dev/null \
       || fail "push $f to $d"
   done

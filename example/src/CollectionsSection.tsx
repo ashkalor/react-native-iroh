@@ -2,13 +2,8 @@ import React, { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Endpoint, IrohError, type CollectionTransfer, type FileProgress } from "react-native-iroh";
 import { e2eEvent, e2eReport } from "./markers";
-import { FILES_DIR, SYSTEM_FILE_CANDIDATES } from "./paths";
+import { resetCollectionsDir, SYSTEM_FILE_CANDIDATES } from "./paths";
 import { sectionStyles } from "./theme";
-
-/** Where the collection demo's endpoints keep their blob stores. */
-const STORE_ROOT = `${FILES_DIR}/iroh-collections`;
-/** Where downloaded children land (must be an existing directory). */
-const DEST_DIR = FILES_DIR;
 
 type DemoState =
   | { phase: "idle" }
@@ -84,13 +79,16 @@ function CollectionsSection(): React.JSX.Element {
     let provider: Endpoint | null = null;
     let receiver: Endpoint | null = null;
     try {
+      // Both stores and the export target are rebuilt from scratch: exporting
+      // a child over one left by an earlier run fails with an I/O error.
+      const { storeRoot, destDir } = resetCollectionsDir();
       provider = await Endpoint.create({
         preset: "minimal",
-        blobStoreDir: `${STORE_ROOT}/provider-store`,
+        blobStoreDir: `${storeRoot}/provider-store`,
       });
       receiver = await Endpoint.create({
         preset: "minimal",
-        blobStoreDir: `${STORE_ROOT}/receiver-store`,
+        blobStoreDir: `${storeRoot}/receiver-store`,
       });
 
       // Probe which candidate files are readable on this device by attempting
@@ -116,7 +114,7 @@ function CollectionsSection(): React.JSX.Element {
       const ticket = await provider.blobs.shareCollection(readable);
       e2eReport("collection-share", true, `files=${readable.length} ticket=${ticket.length}chars`);
 
-      const transfer = receiver.blobs.downloadCollection(ticket, DEST_DIR);
+      const transfer = receiver.blobs.downloadCollection(ticket, destDir);
       setState({ phase: "downloading", ticket, transfer });
       await transfer.done;
 

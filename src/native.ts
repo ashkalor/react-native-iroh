@@ -15,6 +15,7 @@ export type IrohBinding = Pick<
   | "endpointAddr"
   | "watchAddr"
   | "stopWatchAddr"
+  | "remoteInfo"
   | "endpointOnline"
   | "closeEndpoint"
   | "shareBlob"
@@ -23,6 +24,9 @@ export type IrohBinding = Pick<
   | "shareCollection"
   | "collectionManifest"
   | "parseTicket"
+  | "gossipSubscribe"
+  | "gossipBroadcast"
+  | "gossipUnsubscribe"
 >;
 
 let singleton: IrohSpec | undefined;

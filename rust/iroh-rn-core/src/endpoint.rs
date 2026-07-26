@@ -8,13 +8,15 @@
 use std::{path::PathBuf, sync::Arc, sync::LazyLock, time::Duration};
 
 use iroh::{
-    endpoint::presets, protocol::Router, Endpoint, EndpointAddr, RelayMode, RelayUrl,
-    TransportAddr, Watcher,
+    address_lookup::memory::MemoryLookup, endpoint::presets, endpoint::TransportAddrUsage,
+    protocol::Router, Endpoint, EndpointAddr, RelayMode, RelayUrl, TransportAddr, Watcher,
 };
 use iroh_blobs::{
+    api::blobs::{ExportMode, ImportMode},
     store::{fs::FsStore, mem::MemStore},
     BlobsProtocol,
 };
+use iroh_gossip::net::Gossip;
 use n0_future::{task::AbortOnDropHandle, StreamExt};
 
 use crate::{
@@ -23,6 +25,7 @@ use crate::{
     registry::Registry,
     require_absolute,
     runtime::runtime,
+    spawn_completing,
 };
 
 /// Opaque handle to a live endpoint. `0` is never a valid handle.
@@ -134,6 +137,28 @@ impl BlobStore {
     pub(crate) fn is_persistent(&self) -> bool {
         matches!(self, BlobStore::Fs(_))
     }
+
+    /// The [`ImportMode`] for adding a local file to this store. A persistent
+    /// store references the file in place (no byte copy); an in-memory store
+    /// cannot reference and must copy the bytes in.
+    pub(crate) fn import_mode(&self) -> ImportMode {
+        if self.is_persistent() {
+            ImportMode::TryReference
+        } else {
+            ImportMode::Copy
+        }
+    }
+
+    /// The [`ExportMode`] for writing a stored blob to a destination path. A
+    /// persistent store can reference/move the file (avoiding a second byte
+    /// copy); an in-memory store must copy it out.
+    pub(crate) fn export_mode(&self) -> ExportMode {
+        if self.is_persistent() {
+            ExportMode::TryReference
+        } else {
+            ExportMode::Copy
+        }
+    }
 }
 
 /// Everything owned by one live endpoint.
@@ -142,6 +167,15 @@ pub(crate) struct EndpointState {
     pub(crate) endpoint: Endpoint,
     pub(crate) store: BlobStore,
     pub(crate) preset: NetworkPreset,
+    /// The gossip protocol running over this endpoint. The [`Router`] below
+    /// accepts incoming gossip connections into it; [`crate::gossip`] drives
+    /// its subscriptions.
+    pub(crate) gossip: Gossip,
+    /// Addresses supplied by the host (gossip bootstrap peers), so the endpoint
+    /// can dial those peers by id without a discovery service. Registered once
+    /// with the endpoint's address-lookup chain at creation; entries are added
+    /// to it thereafter.
+    pub(crate) bootstrap_lookup: MemoryLookup,
     router: Router,
 }
 
@@ -159,10 +193,7 @@ pub fn endpoint_create(
     config: EndpointConfig,
     on_complete: impl FnOnce(Result<EndpointHandle>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = create_inner(config).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(create_inner(config), on_complete);
 }
 
 async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
@@ -210,14 +241,28 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     let (endpoint, store) = tokio::try_join!(bind, load_store)?;
 
     let blobs = BlobsProtocol::new(store.api(), None);
+    // Gossip is registered as a second ALPN on the same router, additively:
+    // the blobs accept (and its ordering) is unchanged so blob transfer is
+    // unaffected. The gossip instance shares the endpoint and is driven by
+    // `crate::gossip`.
+    let gossip = Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
+        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .spawn();
+
+    let bootstrap_lookup = MemoryLookup::new();
+    endpoint
+        .address_lookup()
+        .map_err(|e| IrohError::EndpointBind(format!("address lookup unavailable: {e}")))?
+        .add(bootstrap_lookup.clone());
 
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
         preset: config.preset,
+        gossip,
+        bootstrap_lookup,
         router,
     });
     Ok(EndpointHandle(handle))
@@ -340,6 +385,92 @@ pub fn stop_watch_addr(handle: WatchHandle) {
     ADDR_WATCHES.remove(handle.raw()).ok();
 }
 
+/// One transport address a remote endpoint is known by, plus whether the local
+/// endpoint is actually using it.
+///
+/// `active` is what distinguishes an observed network path from a merely
+/// advertised one: iroh keeps every address it has learned for a remote, but
+/// only the active ones carry traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAddrInfo {
+    /// The address itself: a relay URL, or a `host:port` socket address.
+    pub addr: String,
+    /// Which transport the address belongs to: `"relay"` or `"ip"`.
+    pub kind: &'static str,
+    /// Whether the address is in active use, as opposed to merely known.
+    pub active: bool,
+}
+
+/// A snapshot of what the local endpoint knows about a remote endpoint,
+/// produced by [`endpoint_remote_info`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEndpointInfo {
+    /// The remote endpoint's id (its public key) as a string.
+    pub id: String,
+    /// Every transport address known for the remote, active or not.
+    pub addrs: Vec<RemoteAddrInfo>,
+}
+
+/// Returns what `handle`'s endpoint currently knows about the remote endpoint
+/// `remote_id`, or `None` if it knows nothing about it (never connected, or the
+/// remote has since been forgotten).
+///
+/// This is the only way to tell whether traffic to a peer is flowing directly
+/// or through a relay: [`endpoint_addr`] reports what the *local* endpoint
+/// advertises, which says nothing about the path a transfer actually took.
+///
+/// The snapshot is not live; call again for a fresh one.
+pub fn endpoint_remote_info(
+    handle: EndpointHandle,
+    remote_id: &str,
+    on_complete: impl FnOnce(Result<Option<RemoteEndpointInfo>>) + Send + 'static,
+) {
+    let endpoint = match endpoint_state(handle) {
+        Ok(state) => state.endpoint.clone(),
+        Err(err) => {
+            guarded_callback(move || on_complete(Err(err)));
+            return;
+        }
+    };
+    let parsed = remote_id.parse::<iroh::EndpointId>();
+    let remote = match parsed {
+        Ok(id) => id,
+        Err(err) => {
+            let err = IrohError::EndpointBind(format!("invalid remote endpoint id: {err}"));
+            guarded_callback(move || on_complete(Err(err)));
+            return;
+        }
+    };
+    spawn_completing(
+        async move {
+            Ok(endpoint.remote_info(remote).await.map(|info| {
+                let id = info.id().to_string();
+                let addrs = info
+                    .addrs()
+                    .filter_map(|entry| {
+                        let active = matches!(entry.usage(), TransportAddrUsage::Active);
+                        match entry.addr() {
+                            TransportAddr::Relay(url) => Some(RemoteAddrInfo {
+                                addr: url.to_string(),
+                                kind: "relay",
+                                active,
+                            }),
+                            TransportAddr::Ip(socket) => Some(RemoteAddrInfo {
+                                addr: socket.to_string(),
+                                kind: "ip",
+                                active,
+                            }),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                RemoteEndpointInfo { id, addrs }
+            }))
+        },
+        on_complete,
+    );
+}
+
 /// Resolves when `handle`'s endpoint has a connected home relay, or fails with
 /// [`IrohError::EndpointBind`] if `timeout` elapses first.
 ///
@@ -357,16 +488,18 @@ pub fn endpoint_online(
             return;
         }
     };
-    runtime().spawn(async move {
-        let result = match tokio::time::timeout(timeout, endpoint.online()).await {
-            Ok(()) => Ok(()),
-            Err(_elapsed) => Err(IrohError::EndpointBind(format!(
-                "endpoint did not come online within {}ms",
-                timeout.as_millis()
-            ))),
-        };
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(
+        async move {
+            match tokio::time::timeout(timeout, endpoint.online()).await {
+                Ok(()) => Ok(()),
+                Err(_elapsed) => Err(IrohError::EndpointBind(format!(
+                    "endpoint did not come online within {}ms",
+                    timeout.as_millis()
+                ))),
+            }
+        },
+        on_complete,
+    );
 }
 
 /// Closes an endpoint: shuts down its router (which closes the underlying
@@ -385,10 +518,7 @@ pub fn endpoint_close(
             return;
         }
     };
-    runtime().spawn(async move {
-        let result = close_inner(state).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(close_inner(state), on_complete);
 }
 
 async fn close_inner(state: Arc<EndpointState>) -> Result<()> {

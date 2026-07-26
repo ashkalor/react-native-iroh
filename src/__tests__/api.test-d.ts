@@ -24,7 +24,12 @@ declare const options: Required<EndpointOptions>;
 
 export type Cases = [
   // Error unions are exactly the stable table.
-  Expect<Equal<IrohErrorCode, 1000 | 1001 | 1002 | 1003 | 2000 | 3000 | 3001 | 3002 | 3003>>,
+  Expect<
+    Equal<
+      IrohErrorCode,
+      1000 | 1001 | 1002 | 1003 | 2000 | 3000 | 3001 | 3002 | 3003 | 4000 | 4001 | 4002
+    >
+  >,
   Expect<
     Equal<
       IrohErrorKind,
@@ -37,6 +42,9 @@ export type Cases = [
       | "blob-download"
       | "blob-export"
       | "cancelled"
+      | "gossip-subscribe"
+      | "gossip-broadcast"
+      | "gossip-message-too-large"
     >
   >,
   Expect<Equal<IrohErrorCase["code"], IrohErrorCode>>,

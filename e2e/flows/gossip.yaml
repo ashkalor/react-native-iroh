@@ -1,0 +1,61 @@
+# Gossip chat roundtrip. Runs on both devices with a different BOOTSTRAP env
+# var: device A gets an empty BOOTSTRAP (it is the topic's first member and
+# logs its address via "E2E: GOSSIP_ADDR ..."); device B gets A's address JSON
+# so it can dial into the swarm. Each device joins the shared topic and then
+# broadcasts a sustained series of pings.
+#
+# There is deliberately NO in-flow "message received" assertion: A joins and
+# logs its address BEFORE B can bootstrap, so A can never satisfy a receive-gate
+# during its own run (that is a deadlock). Instead the roundtrip is asserted
+# from the "E2E: PASS gossip-roundtrip" logcat marker on both devices by
+# run-e2e.sh. The app keeps its subscription alive after this flow ends, so late
+# pings from the peer still arrive and emit the marker. Uses the app's main
+# n0-preset endpoint so the relay traverses the emulators' NAT.
+appId: com.irohexample
+env:
+  BOOTSTRAP: ""
+---
+# stopApp: false keeps the already-running app (and its live endpoint) alive.
+- launchApp:
+    stopApp: false
+- extendedWaitUntil:
+    visible:
+      text: "Status: Online"
+    timeout: 120000
+- scrollUntilVisible:
+    element:
+      id: "gossip-bootstrap"
+    timeout: 60000
+# Seed the bootstrap peer (empty on device A, A's GOSSIP_ADDR json on device B).
+- tapOn:
+    id: "gossip-bootstrap"
+- eraseText: 2000
+- inputText: ${BOOTSTRAP}
+# Dismiss the soft keyboard and scroll the join button into view: on shorter
+# emulator screens the keyboard (raised by the bootstrap input) covers it.
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: "gossip-join"
+    timeout: 20000
+- tapOn:
+    id: "gossip-join"
+# Wait until we are joined (the send box appears).
+- extendedWaitUntil:
+    visible:
+      id: "gossip-status"
+    timeout: 60000
+# Broadcast a sustained series of pings, spaced by the time it takes to type, so
+# at least one lands after the peer has joined and the mesh has warmed up. The
+# app emits "E2E: PASS gossip-roundtrip" from logcat the moment a peer's message
+# arrives; run-e2e.sh asserts it (no in-flow receive-gate; see the header).
+- repeat:
+    times: 30
+    commands:
+      - tapOn:
+          id: "gossip-message"
+      - inputText: "ping"
+      # Dismiss the keyboard so it does not cover the send button on short screens.
+      - hideKeyboard
+      - tapOn:
+          id: "gossip-send"

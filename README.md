@@ -7,7 +7,7 @@ iroh lets any device dial any other device on the planet by its endpoint id:
 QUIC connections that hole-punch through NATs when a direct path exists and
 fall back to relays when it does not. This package puts the real thing
 inside your React Native app: the actual iroh 1.x Rust crates (`iroh`
-1.0.2, `iroh-blobs` 0.103.0) compiled into your build and bound to
+1.0.2, `iroh-blobs` 0.103.0, `iroh-gossip` 0.101.0) compiled into your build and bound to
 JavaScript through [Nitro](https://github.com/mrousavy/nitro) with direct
 Rust-to-C++ bindings, not a JS reimplementation.
 
@@ -24,8 +24,8 @@ A few things worth knowing up front:
   process, with no JSON serialization bridge and synchronous access where
   the API allows it. Consumers never run codegen: all generated bindings
   ship committed in the package.
-- The v0.1 surface is deliberately small and honest: an `Endpoint` (the
-  iroh node) plus the first protocol, `iroh-blobs`. More protocols land as
+- The surface is deliberately small and honest: an `Endpoint` (the iroh node)
+  plus the protocols bound so far, `iroh-blobs` and `iroh-gossip`. More land as
   the binding surface grows; see [Protocols](#protocols).
 
 ## The Endpoint
@@ -59,7 +59,7 @@ protocol. This package ships protocols as their bindings mature.
 ### iroh-blobs (available now)
 
 Content-addressed blob transfer with BLAKE3-verified streaming, namespaced
-under `endpoint.blobs`. The complete v0.1 protocol surface:
+under `endpoint.blobs`. The complete protocol surface:
 
 - `blobs.share(path)` imports a file into the endpoint's blob store and
   returns a `BlobTicket` (hash plus dialable addresses) that any other
@@ -68,25 +68,59 @@ under `endpoint.blobs`. The complete v0.1 protocol surface:
   synchronously: a settlement promise (`done`), live progress as either a
   callback subscription or an async iterable, idempotent `cancel()`, and
   optional `AbortSignal` integration.
-- Downloads are capped per endpoint (default 4) and queued FIFO beyond the
-  cap; progress events are coalesced natively so slow consumers never
-  buffer unboundedly.
+- Downloads are capped per endpoint (default 32, `Infinity` to disable) and
+  queued FIFO beyond the cap; progress events are coalesced natively so slow
+  consumers never buffer unboundedly.
+- `blobs.shareCollection(paths)` bundles several files under one ticket;
+  `blobs.downloadCollection(ticket, destDir)` fetches them all with a live
+  per-file progress breakdown.
 - Every failure (sync throw or rejection) is a typed `IrohError` with a
   stable numeric `code` and discriminated `kind`.
 
+### iroh-gossip (available now)
+
+Epidemic pub/sub: peers that subscribe to the same topic form a swarm and
+broadcast messages to one another, namespaced under `endpoint.gossip`.
+
+- `gossip.subscribe(topic, options?)` joins the topic derived from a free-form
+  label (its BLAKE3 hash) and returns a `GossipSubscription` synchronously: a
+  `joined` promise, an async-iterable `messages` log, an async-iterable
+  `neighbors` stream, `broadcast(text)`, and `unsubscribe()`.
+- The join completes asynchronously, so `await sub.joined` is how you know the
+  subscription is live. Do not infer it from the first message: the first peer
+  on a topic joins successfully and then sits alone until someone else arrives.
+  If the join fails, `joined` rejects with kind `"gossip-subscribe"` and both
+  streams end with that error.
+- `messages` is a bounded FIFO (non-conflating, unlike the address stream):
+  every message is delivered in order, and under overflow the oldest unread
+  messages are dropped so the live tail keeps flowing (a `lagged` signal is
+  logged). Configure the buffer with `options.capacity`. It is one shared
+  stream: consuming a message removes it, so fan out yourself if several
+  consumers each need every message.
+- `broadcast(text)` sends UTF-8 up to 4096 bytes per message; oversize payloads
+  reject with kind `"gossip-message-too-large"`. Payloads are strings in both
+  directions, so send binary as base64 (or another text encoding) until a
+  typed-array bridge lands, and budget for the encoding's size overhead against
+  the 4096-byte limit.
+- On the `"minimal"` preset supply `options.bootstrap` peers (their
+  `EndpointAddr`s) so endpoints can find each other; on `"n0"` discovery can
+  resolve peers without one.
+- A topic is not access-controlled: anyone who knows the label (and can reach a
+  swarm member) can join it and read what is broadcast, and `from` identifies
+  the neighbor that relayed a message, not its author. Treat the label as a
+  channel name, not a secret, and put your own authentication or encryption in
+  the payload if a topic carries anything sensitive.
+
 ### Roadmap
 
-Planned protocol work, honestly labeled: none of this exists in v0.1, and
-no dates are attached.
+Planned protocol work, honestly labeled: none of this exists yet, and no dates
+are attached.
 
-- **Collections** (iroh-blobs hash sequences): share a set of files under
-  a single ticket.
-- **Gossip** (`iroh-gossip`): epidemic pub/sub broadcast overlays.
 - **Docs** (`iroh-docs`): multi-writer replicated key-value documents.
 
-Raw QUIC connections and custom ALPN protocols are likewise not exposed in
-v0.1: today's API is `Endpoint` plus `iroh-blobs`. If a protocol matters
-to you, open an issue.
+Raw QUIC connections and custom ALPN protocols are likewise not exposed
+today: the API is `Endpoint` plus `iroh-blobs` and `iroh-gossip`. If a
+protocol matters to you, open an issue.
 
 ## Status
 
@@ -267,6 +301,27 @@ latest-value-conflating iterator (a slow consumer observes only the newest
 address); iteration ends when the endpoint closes. Break out of the loop to
 detach early.
 
+#### `endpoint.remoteInfo(remoteId): Promise<RemoteInfo | undefined>`
+
+What this endpoint currently knows about the peer `remoteId`, or `undefined`
+if it knows nothing about it (never connected, or since forgotten). Each entry
+in `addrs` is `{ addr, kind, active }`, where `kind` is `"relay"` or `"ip"`.
+
+This is how you tell whether traffic to a peer is flowing directly or through
+a relay: `addr` above describes what _this_ endpoint advertises, which says
+nothing about the path in use. Only the entries with `active: true` are
+carrying traffic; iroh retains every address it has ever learned for a remote,
+so the inactive ones name paths that may never have been used.
+
+The result is a snapshot, not a live view. Sample it while a transfer is still
+warm, since a remote is forgotten some time after its last traffic.
+
+```ts
+const info = await endpoint.remoteInfo(providerId);
+const active = info?.addrs.filter((a) => a.active) ?? [];
+const viaRelay = active.some((a) => a.kind === "relay");
+```
+
 #### `endpoint.online(options?): Promise<void>`
 
 Resolves once the endpoint has a connected home relay, rejecting with an
@@ -285,11 +340,60 @@ dialable addresses.
 #### `endpoint.blobs.download(ticket, destPath, options?): Transfer`
 
 Starts downloading the blob described by `ticket` (a `BlobTicket` or a
-plain string, which is validated with `parseTicket` first) into absolute
+plain string, which is validated with `validateTicketShape` first) into absolute
 `destPath` and synchronously returns a `Transfer` handle. At most
 `maxConcurrentDownloads` downloads run natively at once; additional ones
 wait in a FIFO queue. `options.signal` accepts a standard `AbortSignal`:
 aborting it cancels the transfer (aborting after settle is a no-op).
+
+An existing file at `destPath` is replaced, so downloading twice to the same
+path works. A `destPath` that is a directory is rejected (kind
+`"blob-export"`) rather than being deleted.
+
+#### `endpoint.blobs.shareCollection(paths): Promise<BlobTicket>`
+
+Bundles several absolute file paths into one collection (an iroh-blobs
+HashSeq) and resolves with a single `BlobTicket` covering all of them. Each
+child is named after its source file's base name. `paths` must be non-empty.
+
+#### `endpoint.blobs.downloadCollection(ticket, destDir, options?): CollectionTransfer`
+
+Fetches every child of a collection ticket into absolute `destDir`, writing
+each to `destDir/<name>`, and synchronously returns a `CollectionTransfer`:
+everything a `Transfer` has, plus a `files` array of per-child
+`FileProgress` (`{ name, bytesReceived, totalBytes?, done }`) alongside the
+aggregate progress. Children are fetched through the same per-endpoint
+download queue and cap as `download`.
+
+Child names come from whoever shared the collection, so they are validated
+before anything is written: a name that is not a single path segment (one
+containing `/`, `\`, or a `..` parent reference) fails the whole transfer with
+kind `"invalid-path"` and no file is written. A collection therefore cannot
+place a file outside `destDir`.
+
+#### `endpoint.gossip.subscribe(topic, options?): GossipSubscription`
+
+Subscribes to the gossip topic derived from `topic` (a free-form label; peers
+that pass the same label join the same topic) and returns a `GossipSubscription`
+synchronously. `options.bootstrap` is a list of peer `EndpointAddr`s to seed the
+swarm with (required on the `minimal` preset; optional on `n0`, where discovery
+can resolve peers), and `options.capacity` sizes the message buffer. Throws an
+`IrohError` synchronously for a stale endpoint (kind `"invalid-handle"`) or a
+malformed bootstrap address (kind `"gossip-subscribe"`).
+
+`GossipSubscription` members:
+
+| Member            | Type                                 | Meaning                                                                                                                                                                                                                          |
+| ----------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `joined`          | `Promise<void>`                      | Resolves once the topic is actually joined and the subscription is live. Rejects with kind `"gossip-subscribe"` if the join fails, or if the subscription is torn down before it started.                                        |
+| `messages`        | `AsyncIterable<GossipMessage>`       | Received messages, in arrival order. A bounded FIFO (non-conflating): under overflow the oldest unread messages are dropped so the live tail keeps flowing. One shared stream: consuming a message removes it. Ends on teardown. |
+| `neighbors`       | `AsyncIterable<GossipNeighborEvent>` | Swarm membership changes (`{ type: "up" \| "down"; endpointId }`). Ends on teardown.                                                                                                                                             |
+| `broadcast(text)` | `(text: string) => Promise<void>`    | Broadcasts UTF-8 `text` (up to 4096 bytes) to every peer; rejects with kind `"gossip-message-too-large"` if oversize, or `"gossip-broadcast"` on failure.                                                                        |
+| `unsubscribe()`   | `() => void`                         | Leaves the topic and ends both iterators. Idempotent; also run automatically when the endpoint closes.                                                                                                                           |
+
+`GossipMessage` has `text` (the UTF-8 payload) and `from` (the id of the
+neighbor that delivered it). Messages are also capped at 4096 bytes per the
+gossip protocol's default.
 
 #### `endpoint.close(): Promise<void>`
 
@@ -346,17 +450,20 @@ API.
 
 Error codes are stable across releases:
 
-| Code   | Kind             | Meaning                                                             |
-| ------ | ---------------- | ------------------------------------------------------------------- |
-| `1000` | `internal`       | Unclassified native failure (also the fallback for untagged errors) |
-| `1001` | `invalid-handle` | Operation on an unknown or already-closed endpoint handle           |
-| `1002` | `invalid-ticket` | Ticket string failed to parse                                       |
-| `1003` | `invalid-path`   | Path is not usable (not absolute, not readable, ...)                |
-| `2000` | `endpoint-bind`  | Endpoint failed to bind its sockets / come online                   |
-| `3000` | `blob-import`    | Importing a file into the blob store failed                         |
-| `3001` | `blob-download`  | Download failed                                                     |
-| `3002` | `blob-export`    | Writing the downloaded blob to `destPath` failed                    |
-| `3003` | `cancelled`      | Transfer was cancelled                                              |
+| Code   | Kind                       | Meaning                                                             |
+| ------ | -------------------------- | ------------------------------------------------------------------- |
+| `1000` | `internal`                 | Unclassified native failure (also the fallback for untagged errors) |
+| `1001` | `invalid-handle`           | Operation on an unknown or already-closed endpoint handle           |
+| `1002` | `invalid-ticket`           | Ticket string failed to parse                                       |
+| `1003` | `invalid-path`             | Path is not usable (not absolute, not readable, ...)                |
+| `2000` | `endpoint-bind`            | Endpoint failed to bind its sockets / come online                   |
+| `3000` | `blob-import`              | Importing a file into the blob store failed                         |
+| `3001` | `blob-download`            | Download failed                                                     |
+| `3002` | `blob-export`              | Writing the downloaded blob to `destPath` failed                    |
+| `3003` | `cancelled`                | Transfer was cancelled                                              |
+| `4000` | `gossip-subscribe`         | Subscribing to a gossip topic failed (e.g. a bad bootstrap address) |
+| `4001` | `gossip-broadcast`         | Broadcasting a gossip message failed                                |
+| `4002` | `gossip-message-too-large` | Gossip payload exceeded the 4096-byte per-message limit             |
 
 Exported error types: `IrohErrorCode` (union of the numeric codes),
 `IrohErrorKind` (union of the kind strings), `IrohErrorCase` (the
@@ -364,27 +471,59 @@ discriminated `code`/`kind` pairing).
 
 ### Other exports
 
-| Export                                         | Kind          | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEFAULT_MAX_CONCURRENT_DOWNLOADS`             | `const` (`4`) | Default download-concurrency cap per endpoint.                                                                                                                                                                                                                                                                                                                                                                            |
-| `IROH_VERSION`                                 | `const`       | The exact version of the iroh Rust crate compiled into this package (e.g. `"1.0.2"`). A unit test pins it to the crate manifest, so it cannot drift.                                                                                                                                                                                                                                                                      |
-| `parseTicket(s)`                               | function      | Validates a string's blob-ticket shape (`blob` prefix, base32 charset, minimum length) and returns it as a `BlobTicket`; throws `IrohError` kind `"invalid-ticket"` on failure. `blobs.download` runs the same check on plain strings.                                                                                                                                                                                    |
-| `getIrohErrorCode(error)`                      | function      | Extracts the numeric code from a raw-bridge error message, or `undefined`. Retained for users of the raw escape hatch; the class API throws `IrohError`, which carries `code`/`kind` directly.                                                                                                                                                                                                                            |
-| `getIroh()`                                    | function      | Unstable escape hatch: returns the raw Nitro hybrid object with the full native surface (`createEndpoint`, `endpointId`, `isEndpointOpen`, `closeEndpoint`, `shareBlob`, `downloadBlob`, `cancelDownload`), without the queueing, error typing, or lifecycle handling of `Endpoint`. The binding is created lazily on first call (never at import). Its errors carry `[iroh:<code>]` message prefixes. Prefer `Endpoint`. |
-| `IrohSpec`                                     | type          | The interface of the raw hybrid object.                                                                                                                                                                                                                                                                                                                                                                                   |
-| `IrohBinding`                                  | type          | The structural subset of `IrohSpec` that `Endpoint` depends on; implement it to mock the native layer in tests.                                                                                                                                                                                                                                                                                                           |
-| `EndpointId`, `BlobTicket`                     | types         | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `parseTicket` (or `blobs.share`).                                                                                                                                                                                                                                       |
-| `EndpointConfig`, `NetworkPreset`              | types         | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
-| `Blobs`, `DownloadOptions`, `AbortSignalLike`  | types         | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
-| `EndpointOptions`, `Transfer`, `ProgressEvent` | types         | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `EndpointAddr`, `RelayMode`                    | types         | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
-| `DEFAULT_ONLINE_TIMEOUT_MS`                    | `const` (10s) | Default timeout for `endpoint.online()`.                                                                                                                                                                                                                                                                                                                                                                                  |
+| Export                                                                                           | Kind           | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DEFAULT_MAX_CONCURRENT_DOWNLOADS`                                                               | `const` (`32`) | Default download-concurrency cap per endpoint. Pass `Infinity` to `maxConcurrentDownloads` for no cap.                                                                                                                                                                                                                                                                                                                    |
+| `IROH_VERSION`                                                                                   | `const`        | The exact version of the iroh Rust crate compiled into this package (e.g. `"1.0.2"`). A unit test pins it to the crate manifest, so it cannot drift.                                                                                                                                                                                                                                                                      |
+| `parseTicket(s)`                                                                                 | function       | Decodes a ticket natively into a `TicketInfo` (`{ hash, format, nodeId, size? }`); throws `IrohError` kind `"invalid-ticket"` on failure. Changed in 0.2.0: it previously returned the ticket string. Use `validateTicketShape` for the old cheap shape check.                                                                                                                                                            |
+| `validateTicketShape(s)`                                                                         | function       | Validates a string's blob-ticket shape (`blob` prefix, base32 charset, minimum length) and returns it as a `BlobTicket` without decoding it; throws `IrohError` kind `"invalid-ticket"` on failure. `blobs.download` runs the same check on plain strings.                                                                                                                                                                |
+| `TicketInfo`, `BlobFormat`                                                                       | types          | The decoded ticket `parseTicket` returns, and its `format` field (`"raw"` for a single blob, `"hashSeq"` for a collection).                                                                                                                                                                                                                                                                                               |
+| `CollectionTransfer`, `FileProgress`                                                             | types          | The handle `blobs.downloadCollection` returns and its per-child progress entries.                                                                                                                                                                                                                                                                                                                                         |
+| `getIrohErrorCode(error)`                                                                        | function       | Extracts the numeric code from a raw-bridge error message, or `undefined`. Retained for users of the raw escape hatch; the class API throws `IrohError`, which carries `code`/`kind` directly.                                                                                                                                                                                                                            |
+| `getIroh()`                                                                                      | function       | Unstable escape hatch: returns the raw Nitro hybrid object with the full native surface (`createEndpoint`, `endpointId`, `isEndpointOpen`, `closeEndpoint`, `shareBlob`, `downloadBlob`, `cancelDownload`), without the queueing, error typing, or lifecycle handling of `Endpoint`. The binding is created lazily on first call (never at import). Its errors carry `[iroh:<code>]` message prefixes. Prefer `Endpoint`. |
+| `IrohSpec`                                                                                       | type           | The interface of the raw hybrid object.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `IrohBinding`                                                                                    | type           | The structural subset of `IrohSpec` that `Endpoint` depends on; implement it to mock the native layer in tests.                                                                                                                                                                                                                                                                                                           |
+| `EndpointId`, `BlobTicket`                                                                       | types          | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `validateTicketShape` (or `blobs.share`).                                                                                                                                                                                                                               |
+| `EndpointConfig`, `NetworkPreset`                                                                | types          | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
+| `Blobs`, `DownloadOptions`, `AbortSignalLike`                                                    | types          | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
+| `Gossip`, `GossipSubscription`, `GossipMessage`, `GossipNeighborEvent`, `GossipSubscribeOptions` | types          | The `endpoint.gossip` namespace interface and its subscription, message, neighbor-event, and options types.                                                                                                                                                                                                                                                                                                               |
+| `EndpointOptions`, `Transfer`, `ProgressEvent`                                                   | types          | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `EndpointAddr`, `RelayMode`                                                                      | types          | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
+| `RemoteInfo`, `RemoteAddr`, `RemoteAddrKind`                                                     | types          | The peer snapshot returned by `endpoint.remoteInfo()`, its per-address entries, and the `"relay" \| "ip"` transport tag.                                                                                                                                                                                                                                                                                                  |
+| `DEFAULT_ONLINE_TIMEOUT_MS`                                                                      | `const` (10s)  | Default timeout for `endpoint.online()`.                                                                                                                                                                                                                                                                                                                                                                                  |
+
+## React hooks
+
+Optional React bindings live on the `react-native-iroh/hooks` subpath, kept off
+the root entry point so importing the library never pulls in `react`. Each hook
+is a thin wrapper that reflects an imperative lifecycle as component state and
+tears its resource down on unmount.
+
+```ts
+import { useEndpoint, useGossip, useTransfer } from "react-native-iroh/hooks";
+```
+
+| Hook                                   | Returns                                             | Notes                                                                                                                                                |
+| -------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `useEndpoint(options?)`                | `{ endpoint, status, error }`                       | Creates an endpoint on mount and closes it on unmount. `status` is `"creating" \| "ready" \| "error" \| "closed"`; `endpoint` is `null` until ready. |
+| `useTransfer(transfer)`                | `{ progress, files, status, error }`                | Subscribes to a `Transfer`'s progress and settles with it. Pass `null` to reset.                                                                     |
+| `useDownload(endpoint, ticket, dest?)` | `{ transfer, ...useTransfer state }`                | Starts a download when its arguments become non-null and tracks it, cancelling on unmount.                                                           |
+| `useGossip(endpoint, topic, options?)` | `{ messages, neighbors, broadcast, status, error }` | Subscribes for the component's lifetime, draining both streams into capped arrays (`options.retain`, default 500). `broadcast` is stable.            |
+
+Pass `null` for `endpoint` while it is still being created, so a hook chain
+composes without conditional hook calls:
+
+```tsx
+const { endpoint } = useEndpoint();
+const { messages, broadcast, status } = useGossip(endpoint, "my-app/lobby");
+```
 
 ## Performance
 
-- Downloads run on a native thread pool, one in-flight operation per thread,
-  which is why they are capped (default 4) and queued FIFO per endpoint. Keep
-  `maxConcurrentDownloads` modest unless you have measured your workload.
+- Downloads are bridged asynchronously (a native completion callback settles the
+  Promise), so an in-flight download holds no native thread. The per-endpoint cap
+  (default 32, `Infinity` for unlimited) is therefore an application-level
+  throttle rather than a hardware limit; work beyond it queues FIFO.
 - Progress events are throttled natively to roughly 30 per second, and the
   latest value is always delivered before the download's Promise settles.
   `onProgress` listeners run synchronously on the JS thread, so keep them
@@ -416,13 +555,25 @@ an all-ABI AAR is about 36 MB. Use Android App Bundles so each device
 downloads only its own ABI. The iOS static library adds a comparable
 single-architecture cost after App Store thinning.
 
+For an honest, per-feature view of what has actually been validated on each
+platform (as opposed to merely compiling), see the
+[support matrix](./docs/support-matrix.md).
+
 ## Example app
 
 `example/` contains a complete share/download app: device A shares a file
 and shows the ticket as a QR code and copyable string; device B pastes the
 ticket, downloads with live progress, and verifies integrity by re-sharing
-the downloaded file and comparing ticket hashes. It is also the vehicle for
-the end-to-end suite in `e2e/`.
+the downloaded file and comparing ticket hashes. It also demonstrates
+collections, gossip chat, and the `react-native-iroh/hooks` layer, and is the
+vehicle for the end-to-end suite in `e2e/`.
+
+It additionally carries a **Two-Device Test** section: pair two devices by
+endpoint id and the app runs a full cross-device suite by itself (blob and
+collection transfer, content-hash verification, the network path the traffic
+took, and the peer's own verdict), reporting pass or fail on both screens. That
+is how the device rows in the [support matrix](./docs/support-matrix.md) are
+established on real hardware.
 
 ## Acknowledgements
 

@@ -40,12 +40,12 @@ export interface EndpointConfig {
 }
 
 /**
- * The react-native-iroh native bridge (v0.1.0 surface).
+ * The react-native-iroh native bridge.
  *
  * Errors: every rejected Promise (and every thrown sync error) carries a
  * message of the form `[iroh:<code>] <detail>`, where `<code>` is a stable
- * numeric error code (1000-1003 generic, 2000 endpoint, 3000-3003 blobs).
- * Parse it with `/\[iroh:(\d+)\]/`.
+ * numeric error code (1000-1003 generic, 2000 endpoint, 3000-3003 blobs,
+ * 4000-4002 gossip). Parse it with `/\[iroh:(\d+)\]/`.
  */
 // The published react-native-nitro-modules@0.36.1 types don't include "rust"
 // in PlatformSpec yet. Only the nitrogen fork's Rust codegen understands it.
@@ -85,6 +85,18 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * task. Idempotent: stopping an already-stopped or unknown watch is a no-op.
    */
   stopWatchAddr(watchId: number): void;
+  /**
+   * Returns what this endpoint currently knows about the remote `remoteId`, as
+   * a JSON object string `{ id, addrs: [{ addr, kind, active }] }` (see the
+   * `RemoteInfo` TS type), or the JSON literal `null` if the remote is unknown.
+   *
+   * `kind` is `"relay"` or `"ip"`, and `active` marks the addresses actually
+   * carrying traffic. This is the only way to observe whether a transfer went
+   * direct or through a relay: {@link endpointAddr} reports what the *local*
+   * endpoint advertises, which says nothing about the path in use. Rejects
+   * (code 2000) if `remoteId` is not a valid endpoint id.
+   */
+  remoteInfo(endpoint: number, remoteId: string): Promise<string>;
   /**
    * Resolves once the endpoint has a connected home relay, or rejects (code
    * 2000) if `timeoutMs` elapses first. On relay-less endpoints (the
@@ -156,4 +168,45 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * no network or store access. Throws (code 1002) on a malformed ticket.
    */
   parseTicket(ticket: string): string;
+  /**
+   * Subscribes to the gossip topic derived from `topic` (its BLAKE3 hash) on
+   * `endpoint`. `bootstrapJoined` is a possibly-empty newline-joined list of
+   * bootstrap peer `EndpointAddr` JSON strings (the same shape
+   * {@link Iroh.endpointAddr} returns); their addresses seed the swarm so it
+   * can dial them by id.
+   *
+   * Set-up is validated synchronously (a stale endpoint handle throws code
+   * 1001; a malformed bootstrap address throws code 4000). Once the topic is
+   * joined, `onStart` fires once with the subscription's numeric handle (pass
+   * it to {@link gossipBroadcast} / {@link gossipUnsubscribe}). `onMessage`
+   * then fires per received message as `"<delivered-from-id> <utf8-payload>"`
+   * (split on the first space), and `onNeighbor` per swarm event: `"up <id>"`,
+   * `"down <id>"`, or `"lagged"` (the receiver fell behind and dropped
+   * messages).
+   *
+   * Mirrors {@link watchAddr}'s onStart-returns-handle primitive; structured
+   * inputs/outputs cross the bridge as delimited/JSON strings.
+   */
+  gossipSubscribe(
+    endpoint: number,
+    topic: string,
+    bootstrapJoined: string,
+    onStart: (subId: number) => void,
+    onMessage: (message: string) => void,
+    onNeighbor: (event: string) => void,
+  ): void;
+  /**
+   * Broadcasts `payload` (UTF-8) to every peer in the subscription's swarm.
+   * Rejects with code 4002 if the payload exceeds the per-message size limit
+   * (4096 bytes), code 1001 if the subscription is unknown/already ended, or
+   * code 4001 if the swarm broadcast fails. Resolves once the message has been
+   * handed to the swarm (peer delivery is best effort).
+   */
+  gossipBroadcast(subId: number, payload: string): Promise<void>;
+  /**
+   * Ends a subscription started with {@link gossipSubscribe}, leaving the
+   * topic's swarm. Idempotent: ending an unknown or already-ended subscription
+   * is a no-op.
+   */
+  gossipUnsubscribe(subId: number): void;
 }

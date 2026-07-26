@@ -31,10 +31,11 @@ use crate::{
     coalesce::Coalescer,
     endpoint::{
         endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
-        endpoint_online, stop_watch_addr, watch_addr, EndpointAddrInfo, EndpointConfig,
-        EndpointHandle, NetworkPreset, WatchHandle,
+        endpoint_online, endpoint_remote_info, stop_watch_addr, watch_addr, EndpointAddrInfo,
+        EndpointConfig, EndpointHandle, NetworkPreset, RemoteEndpointInfo, WatchHandle,
     },
     error::IrohError,
+    gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
 };
 
 /// Minimum spacing between progress events crossing into JS: 34ms keeps the
@@ -62,6 +63,16 @@ impl Default for HybridIroh {
 /// `"[iroh:<code>] <message>"`, the one format JS parses (`/\[iroh:(\d+)\]/`).
 fn encode_error(err: IrohError) -> String {
     format!("[iroh:{}] {err}", err.code())
+}
+
+/// Narrows an incoming bridge endpoint handle (an `f64` on the wire) into a
+/// typed [`EndpointHandle`].
+///
+/// Every endpoint-addressed trait method receives its endpoint as an `f64`;
+/// this centralizes the one `f64 -> u64` narrowing so the cast lives in a
+/// single place rather than being repeated at each call site.
+fn endpoint_handle(endpoint: f64) -> EndpointHandle {
+    EndpointHandle::from_raw(endpoint as u64)
 }
 
 /// The completer a Promise-returning trait method receives: settles the JS
@@ -127,6 +138,31 @@ fn endpoint_addr_to_json(info: &EndpointAddrInfo) -> String {
     out
 }
 
+/// Serializes a [`RemoteEndpointInfo`] as a JSON object string for the bridge,
+/// or the JSON literal `null` when the remote is unknown.
+fn remote_info_to_json(info: Option<&RemoteEndpointInfo>) -> String {
+    let Some(info) = info else {
+        return String::from("null");
+    };
+    let mut out = String::from("{\"id\":");
+    push_json_string(&mut out, &info.id);
+    out.push_str(",\"addrs\":[");
+    for (i, entry) in info.addrs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"addr\":");
+        push_json_string(&mut out, &entry.addr);
+        out.push_str(",\"kind\":");
+        push_json_string(&mut out, entry.kind);
+        out.push_str(",\"active\":");
+        out.push_str(if entry.active { "true" } else { "false" });
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
 /// Serializes the collection children as a JSON array string for the bridge.
 fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
     let mut out = String::from("[");
@@ -170,15 +206,15 @@ impl HybridIrohSpec for HybridIroh {
     }
 
     fn endpoint_id(&self, endpoint: f64) -> Result<String, String> {
-        endpoint_id(EndpointHandle::from_raw(endpoint as u64)).map_err(encode_error)
+        endpoint_id(endpoint_handle(endpoint)).map_err(encode_error)
     }
 
     fn is_endpoint_open(&self, endpoint: f64) -> Result<bool, String> {
-        Ok(endpoint_is_open(EndpointHandle::from_raw(endpoint as u64)))
+        Ok(endpoint_is_open(endpoint_handle(endpoint)))
     }
 
     fn endpoint_addr(&self, endpoint: f64) -> Result<String, String> {
-        endpoint_addr(EndpointHandle::from_raw(endpoint as u64))
+        endpoint_addr(endpoint_handle(endpoint))
             .map(|info| endpoint_addr_to_json(&info))
             .map_err(encode_error)
     }
@@ -189,7 +225,7 @@ impl HybridIrohSpec for HybridIroh {
         on_start: Box<dyn Fn(f64) + Send + Sync>,
         on_change: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<(), String> {
-        let handle = watch_addr(EndpointHandle::from_raw(endpoint as u64), move |info| {
+        let handle = watch_addr(endpoint_handle(endpoint), move |info| {
             on_change(endpoint_addr_to_json(&info))
         })
         .map_err(encode_error)?;
@@ -205,26 +241,32 @@ impl HybridIrohSpec for HybridIroh {
         Ok(())
     }
 
+    fn remote_info(&self, endpoint: f64, remote_id: String, promise: Completer<String>) {
+        endpoint_remote_info(endpoint_handle(endpoint), &remote_id, move |result| {
+            promise(
+                result
+                    .map(|info| remote_info_to_json(info.as_ref()))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
     fn endpoint_online(&self, endpoint: f64, timeout_ms: f64, promise: Completer<()>) {
         let timeout = Duration::from_millis(timeout_ms.max(0.0) as u64);
-        endpoint_online(
-            EndpointHandle::from_raw(endpoint as u64),
-            timeout,
-            move |result| {
-                promise(result.map_err(encode_error));
-            },
-        );
+        endpoint_online(endpoint_handle(endpoint), timeout, move |result| {
+            promise(result.map_err(encode_error));
+        });
     }
 
     fn close_endpoint(&self, endpoint: f64, promise: Completer<()>) {
-        endpoint_close(EndpointHandle::from_raw(endpoint as u64), move |result| {
+        endpoint_close(endpoint_handle(endpoint), move |result| {
             promise(result.map_err(encode_error));
         });
     }
 
     fn share_blob(&self, endpoint: f64, path: String, promise: Completer<String>) {
         blob_share(
-            EndpointHandle::from_raw(endpoint as u64),
+            endpoint_handle(endpoint),
             PathBuf::from(path),
             move |result| {
                 promise(result.map_err(encode_error));
@@ -254,7 +296,7 @@ impl HybridIrohSpec for HybridIroh {
         let promise = Arc::new(Mutex::new(Some(promise)));
         let promise_async = Arc::clone(&promise);
         let started = blob_download(
-            EndpointHandle::from_raw(endpoint as u64),
+            endpoint_handle(endpoint),
             &ticket,
             PathBuf::from(dest_path),
             move |bytes| progress.offer(bytes),
@@ -297,33 +339,63 @@ impl HybridIrohSpec for HybridIroh {
             .filter(|segment| !segment.is_empty())
             .map(PathBuf::from)
             .collect();
-        collection_share(
-            EndpointHandle::from_raw(endpoint as u64),
-            paths,
-            move |result| {
-                promise(result.map_err(encode_error));
-            },
-        );
+        collection_share(endpoint_handle(endpoint), paths, move |result| {
+            promise(result.map_err(encode_error));
+        });
     }
 
     fn collection_manifest(&self, endpoint: f64, ticket: String, promise: Completer<String>) {
-        collection_manifest(
-            EndpointHandle::from_raw(endpoint as u64),
-            ticket,
-            move |result| {
-                promise(
-                    result
-                        .map(|entries| collection_entries_to_json(&entries))
-                        .map_err(encode_error),
-                );
-            },
-        );
+        collection_manifest(endpoint_handle(endpoint), ticket, move |result| {
+            promise(
+                result
+                    .map(|entries| collection_entries_to_json(&entries))
+                    .map_err(encode_error),
+            );
+        });
     }
 
     fn parse_ticket(&self, ticket: String) -> Result<String, String> {
         parse_ticket(&ticket)
             .map(|info| ticket_info_to_json(&info))
             .map_err(encode_error)
+    }
+
+    fn gossip_subscribe(
+        &self,
+        endpoint: f64,
+        topic: String,
+        bootstrap_joined: String,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_message: Box<dyn Fn(String) + Send + Sync>,
+        on_neighbor: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        // Set-up errors (stale endpoint, bad bootstrap addr) surface
+        // synchronously; the subscription's handle is delivered later via
+        // on_start once the topic is joined (mirrors watch_addr's primitive).
+        gossip_subscribe(
+            endpoint_handle(endpoint),
+            topic,
+            bootstrap_joined,
+            move |handle| on_start(handle.raw() as f64),
+            on_message,
+            on_neighbor,
+        )
+        .map_err(encode_error)
+    }
+
+    fn gossip_broadcast(&self, sub_id: f64, payload: String, promise: Completer<()>) {
+        gossip_broadcast(
+            GossipHandle::from_raw(sub_id as u64),
+            payload,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn gossip_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
+        gossip_unsubscribe(GossipHandle::from_raw(sub_id as u64));
+        Ok(())
     }
 }
 
@@ -335,6 +407,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::endpoint::RemoteAddrInfo;
 
     /// Drives a Promise-returning trait method to completion by blocking on its
     /// completer. Test-only: production callers never block, they let the
@@ -540,6 +613,57 @@ mod tests {
             json,
             r#"{"id":"node-id","relayUrls":["https://relay.example/"],"directAddrs":["127.0.0.1:1234","[::1]:1234"]}"#
         );
+    }
+
+    #[test]
+    fn remote_info_json_serializes_expected_shape() {
+        let info = RemoteEndpointInfo {
+            id: "remote-id".into(),
+            addrs: vec![
+                RemoteAddrInfo {
+                    addr: "https://relay.example/".into(),
+                    kind: "relay",
+                    active: false,
+                },
+                RemoteAddrInfo {
+                    addr: "192.168.1.9:41234".into(),
+                    kind: "ip",
+                    active: true,
+                },
+            ],
+        };
+        let json = super::remote_info_to_json(Some(&info));
+        assert_eq!(
+            json,
+            r#"{"id":"remote-id","addrs":[{"addr":"https://relay.example/","kind":"relay","active":false},{"addr":"192.168.1.9:41234","kind":"ip","active":true}]}"#
+        );
+    }
+
+    #[test]
+    fn remote_info_json_is_null_when_remote_is_unknown() {
+        assert_eq!(super::remote_info_to_json(None), "null");
+    }
+
+    #[test]
+    fn remote_info_via_trait_is_null_for_a_never_seen_peer() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+        // A syntactically valid id the endpoint has never talked to.
+        let stranger = "b".repeat(64);
+        let json = block_on(|done| hybrid.remote_info(endpoint, stranger, done))
+            .expect("remote_info resolves");
+        assert_eq!(json, "null");
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
+    }
+
+    #[test]
+    fn remote_info_via_trait_rejects_a_malformed_endpoint_id() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+        let err = block_on(|done| hybrid.remote_info(endpoint, "not-an-id".into(), done))
+            .expect_err("malformed id rejects");
+        assert!(err.contains("[iroh:2000]"), "unexpected error: {err}");
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
     }
 
     #[test]

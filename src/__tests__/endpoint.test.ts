@@ -1,7 +1,7 @@
 import { DEFAULT_MAX_CONCURRENT_DOWNLOADS, Endpoint } from "../endpoint";
 import { IrohError } from "../errors";
 import { captureRejection, createMockBinding, flush, testTicket } from "./helpers";
-import type { AbortSignalLike } from "../endpoint";
+import type { AbortSignalLike, EndpointId } from "../endpoint";
 
 // The project's TS lib is "esnext" (no DOM), so the runtime-provided
 // AbortController global is typed locally against the structural signal
@@ -181,6 +181,53 @@ describe("Endpoint.addr", () => {
     } catch (error) {
       caught = error;
     }
+    expect(expectIrohError(caught).kind).toBe("invalid-handle");
+  });
+});
+
+describe("Endpoint.remoteInfo", () => {
+  const remoteId = "b".repeat(64) as EndpointId;
+
+  it("parses the remote's addresses and marks which are in use", async () => {
+    const mock = createMockBinding();
+    mock.remoteInfoJson = JSON.stringify({
+      id: remoteId,
+      addrs: [
+        { addr: "https://relay.example/", kind: "relay", active: false },
+        { addr: "192.168.1.9:41234", kind: "ip", active: true },
+      ],
+    });
+    const endpoint = await Endpoint.create({}, mock.binding);
+    const info = await endpoint.remoteInfo(remoteId);
+    expect(info).toEqual({
+      id: remoteId,
+      addrs: [
+        { addr: "https://relay.example/", kind: "relay", active: false },
+        { addr: "192.168.1.9:41234", kind: "ip", active: true },
+      ],
+    });
+    expect(mock.remoteInfoCalls).toEqual([{ endpoint: 1, remoteId }]);
+  });
+
+  it("resolves undefined for a remote the endpoint knows nothing about", async () => {
+    const mock = createMockBinding();
+    mock.remoteInfoJson = "null";
+    const endpoint = await Endpoint.create({}, mock.binding);
+    expect(await endpoint.remoteInfo(remoteId)).toBeUndefined();
+  });
+
+  it("defaults a missing addrs array to empty rather than throwing", async () => {
+    const mock = createMockBinding();
+    mock.remoteInfoJson = JSON.stringify({ id: remoteId });
+    const endpoint = await Endpoint.create({}, mock.binding);
+    expect(await endpoint.remoteInfo(remoteId)).toEqual({ id: remoteId, addrs: [] });
+  });
+
+  it("wraps native failures in a typed IrohError", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({}, mock.binding);
+    mock.failures.remoteInfo = new Error("[iroh:1001] stale handle");
+    const caught = await captureRejection(endpoint.remoteInfo(remoteId));
     expect(expectIrohError(caught).kind).toBe("invalid-handle");
   });
 });
@@ -799,6 +846,24 @@ describe("Endpoint.blobs.downloadCollection", () => {
     expect(error.code).toBe(3001);
     expect(mock.downloads).toHaveLength(0);
   });
+
+  it.each([["../escape.bin"], ["nested/child.bin"], ["..\\escape.bin"], [".."], [""]])(
+    "rejects a child name that escapes destDir: %j",
+    async (name) => {
+      const mock = createMockBinding();
+      mock.manifestJson = JSON.stringify([
+        { name: "safe.bin", ticket: testTicket("safe") },
+        { name, ticket: testTicket("hostile") },
+      ]);
+      const endpoint = await Endpoint.create({}, mock.binding);
+      const transfer = endpoint.blobs.downloadCollection(testTicket("coll"), "/dest");
+      const error = expectIrohError(await captureRejection(transfer.done));
+      expect(error.code).toBe(1003);
+      // The whole collection fails before any child is written, including the
+      // benign sibling listed ahead of the hostile entry.
+      expect(mock.downloads).toHaveLength(0);
+    },
+  );
 
   it("an already-aborted signal cancels the collection before any child starts", async () => {
     const mock = createMockBinding();

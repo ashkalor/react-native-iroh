@@ -7,7 +7,8 @@ building, so it is used in a real app rather than written as a demo. I
 open-sourced it so that nobody else has to build the same binding twice. That
 is the whole motivation, and it means contributions are genuinely welcome:
 bug reports, pull requests, documentation fixes, and especially the protocol
-bindings on the roadmap (Collections, Gossip, Docs). If a protocol or a
+bindings still on the roadmap (Docs; blobs, collections and gossip already
+ship, see `docs/support-matrix.md`). If a protocol or a
 platform detail matters to you, open an issue and let's compare notes before
 you sink time into a big change.
 
@@ -54,9 +55,69 @@ bun run typecheck        # tsc --noEmit
 bun run lint             # oxlint
 bun run format:check     # oxfmt --check
 bun test src             # TypeScript unit tests
+bun run build            # typecheck + bob build (root and ./hooks entry points)
 
 cargo fmt --check && cargo clippy && cargo test
 ```
+
+Per-feature platform support is tracked in `docs/support-matrix.md`. Keep it
+honest when a feature's verification status changes: it records what has
+actually been run on each platform, not what is expected to work.
+
+### iOS example build
+
+Three settings in `example/ios/IrohExample.xcodeproj` exist for reasons that are
+not obvious from the file, and removing any of them breaks the build outright:
+
+- `IPHONEOS_DEPLOYMENT_TARGET = 16.4` matches the Podfile. The Expo pods declare
+  a 16.4 minimum, so a lower app target fails with "module 'Expo' has a minimum
+  deployment target of iOS 16.4". This is the example only; the library podspec
+  keeps its lower minimum.
+- `REACT_NATIVE_PATH` points at the workspace-root `node_modules`. The "Bundle
+  React Native code and images" phase interpolates it, and nothing else in the
+  project or the CocoaPods xcconfigs defines it, so without it the phase runs
+  `/scripts/xcode/with-environment.sh` and fails.
+- `SWIFT_ENABLE_EXPLICIT_MODULES = NO`. Xcode's explicit Swift module builds do
+  not resolve `React_RCTAppDelegate` against RN 0.86's prebuilt React Core plus
+  the Expo umbrella, failing with "unable to resolve module dependency".
+- `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG`, on the Debug configuration
+  only. `AppDelegate.swift` picks the Metro URL inside `#if DEBUG`, and Swift
+  reads that from this setting rather than from clang's `-DDEBUG`. Without it a
+  Debug build silently takes the release path, looks for an embedded
+  `main.jsbundle` that debug builds never produce, and dies at launch with "No
+  script URL provided".
+
+Build the simulator app arm64-only. The pod's nitrogen cargo phase builds a
+single Rust slice keyed on `$ARCHS`, so a generic or multi-arch simulator
+destination fails to link:
+
+```bash
+xcodebuild -workspace IrohExample.xcworkspace -scheme IrohExample \
+  -configuration Debug -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,name=iPhone 17" \
+  ONLY_ACTIVE_ARCH=YES ARCHS=arm64 EXCLUDED_ARCHS=x86_64 build
+```
+
+### Packaging
+
+The package ships a CommonJS build and a real ESM build, each with its own type
+definitions, selected through `exports`. Two constraints are easy to break and
+are pinned by `src/__tests__/packaging.test.ts`:
+
+- `require` must stay listed before `import`. Node treats them as mutually
+  exclusive so their order is irrelevant there, but Metro enables both at once
+  and takes the first match, so putting `import` first silently moves React
+  Native onto the ESM build.
+- The `module` target must keep `esm: true`. That option is what emits
+  `lib/module/package.json` (`{"type":"module"}`) and the explicit `.js`
+  specifiers Node's ESM resolver requires; without it the output parses as
+  CommonJS and no ESM consumer can load it.
+
+`bob build` prints one advisory warning ("the esm option is disabled, but the
+exports['.'].require field is set"). It is expected: silencing it means emitting
+`.cjs` for the CommonJS target, which would change the entry point every
+existing consumer resolves. The CommonJS output is already unambiguous via its
+own `{"type":"commonjs"}` marker.
 
 ### Building
 
@@ -107,13 +168,18 @@ NITROGEN_FORK=/path/to/nitro bun run codegen
 
 ### End-to-end tests
 
-E2E drives the example app on two Android devices/emulators with Maestro
-(share on A, download on B, integrity check via re-share). It runs locally,
-not in CI:
+E2E drives the example app on two Android devices/emulators with Maestro:
+single-blob share/download with an integrity check via re-share, a collection
+roundtrip, the endpoint smoke suite (relay mode, address, online), and a gossip
+chat roundtrip across both devices. It runs locally, not in CI:
 
 ```bash
 bun run e2e
 ```
+
+Both harnesses (`run-e2e.sh` and `run-bench.sh`) share their setup plumbing
+(logging, tool discovery, device listing, app install, Metro) from
+`e2e/lib.sh`; each script owns only its own device-selection and assertions.
 
 The harness takes `adb` from `PATH`. When it is not there (typical on WSL,
 where the Android platform tools live on the Windows side), set
@@ -125,7 +191,38 @@ ADB=/mnt/c/Android/platform-tools/adb.exe bun run e2e
 ```
 
 See `e2e/run-e2e.sh` for the full requirements and environment overrides
-(`ADB`, `MAESTRO`, `APK`, `FILE_MB`, `E2E_ARTIFACTS`, `SKIP_INSTALL`).
+(`ADB`, `MAESTRO`, `APK`, `FILE_MB`, `E2E_ARTIFACTS`, `SKIP_INSTALL`,
+`E2E_DEVICES`).
+
+The harness reinstalls the app and wipes its data on every device it selects,
+and by default it selects every device `adb` can see. Name the targets
+explicitly whenever a phone that is not a test device might be attached:
+
+```bash
+E2E_DEVICES="emulator-5554 emulator-5556" bun run e2e
+```
+
+### Two-device test (manual, no harness)
+
+The `e2e/` harness needs two emulators and a wired-up host. When what you want
+is evidence from real hardware (including across platforms), the example app
+carries a **Two-Device Test** section that runs the same ground the harness
+covers, driven by hand from both screens and reporting on-screen.
+
+Install the app on two devices and open the section on each. Press "Wait For
+Other Device" on the first, then give the second that device's endpoint id
+(scan the QR with the system camera app, or long-press the id to copy) and
+press Connect. Order matters: a gossip topic exists only where it has been
+joined locally, and an inbound join for an unknown topic is dropped, so the
+waiting device has to go first. Both devices then run the identical script and
+display the same checks, covering the blob and collection transfers, the
+content-hash verification, the network path the traffic actually took, and the
+peer's own verdict.
+
+Each device seeds its files from its own endpoint id, so the two sides can never
+share a content hash: a "transfer" that quietly returned local bytes cannot pass
+the integrity check. Pairing carries only an endpoint id, so a successful
+handshake is also evidence that discovery resolved the peer's addresses.
 
 ### Benchmarks
 

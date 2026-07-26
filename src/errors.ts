@@ -13,6 +13,9 @@ const KIND_BY_CODE = {
   3001: "blob-download",
   3002: "blob-export",
   3003: "cancelled",
+  4000: "gossip-subscribe",
+  4001: "gossip-broadcast",
+  4002: "gossip-message-too-large",
 } as const;
 
 type KindByCode = typeof KIND_BY_CODE;

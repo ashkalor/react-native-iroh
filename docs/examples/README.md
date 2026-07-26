@@ -1,8 +1,7 @@
 # Examples
 
 A ladder from "hello" to real error handling. Each file teaches exactly one
-concept, in order; read them top to bottom and you have the core of the v0.1
-API.
+concept, in order; read them top to bottom and you have the core of the API.
 
 Every example is compiled by `bun run typecheck` against the real package
 surface (the `react-native-iroh` import resolves to `src/`), so they cannot
@@ -19,11 +18,16 @@ package.
 
 ## Roadmap slots
 
-Planned rungs, named now so links stay stable. None of these exist yet.
+Planned rungs, named now so links stay stable. No example file exists for these
+yet.
 
-- `echo-protocol` - accept a custom ALPN protocol on the endpoint's router
-  (requires v0.2 surface).
 - `collections` - share a set of files under a single ticket via iroh-blobs
-  hash sequences (requires v0.2 surface).
-- `gossip-chat` - a tiny chat room over iroh-gossip broadcast overlays
-  (requires v0.2 surface).
+  hash sequences. The API ships (`blobs.shareCollection` /
+  `blobs.downloadCollection`); only the worked example is outstanding.
+- `gossip-chat` - a tiny chat room over iroh-gossip broadcast overlays. The API
+  ships (`endpoint.gossip.subscribe`); `example/src/GossipChatSection.tsx` is a
+  full working screen in the meantime.
+- `hooks` - the same flows written with the `react-native-iroh/hooks` layer
+  (`useEndpoint`, `useTransfer`, `useGossip`).
+- `echo-protocol` - accept a custom ALPN protocol on the endpoint's router.
+  Custom protocols are not exposed yet.

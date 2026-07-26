@@ -15,8 +15,11 @@ use std::{
 use crate::error::{IrohError, Result};
 
 /// A concurrent map from opaque `u64` handles to shared objects.
+///
+/// Crate-internal infrastructure: the registries live in module-private statics
+/// and never cross the FFI boundary, so the type and its API stay `pub(crate)`.
 #[derive(Debug)]
-pub struct Registry<T> {
+pub(crate) struct Registry<T> {
     items: RwLock<HashMap<u64, Arc<T>>>,
     next: AtomicU64,
 }
@@ -29,7 +32,7 @@ impl<T> Default for Registry<T> {
 
 impl<T> Registry<T> {
     /// Creates an empty registry. The first allocated handle is `1`.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             items: RwLock::new(HashMap::new()),
             next: AtomicU64::new(1),
@@ -37,14 +40,14 @@ impl<T> Registry<T> {
     }
 
     /// Stores `value` and returns its freshly allocated handle.
-    pub fn insert(&self, value: T) -> u64 {
+    pub(crate) fn insert(&self, value: T) -> u64 {
         let handle = self.next.fetch_add(1, Ordering::Relaxed);
         self.write().insert(handle, Arc::new(value));
         handle
     }
 
     /// Returns the object for `handle`, or [`IrohError::InvalidHandle`].
-    pub fn get(&self, handle: u64) -> Result<Arc<T>> {
+    pub(crate) fn get(&self, handle: u64) -> Result<Arc<T>> {
         self.read()
             .get(&handle)
             .cloned()
@@ -53,7 +56,7 @@ impl<T> Registry<T> {
 
     /// Removes and returns the object for `handle`, or
     /// [`IrohError::InvalidHandle`]. The handle is invalid from this point on.
-    pub fn remove(&self, handle: u64) -> Result<Arc<T>> {
+    pub(crate) fn remove(&self, handle: u64) -> Result<Arc<T>> {
         self.write()
             .remove(&handle)
             .ok_or(IrohError::InvalidHandle(handle))

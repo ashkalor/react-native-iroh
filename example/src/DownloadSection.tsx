@@ -1,7 +1,7 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Keyboard, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
-import { parseTicket, type Endpoint, type Transfer } from "react-native-iroh";
-import { e2eEvent, e2eReport } from "./markers";
+import { parseTicket, type Endpoint, type RemoteInfo, type Transfer } from "react-native-iroh";
+import { e2eEvent, e2ePath, e2eReport } from "./markers";
 import ProgressBar from "./ProgressBar";
 import { DOWNLOAD_DEST } from "./paths";
 import { sectionStyles } from "./theme";
@@ -14,6 +14,7 @@ interface DownloadState {
   error: string;
   integrity: "pass" | "fail" | null;
   integrityDetail: string;
+  path: string;
 }
 
 const IDLE: DownloadState = {
@@ -22,7 +23,25 @@ const IDLE: DownloadState = {
   error: "",
   integrity: null,
   integrityDetail: "",
+  path: "",
 };
+
+/**
+ * Renders the addresses actually carrying traffic to the peer, which is what
+ * says whether a transfer went direct or through a relay. Inactive addresses
+ * are omitted: iroh keeps every address it has ever learned for a remote, and
+ * listing those would suggest paths that were never used.
+ */
+function describePath(remote: RemoteInfo | undefined): string {
+  if (remote === undefined) {
+    return "unknown (peer already forgotten)";
+  }
+  const active = remote.addrs.filter((addr) => addr.active);
+  if (active.length === 0) {
+    return "unknown (no active address)";
+  }
+  return active.map((addr) => `${addr.kind === "ip" ? "direct" : "relay"} ${addr.addr}`).join(", ");
+}
 
 const STATUS_LABEL: Record<Phase, string> = {
   idle: "Idle",
@@ -69,7 +88,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       return;
     }
     // The download call above validated the ticket, so this decode is safe.
-    const expectedHash = parseTicket(ticket).hash;
+    const { hash: expectedHash, nodeId: providerId } = parseTicket(ticket);
 
     // E2E accounting: refs, not state, so progress never re-renders here.
     let progressEvents = 0;
@@ -80,6 +99,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
     });
 
     setState({ ...IDLE, phase: "downloading", transfer });
+    const startedAt = Date.now();
     try {
       await transfer.done;
     } catch (error) {
@@ -89,8 +109,22 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       return;
     }
     unsubscribe();
-    e2eReport("download-complete", true, `bytes=${lastBytes}`);
+    const elapsedMs = Date.now() - startedAt;
+    e2eReport("download-complete", true, `bytes=${lastBytes} ms=${elapsedMs}`);
     e2eReport("progress-observed", progressEvents >= 1, `events=${progressEvents}`);
+
+    // Sample the path while the connection is still warm: iroh forgets a
+    // remote some time after the last traffic, and the re-share below adds
+    // delay. Purely diagnostic, so a failure here must not fail the download.
+    let path = "";
+    try {
+      const remote = await endpoint.remoteInfo(providerId);
+      path = describePath(remote);
+      e2ePath(JSON.stringify(remote ?? null));
+    } catch (error) {
+      path = "unavailable";
+      e2ePath(JSON.stringify({ error: String(error) }));
+    }
 
     setState({ ...IDLE, phase: "verifying", transfer });
     try {
@@ -105,6 +139,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
         transfer,
         integrity: pass ? "pass" : "fail",
         integrityDetail: detail,
+        path,
       });
     } catch (error) {
       e2eReport("integrity", false, `re-share failed: ${String(error)}`);
@@ -114,6 +149,7 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
         transfer,
         integrity: "fail",
         integrityDetail: `re-share failed: ${String(error)}`,
+        path,
       });
     }
   }, [endpoint]);
@@ -185,6 +221,11 @@ function DownloadSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elemen
       ) : null}
       {state.integrity === "fail" ? (
         <Text style={sectionStyles.dimText}>{state.integrityDetail}</Text>
+      ) : null}
+      {state.path !== "" ? (
+        <Text style={sectionStyles.dimText} testID="download-path">
+          Path: {state.path}
+        </Text>
       ) : null}
     </View>
   );

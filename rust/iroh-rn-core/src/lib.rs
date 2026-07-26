@@ -2,7 +2,7 @@
 //!
 //! Architecture:
 //! - **Handle-based object model**: endpoints and transfers live in
-//!   process-wide [`registry::Registry`] instances and are addressed by opaque
+//!   process-wide `registry::Registry` instances and are addressed by opaque
 //!   `u64` handles; nothing structured crosses the FFI boundary.
 //! - **Sync-call + completion-callback surface**: async operations
 //!   (create/close/share/download) return immediately and deliver their
@@ -23,8 +23,9 @@ mod coalesce;
 pub mod endpoint;
 pub mod error;
 mod ffi;
+pub mod gossip;
 mod hybrid_iroh;
-pub mod registry;
+pub(crate) mod registry;
 mod runtime;
 #[doc(hidden)]
 pub mod test_support;
@@ -55,4 +56,24 @@ pub(crate) fn guarded_callback<F: FnOnce()>(f: F) {
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
         tracing::error!("a host callback panicked; the panic was contained");
     }
+}
+
+/// Spawns `work` on the shared runtime and delivers its output to `on_complete`
+/// through [`guarded_callback`].
+///
+/// This is the single shape behind every callback-completed async FFI entry
+/// point: the operation runs on a tokio worker (never the JS thread), and its
+/// result is handed back through the panic-guarded callback so a panicking host
+/// callback can never unwind across the FFI boundary. Synchronous-error paths
+/// (a stale handle, a rejected argument) call [`guarded_callback`] directly
+/// instead, since they settle without spawning.
+pub(crate) fn spawn_completing<O, Fut>(work: Fut, on_complete: impl FnOnce(O) + Send + 'static)
+where
+    O: Send + 'static,
+    Fut: std::future::Future<Output = O> + Send + 'static,
+{
+    runtime::runtime().spawn(async move {
+        let output = work.await;
+        guarded_callback(move || on_complete(output));
+    });
 }

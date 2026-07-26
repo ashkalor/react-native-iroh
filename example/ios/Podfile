@@ -5,7 +5,12 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
-platform :ios, min_ios_version_supported
+# Expo modules autolinking (expo-file-system for cross-platform document paths).
+require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
+
+# Expo modules require iOS 16.4; the example bumps its own target accordingly
+# (the react-native-iroh library keeps its lower minimum for consumers).
+platform :ios, "16.4"
 prepare_react_native_project!
 
 linkage = ENV['USE_FRAMEWORKS']
@@ -15,6 +20,7 @@ if linkage != nil
 end
 
 target 'IrohExample' do
+  use_expo_modules!
   config = use_native_modules!
 
   use_react_native!(

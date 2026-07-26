@@ -3,8 +3,10 @@ import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { Endpoint } from "react-native-iroh";
 import BenchSection from "./src/BenchSection";
 import CollectionsSection from "./src/CollectionsSection";
+import DevicePairSection from "./src/DevicePairSection";
 import DownloadSection from "./src/DownloadSection";
-import { e2eReady, e2eReport } from "./src/markers";
+import GossipChatSection from "./src/GossipChatSection";
+import { e2eReady, e2eReport, resetMarkerLog } from "./src/markers";
 import { APP_STORE_DIR } from "./src/paths";
 import ShareSection from "./src/ShareSection";
 import SmokeSection from "./src/SmokeSection";
@@ -26,6 +28,8 @@ function App(): React.JSX.Element {
   const [state, setState] = useState<EndpointState>({ phase: "starting" });
 
   useEffect(() => {
+    // One session per app start: the pulled log must describe this run only.
+    resetMarkerLog();
     let alive = true;
     let created: Endpoint | null = null;
     Endpoint.create({ blobStoreDir: APP_STORE_DIR })
@@ -82,8 +86,10 @@ function App(): React.JSX.Element {
         </View>
         {state.phase === "ready" ? (
           <>
+            <DevicePairSection endpoint={state.endpoint} />
             <ShareSection endpoint={state.endpoint} />
             <DownloadSection endpoint={state.endpoint} />
+            <GossipChatSection endpoint={state.endpoint} />
           </>
         ) : null}
         <CollectionsSection />

@@ -17,7 +17,8 @@
 # With a single device it falls back to a loopback transfer and says so.
 #
 # Env overrides: ADB, MAESTRO, APK, FILE_MB (default 5), E2E_ARTIFACTS,
-# SKIP_INSTALL=1.
+# SKIP_INSTALL=1, E2E_DEVICES (serials to drive; defaults to every connected
+# device, which this run reinstalls and wipes app data on).
 set -uo pipefail
 
 APP_ID=com.irohexample
@@ -26,46 +27,15 @@ E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$E2E_DIR")"
 APK="${APK:-$REPO_DIR/example/android/app/build/outputs/apk/debug/app-debug.apk}"
 ARTIFACTS="${E2E_ARTIFACTS:-/tmp/iroh-e2e-logs}"
+LOG_TAG=e2e
 
-log() { printf '[e2e] %s\n' "$*"; }
-
-dump_logs() {
-  mkdir -p "$ARTIFACTS"
-  for d in "${DEVICES[@]:-}"; do
-    [ -n "$d" ] && "$ADB" -s "$d" logcat -d > "$ARTIFACTS/logcat-$d.txt" 2>/dev/null
-  done
-  log "logcat dumps written to $ARTIFACTS"
-}
-
-fail() {
-  log "FAIL: $*"
-  dump_logs
-  exit 1
-}
+# shellcheck source=./lib.sh
+. "$E2E_DIR/lib.sh"
 
 # --- Tool discovery -------------------------------------------------------
 
-# adb is taken from PATH; override with ADB=/path/to/adb (an adb.exe under
-# /mnt/c works from WSL: APK paths are converted for it automatically).
-if [ -z "${ADB:-}" ]; then
-  if command -v adb >/dev/null 2>&1; then
-    ADB=adb
-  else
-    fail "adb not found; set ADB=/path/to/adb"
-  fi
-fi
-
-if [ -z "${MAESTRO:-}" ]; then
-  if command -v maestro >/dev/null 2>&1; then
-    MAESTRO=maestro
-  elif [ -x "$HOME/.maestro/bin/maestro" ]; then
-    MAESTRO="$HOME/.maestro/bin/maestro"
-  else
-    fail "maestro not found; install with: curl -Ls https://get.maestro.mobile.dev | bash"
-  fi
-fi
-export MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED=true
-export MAESTRO_CLI_NO_ANALYTICS=1
+discover_adb
+discover_maestro
 
 # Self-healing relaunch: force-stop the app (and Maestro's on-device driver,
 # which occasionally loses its gRPC forward), clear the log buffer so stale
@@ -105,25 +75,12 @@ run_flow() { # run_flow <device> <description> <maestro test args...>
   return 1
 }
 
-# Maestro needs JDK 17+; borrow the Gradle JDK if the ambient java is older.
-java_major="$(java -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -1)"
-if [ "${java_major:-0}" -lt 17 ]; then
-  for jdk in "$HOME"/.jdks/jdk-17* /usr/lib/jvm/temurin-17* /usr/lib/jvm/zulu-17*; do
-    if [ -x "$jdk/bin/java" ]; then
-      export JAVA_HOME="$jdk"
-      export PATH="$jdk/bin:$PATH"
-      break
-    fi
-  done
-fi
+ensure_jdk17
 
 # --- Device selection -----------------------------------------------------
 
-mapfile -t DEVICES < <("$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+list_devices
 case "${#DEVICES[@]}" in
-  0)
-    fail "no devices connected"
-    ;;
   1)
     DEVICE_A="${DEVICES[0]}"
     DEVICE_B="${DEVICES[0]}"
@@ -139,34 +96,12 @@ esac
 # --- App install + Metro --------------------------------------------------
 
 if [ "${SKIP_INSTALL:-0}" != "1" ]; then
-  [ -f "$APK" ] || fail "APK not found at $APK (build it or set SKIP_INSTALL=1)"
-  # A Windows-side adb.exe (WSL interop) cannot read Linux filesystem paths;
-  # hand it the \\wsl.localhost\ UNC form instead.
-  PUSH_SRC="$APK"
-  case "$ADB" in
-    *.exe) PUSH_SRC="$(wslpath -w "$APK")" ;;
-  esac
-  for d in "$DEVICE_A" "$DEVICE_B"; do
-    "$ADB" -s "$d" push "$PUSH_SRC" /data/local/tmp/iroh-e2e.apk >/dev/null || fail "push to $d"
-    "$ADB" -s "$d" shell pm install -r /data/local/tmp/iroh-e2e.apk >/dev/null || fail "install on $d"
-    log "installed app on $d"
-  done
+  install_app "$DEVICE_A" "$DEVICE_B"
 fi
 
 # Debug builds load JS from Metro; start it if nothing listens on 8081.
-if ! timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null; then
-  log "starting Metro"
-  (cd "$REPO_DIR/example" && nohup bun start > "$ARTIFACTS-metro.log" 2>&1 &)
-  for _ in $(seq 1 45); do
-    timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null && break
-    sleep 2
-  done
-  timeout 2 bash -c 'echo > /dev/tcp/127.0.0.1/8081' 2>/dev/null || fail "Metro did not come up on 8081"
-fi
-
-for d in "$DEVICE_A" "$DEVICE_B"; do
-  "$ADB" -s "$d" reverse tcp:8081 tcp:8081 >/dev/null || fail "adb reverse on $d"
-done
+ensure_metro
+reverse_port 8081 "$DEVICE_A" "$DEVICE_B"
 
 # --- Fresh state + provisioning ------------------------------------------
 
@@ -274,6 +209,84 @@ printf '%s\n' "$COLLECTION" | grep -q "^E2E: PASS collection-download" \
   || fail "collection download did not pass (per-file integrity)"
 if printf '%s\n' "$COLLECTION" | grep -q "^E2E: FAIL collection-"; then
   fail "collection demo emitted a FAIL marker"
+fi
+
+# --- Gossip chat roundtrip ------------------------------------------------
+# Two-device gossip: A joins the shared topic (empty bootstrap) and logs a
+# dialable address via "E2E: GOSSIP_ADDR ..."; the harness extracts it (like the
+# ticket hand-off above) and hands it to B as the bootstrap peer through a
+# Maestro env var. Both flows drive a sustained series of broadcasts, running
+# concurrently (A in the background) so the pings overlap. Each device's app
+# emits "E2E: PASS gossip-roundtrip" when the peer's message arrives; the
+# roundtrip is asserted from that logcat marker, NOT from an in-flow visual
+# receive-gate (which A, joining first, can never satisfy during its own run).
+# A's app keeps its subscription alive after its flow ends, so late pings from B
+# still land. Skipped in single-device loopback (a swarm needs two distinct
+# endpoints reachable through the relay).
+
+if [ "$DEVICE_B" != "$DEVICE_A" ]; then
+  "$ADB" -s "$DEVICE_A" logcat -c
+  "$ADB" -s "$DEVICE_B" logcat -c
+  # Maestro floods logcat with view-hierarchy spam during the gossip flow's many
+  # taps and scrolls, which evicts the app's "E2E: GOSSIP_ADDR"/roundtrip markers
+  # from the small default ring buffer (256 KiB) before we can read them. Grow
+  # both devices' buffers so the markers survive the whole stanza.
+  "$ADB" -s "$DEVICE_A" logcat -G 16M 2>/dev/null || true
+  "$ADB" -s "$DEVICE_B" logcat -G 16M 2>/dev/null || true
+  log "driving gossip chat: A joins and publishes its address"
+
+  # A joins with no bootstrap (in the background) and keeps pinging; its address
+  # is logged during the join step and picked up below.
+  run_flow "$DEVICE_A" gossip -e "BOOTSTRAP=" "$E2E_DIR/flows/gossip.yaml" &
+  A_GOSSIP_PID=$!
+
+  # Wait for A to publish a *dialable* address: one carrying a relay (or direct)
+  # transport, not the bare pre-online id. Two emulators are NAT-isolated and
+  # reach each other only through the relay, so the address must include it.
+  GOSSIP_ADDR=""
+  for _ in $(seq 1 240); do
+    GOSSIP_ADDR="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' \
+      | grep "E2E: GOSSIP_ADDR " | sed 's/.*E2E: GOSSIP_ADDR //' \
+      | grep -E '"relayUrls":\["[^]]' | tail -1)"
+    [ -n "$GOSSIP_ADDR" ] && break
+    sleep 2
+  done
+  case "$GOSSIP_ADDR" in
+    '{'*'}') log "gossip bootstrap addr extracted (${#GOSSIP_ADDR} chars)" ;;
+    *)
+      wait "$A_GOSSIP_PID" 2>/dev/null || true
+      fail "could not extract a dialable E2E: GOSSIP_ADDR from $DEVICE_A logcat"
+      ;;
+  esac
+
+  log "driving gossip chat: B joins with A as bootstrap"
+  run_flow "$DEVICE_B" gossip -e "BOOTSTRAP=$GOSSIP_ADDR" "$E2E_DIR/flows/gossip.yaml" \
+    || { wait "$A_GOSSIP_PID" 2>/dev/null || true; fail "gossip flow failed on $DEVICE_B"; }
+  wait "$A_GOSSIP_PID" || fail "gossip flow failed on $DEVICE_A"
+
+  # Poll both devices for the roundtrip marker: the mesh/relay may need a little
+  # warm-up after the taps, and A's app keeps receiving after its flow ended.
+  log "waiting for gossip-roundtrip on both devices"
+  for _ in $(seq 1 120); do
+    a_pass="$("$ADB" -s "$DEVICE_A" logcat -d | tr -d '\r' | grep -c "E2E: PASS gossip-roundtrip")"
+    b_pass="$("$ADB" -s "$DEVICE_B" logcat -d | tr -d '\r' | grep -c "E2E: PASS gossip-roundtrip")"
+    [ "$a_pass" -gt 0 ] && [ "$b_pass" -gt 0 ] && break
+    sleep 2
+  done
+
+  for d in "$DEVICE_A" "$DEVICE_B"; do
+    GOSSIP="$("$ADB" -s "$d" logcat -d | tr -d '\r' | grep -oE "E2E: (PASS|FAIL) gossip-.*")"
+    log "----- gossip markers ($d) -----"
+    printf '%s\n' "$GOSSIP" | grep -E "gossip-roundtrip|gossip-join" | sort -u
+    log "-------------------------------"
+    printf '%s\n' "$GOSSIP" | grep -q "^E2E: PASS gossip-roundtrip" \
+      || fail "gossip roundtrip did not pass on $d"
+    if printf '%s\n' "$GOSSIP" | grep -q "^E2E: FAIL gossip-"; then
+      fail "gossip chat emitted a FAIL marker on $d"
+    fi
+  done
+else
+  log "single device: skipping gossip chat roundtrip (needs two endpoints)"
 fi
 
 log "E2E: RESULT ALL PASS"

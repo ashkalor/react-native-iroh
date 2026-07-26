@@ -20,6 +20,7 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("endpointAddr", &HybridIrohSpec::endpointAddr);
       prototype.registerHybridMethod("watchAddr", &HybridIrohSpec::watchAddr);
       prototype.registerHybridMethod("stopWatchAddr", &HybridIrohSpec::stopWatchAddr);
+      prototype.registerHybridMethod("remoteInfo", &HybridIrohSpec::remoteInfo);
       prototype.registerHybridMethod("endpointOnline", &HybridIrohSpec::endpointOnline);
       prototype.registerHybridMethod("closeEndpoint", &HybridIrohSpec::closeEndpoint);
       prototype.registerHybridMethod("shareBlob", &HybridIrohSpec::shareBlob);
@@ -28,6 +29,9 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("shareCollection", &HybridIrohSpec::shareCollection);
       prototype.registerHybridMethod("collectionManifest", &HybridIrohSpec::collectionManifest);
       prototype.registerHybridMethod("parseTicket", &HybridIrohSpec::parseTicket);
+      prototype.registerHybridMethod("gossipSubscribe", &HybridIrohSpec::gossipSubscribe);
+      prototype.registerHybridMethod("gossipBroadcast", &HybridIrohSpec::gossipBroadcast);
+      prototype.registerHybridMethod("gossipUnsubscribe", &HybridIrohSpec::gossipUnsubscribe);
     });
   }
 

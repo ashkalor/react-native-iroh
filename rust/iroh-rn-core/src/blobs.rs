@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::LazyLock, sync::Mutex};
 
 use iroh_blobs::{
     api::{
-        blobs::{AddPathOptions, ExportOptions, ImportMode},
+        blobs::{AddPathOptions, ExportOptions},
         remote::GetProgressItem,
     },
     format::collection::Collection,
@@ -27,6 +27,7 @@ use crate::{
     registry::Registry,
     require_absolute,
     runtime::runtime,
+    spawn_completing,
 };
 
 /// How long [`blob_share`] waits for an `N0`-preset endpoint to come
@@ -67,22 +68,13 @@ pub fn blob_share(
     path: PathBuf,
     on_complete: impl FnOnce(Result<String>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = share_inner(endpoint, path).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(share_inner(endpoint, path), on_complete);
 }
 
 async fn share_inner(endpoint: EndpointHandle, path: PathBuf) -> Result<String> {
     let path = require_absolute(path, "share path")?;
     let state = endpoint_state(endpoint)?;
-    // TryReference avoids copying file bytes into a persistent store; stores
-    // that cannot reference (in-memory) fall back to reading the file.
-    let mode = if state.store.is_persistent() {
-        ImportMode::TryReference
-    } else {
-        ImportMode::Copy
-    };
+    let mode = state.store.import_mode();
     let import = async {
         state
             .store
@@ -174,10 +166,7 @@ pub fn collection_share(
     paths: Vec<PathBuf>,
     on_complete: impl FnOnce(Result<String>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = collection_share_inner(endpoint, paths).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(collection_share_inner(endpoint, paths), on_complete);
 }
 
 async fn collection_share_inner(endpoint: EndpointHandle, paths: Vec<PathBuf>) -> Result<String> {
@@ -187,11 +176,7 @@ async fn collection_share_inner(endpoint: EndpointHandle, paths: Vec<PathBuf>) -
         ));
     }
     let state = endpoint_state(endpoint)?;
-    let mode = if state.store.is_persistent() {
-        ImportMode::TryReference
-    } else {
-        ImportMode::Copy
-    };
+    let mode = state.store.import_mode();
     // Import every child in order, pairing each with its source file's name.
     let import = async {
         let mut items: Vec<(String, iroh_blobs::Hash)> = Vec::with_capacity(paths.len());
@@ -261,10 +246,7 @@ pub fn collection_manifest(
     ticket: String,
     on_complete: impl FnOnce(Result<Vec<CollectionEntry>>) + Send + 'static,
 ) {
-    runtime().spawn(async move {
-        let result = collection_manifest_inner(endpoint, ticket).await;
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(collection_manifest_inner(endpoint, ticket), on_complete);
 }
 
 async fn collection_manifest_inner(
@@ -351,24 +333,28 @@ pub fn blob_download(
         cancel: Mutex::new(Some(cancel_tx)),
     });
 
-    runtime().spawn(async move {
-        // Running the transfer as its own task turns a panic anywhere inside
-        // it into a JoinError instead of a lost completion callback.
-        let mut task = runtime().spawn(download_inner(endpoint, ticket, dest_path, on_progress));
-        let result = tokio::select! {
-            _ = cancel_rx => {
-                task.abort();
-                Err(IrohError::Cancelled)
-            }
-            joined = &mut task => match joined {
-                Ok(result) => result,
-                Err(join_err) => Err(IrohError::Internal(format!("download task failed: {join_err}"))),
-            },
-        };
-        // The handle may already be gone if the caller raced a cancel.
-        TRANSFERS.remove(handle).ok();
-        guarded_callback(move || on_complete(result));
-    });
+    spawn_completing(
+        async move {
+            // Running the transfer as its own task turns a panic anywhere
+            // inside it into a JoinError instead of a lost completion callback.
+            let mut task =
+                runtime().spawn(download_inner(endpoint, ticket, dest_path, on_progress));
+            let result = tokio::select! {
+                _ = cancel_rx => {
+                    task.abort();
+                    Err(IrohError::Cancelled)
+                }
+                joined = &mut task => match joined {
+                    Ok(result) => result,
+                    Err(join_err) => Err(IrohError::Internal(format!("download task failed: {join_err}"))),
+                },
+            };
+            // The handle may already be gone if the caller raced a cancel.
+            TRANSFERS.remove(handle).ok();
+            result
+        },
+        on_complete,
+    );
 
     Ok(TransferHandle(handle))
 }
@@ -436,13 +422,8 @@ async fn download_inner(
     }
 
     // Export the verified blob out of the store to the destination path.
-    // TryReference lets a persistent store move/reference the file instead of
-    // copying the bytes a second time.
-    let mode = if state.store.is_persistent() {
-        iroh_blobs::api::blobs::ExportMode::TryReference
-    } else {
-        iroh_blobs::api::blobs::ExportMode::Copy
-    };
+    clear_export_target(&dest_path).await?;
+    let mode = state.store.export_mode();
     state
         .store
         .api()
@@ -455,6 +436,36 @@ async fn download_inner(
         .await
         .map_err(|e| IrohError::BlobExport(e.to_string()))?;
     Ok(())
+}
+
+/// Removes an existing file at the export target so a download overwrites it.
+///
+/// Persistent stores export with [`ExportMode::TryReference`], which hard-links
+/// the blob into place and therefore fails with a bare `EEXIST` if anything is
+/// already there. Downloading twice to the same path is ordinary usage, so the
+/// destination is cleared first rather than surfacing an opaque I/O error.
+///
+/// A directory is never removed: recursively deleting whatever the caller
+/// pointed at is far more destructive than refusing, so that case fails with an
+/// explicit message instead.
+async fn clear_export_target(dest_path: &std::path::Path) -> Result<()> {
+    let metadata = match tokio::fs::symlink_metadata(dest_path).await {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(IrohError::BlobExport(format!(
+                "could not inspect destination path: {e}"
+            )))
+        }
+    };
+    if metadata.is_dir() {
+        return Err(IrohError::BlobExport(
+            "destination path is a directory".into(),
+        ));
+    }
+    tokio::fs::remove_file(dest_path).await.map_err(|e| {
+        IrohError::BlobExport(format!("could not replace existing destination file: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -564,6 +575,97 @@ mod tests {
             Err(IrohError::InvalidHandle(_))
         ));
         close(endpoint);
+    }
+
+    /// Downloading twice to the same path must succeed. Persistent stores
+    /// export with `TryReference`, which hard-links the blob and fails with a
+    /// bare `EEXIST` if anything is already at the target, so without clearing
+    /// it first the second download dies with an opaque I/O error.
+    #[test]
+    fn downloading_twice_to_the_same_path_overwrites() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, b"the payload being transferred").expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src, move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        let dest = dir.path().join("downloaded.bin");
+        for attempt in 1..=2 {
+            let (tx, rx) = mpsc::channel();
+            blob_download(
+                receiver,
+                &ticket,
+                dest.clone(),
+                |_| {},
+                move |result| {
+                    tx.send(result).ok();
+                },
+            )
+            .expect("download started");
+            rx.recv_timeout(TIMEOUT)
+                .unwrap()
+                .unwrap_or_else(|e| panic!("download attempt {attempt} failed: {e:?}"));
+            assert_eq!(
+                std::fs::read(&dest).unwrap(),
+                b"the payload being transferred"
+            );
+        }
+
+        close(provider);
+        close(receiver);
+    }
+
+    /// Clearing the target must never turn into a recursive delete of whatever
+    /// the caller pointed at.
+    #[test]
+    fn downloading_onto_a_directory_fails_without_removing_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, b"payload").expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src, move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        // An occupied directory at the destination: it must survive intact.
+        let dest = dir.path().join("occupied");
+        std::fs::create_dir(&dest).expect("mkdir");
+        std::fs::write(dest.join("keep.txt"), b"must survive").expect("write");
+
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket,
+            dest.clone(),
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+        assert!(matches!(
+            rx.recv_timeout(TIMEOUT).unwrap(),
+            Err(IrohError::BlobExport(_))
+        ));
+        assert_eq!(
+            std::fs::read(dest.join("keep.txt")).unwrap(),
+            b"must survive"
+        );
+
+        close(provider);
+        close(receiver);
     }
 
     #[test]

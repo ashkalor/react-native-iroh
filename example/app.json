@@ -1,4 +1,11 @@
 {
   "name": "IrohExample",
-  "displayName": "IrohExample"
+  "displayName": "IrohExample",
+  "expo": {
+    "name": "IrohExample",
+    "slug": "iroh-example",
+    "scheme": "irohexample",
+    "platforms": ["ios", "android"],
+    "newArchEnabled": true
+  }
 }

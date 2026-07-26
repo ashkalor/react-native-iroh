@@ -3,7 +3,7 @@ import { Text, TouchableOpacity, View } from "react-native";
 import { Endpoint, IrohError, parseTicket } from "react-native-iroh";
 import type { EndpointAddr } from "react-native-iroh";
 import { smokeAborted, smokeReport, smokeResult } from "./markers";
-import { FILES_DIR, SYSTEM_FILE_CANDIDATES, shareFirstReadable } from "./paths";
+import { SYSTEM_FILE_CANDIDATES, resetSmokeDir, shareFirstReadable } from "./paths";
 import { sectionStyles } from "./theme";
 
 interface CheckResult {
@@ -26,18 +26,22 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
     }
   };
 
+  // Stores from a previous run break this one, and app data outlives a
+  // reinstall, so start from an empty workspace every time.
+  const smokeDir = resetSmokeDir();
+
   // relayMode "disabled" runs a relay-less LAN endpoint: peers are reachable
   // only through the direct addresses embedded in tickets.
   const provider = await Endpoint.create({
     preset: "minimal",
     relayMode: "disabled",
-    blobStoreDir: `${FILES_DIR}/iroh-smoke/provider-store`,
+    blobStoreDir: `${smokeDir}/provider-store`,
   });
   check("Endpoint.create provider", provider.isOpen, "provider endpoint (relay disabled) open");
   const receiver = await Endpoint.create({
     preset: "minimal",
     relayMode: "disabled",
-    blobStoreDir: `${FILES_DIR}/iroh-smoke/receiver-store`,
+    blobStoreDir: `${smokeDir}/receiver-store`,
   });
   check("Endpoint.create receiver", receiver.isOpen, "receiver endpoint (relay disabled) open");
 
@@ -101,7 +105,7 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
     `hash=${contentHash?.slice(0, 16) ?? "null"}...`,
   );
 
-  const destPath = `${FILES_DIR}/iroh-smoke/downloaded.bin`;
+  const destPath = `${smokeDir}/downloaded.bin`;
   const transfer = receiver.blobs.download(ticket, destPath);
   let progressEvents = 0;
   let lastBytes = 0;
