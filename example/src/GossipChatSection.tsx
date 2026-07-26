@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
-import { IrohError, type Endpoint, type EndpointAddr, type EndpointId } from "react-native-iroh";
+import { IrohError, type Endpoint, type EndpointAddr } from "react-native-iroh";
 import { useGossip } from "react-native-iroh/hooks";
 import { e2eEvent, e2eGossipAddr, e2eReport } from "./markers";
+import { parseBootstrapPeer } from "./peers";
+import QrScannerModal from "./QrScannerModal";
 import { sectionStyles } from "./theme";
 
 /** The fixed topic both devices join in the e2e chat roundtrip. */
@@ -16,40 +18,6 @@ const MAX_LOG_LINES = 200;
 /** What the user asked to join with, or `null` before they pressed Join. This
  * gates {@link useGossip}, which subscribes as soon as it has an endpoint. */
 type JoinRequest = { topic: string; bootstrap?: readonly EndpointAddr[] };
-
-/**
- * Parses whatever the other device handed over: either a bare endpoint id, or a
- * full `EndpointAddr` JSON object.
- *
- * An id on its own is enough whenever the endpoint has discovery, which the
- * `"n0"` preset this app uses does: it publishes its own addresses to n0's DNS
- * and resolves other endpoints' the same way, so the peer only needs to know
- * WHO to look for. The full address is the fallback for endpoints with no
- * discovery (the `"minimal"` preset), where the addresses have to travel with
- * the id because nothing can look them up.
- *
- * Either form arrives lossily: scanning with a camera app, or selecting wrapped
- * text, routinely injects line breaks. A raw control character inside a JSON
- * string is a parse error, and none of these fields can legitimately contain
- * one, so they are stripped first.
- */
-function parseBootstrapPeer(pasted: string): EndpointAddr {
-  const cleaned = [...pasted]
-    .filter((character) => character.charCodeAt(0) > 0x1f)
-    .join("")
-    .trim();
-  if (!cleaned.startsWith("{")) {
-    if (!/^[0-9a-z]{52,64}$/i.test(cleaned)) {
-      throw new Error(`"${cleaned.slice(0, 24)}..." is not an endpoint id`);
-    }
-    return { id: cleaned as EndpointId, relayUrls: [], directAddrs: [] };
-  }
-  try {
-    return JSON.parse(cleaned) as EndpointAddr;
-  } catch {
-    throw new Error("bootstrap peer is neither an endpoint id nor a full address object");
-  }
-}
 
 /**
  * Gossip chat demo, written on the `react-native-iroh/hooks` layer: `useGossip`
@@ -68,7 +36,15 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
   const [bootstrapText, setBootstrapText] = useState("");
   const [draft, setDraft] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
   const reportedRoundtrip = useRef(false);
+
+  const onScanned = useCallback((value: string) => {
+    setScanning(false);
+    setBootstrapText(value);
+  }, []);
+
+  const onCancelScan = useCallback(() => setScanning(false), []);
 
   const { messages, broadcast, status, error } = useGossip(
     request === null ? null : endpoint,
@@ -159,19 +135,28 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
           />
 
           <Text style={styles.step}>
-            2. On the FIRST device, leave the box below empty. On the SECOND device, scan the first
-            device&apos;s code with your camera (or long-press its id to copy) and paste it here.
+            2. On the FIRST device, leave the box below empty. On the SECOND device, press Scan and
+            point it at the first device&apos;s code (or long-press that id to copy and paste it
+            here).
           </Text>
           <TextInput
             testID="gossip-bootstrap"
             style={styles.input}
-            placeholder="empty on the first device, paste the other id on the second"
+            placeholder="empty on the first device, scan or paste the other id on the second"
             autoCapitalize="none"
             autoCorrect={false}
             multiline
             value={bootstrapText}
             onChangeText={setBootstrapText}
           />
+          <TouchableOpacity
+            testID="gossip-scan"
+            accessibilityRole="button"
+            style={[sectionStyles.button, styles.button]}
+            onPress={() => setScanning(true)}
+          >
+            <Text style={sectionStyles.buttonLabel}>Scan QR Code</Text>
+          </TouchableOpacity>
 
           <Text style={styles.step}>3. Join. The first device should join first.</Text>
           <TouchableOpacity
@@ -219,8 +204,8 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
       )}
 
       <Text style={styles.step}>
-        This device&apos;s id. The other device needs it to find this one: scan the code with its
-        camera, or long-press the text to copy it. The addresses do not travel with it because
+        This device&apos;s id. The other device needs it to find this one: scan this code from its
+        Scan button, or long-press the text to copy it. The addresses do not travel with it because
         discovery looks them up from the id.
       </Text>
       <View style={styles.qrWrap} testID="gossip-addr-qr">
@@ -234,6 +219,14 @@ function GossipChatSection({ endpoint }: { endpoint: Endpoint }): React.JSX.Elem
         <Text style={sectionStyles.errorText} testID="gossip-error">
           {shownError}
         </Text>
+      ) : null}
+
+      {scanning ? (
+        <QrScannerModal
+          prompt="Point at the other device's endpoint id code."
+          onScanned={onScanned}
+          onCancel={onCancelScan}
+        />
       ) : null}
     </View>
   );
