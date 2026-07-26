@@ -58,6 +58,7 @@ namespace margelo::nitro::iroh {
       virtual std::string endpointAddr(double endpoint) = 0;
       virtual void watchAddr(double endpoint, const std::function<void(double /* watchId */)>& onStart, const std::function<void(const std::string& /* addr */)>& onChange) = 0;
       virtual void stopWatchAddr(double watchId) = 0;
+      virtual std::shared_ptr<Promise<std::string>> remoteInfo(double endpoint, const std::string& remoteId) = 0;
       virtual std::shared_ptr<Promise<void>> endpointOnline(double endpoint, double timeoutMs) = 0;
       virtual std::shared_ptr<Promise<void>> closeEndpoint(double endpoint) = 0;
       virtual std::shared_ptr<Promise<std::string>> shareBlob(double endpoint, const std::string& path) = 0;

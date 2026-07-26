@@ -76,6 +76,52 @@ export interface EndpointAddr {
   readonly directAddrs: readonly string[];
 }
 
+/** Which transport a {@link RemoteAddr} belongs to. */
+export type RemoteAddrKind = "relay" | "ip";
+
+/**
+ * One transport address a remote endpoint is known by, plus whether this
+ * endpoint is actually using it.
+ *
+ * `active` is the field that matters for characterising a network path: iroh
+ * retains every address it has learned for a remote, but only the active ones
+ * carry traffic.
+ */
+export interface RemoteAddr {
+  /** The address itself: a relay URL, or a `host:port` socket address. */
+  readonly addr: string;
+  /** Which transport the address belongs to. */
+  readonly kind: RemoteAddrKind;
+  /** Whether the address is in active use, as opposed to merely known. */
+  readonly active: boolean;
+}
+
+/**
+ * A snapshot of what an endpoint knows about a remote peer, from
+ * {@link Endpoint.remoteInfo}.
+ */
+export interface RemoteInfo {
+  /** The remote endpoint's id (its public key). */
+  readonly id: EndpointId;
+  /** Every transport address known for the remote, active or not. */
+  readonly addrs: readonly RemoteAddr[];
+}
+
+/**
+ * Parses the bridge's JSON `RemoteInfo` string, mapping the JSON literal
+ * `null` (remote unknown) to `undefined`.
+ */
+function parseRemoteInfo(json: string): RemoteInfo | undefined {
+  const raw = JSON.parse(json) as {
+    id: string;
+    addrs?: { addr: string; kind: RemoteAddrKind; active: boolean }[];
+  } | null;
+  if (raw === null) {
+    return undefined;
+  }
+  return { id: raw.id as EndpointId, addrs: raw.addrs ?? [] };
+}
+
 /**
  * Serializes a {@link RelayMode} to the single delimited string the bridge
  * accepts (see {@link EndpointConfig.relayMode}). Throws for an empty custom
@@ -437,6 +483,29 @@ export class Endpoint {
   get addr(): EndpointAddr {
     try {
       return parseEndpointAddr(this.binding.endpointAddr(this.handle));
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /**
+   * What this endpoint currently knows about the remote endpoint `remoteId`,
+   * or `undefined` if it knows nothing about it (never connected, or since
+   * forgotten).
+   *
+   * This is how you tell whether traffic to a peer is flowing directly or
+   * through a relay: {@link addr} describes what *this* endpoint advertises,
+   * which says nothing about the path in use. Inspect
+   * {@link RemoteInfo.addrs} for the entries with `active: true`.
+   *
+   * The result is a snapshot, not a live view; call again for a fresh one.
+   *
+   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.remote_info
+   */
+  async remoteInfo(remoteId: EndpointId): Promise<RemoteInfo | undefined> {
+    try {
+      const json = await this.binding.remoteInfo(this.handle, remoteId);
+      return parseRemoteInfo(json);
     } catch (error) {
       throw IrohError.from(error);
     }

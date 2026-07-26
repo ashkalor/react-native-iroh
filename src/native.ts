@@ -15,6 +15,7 @@ export type IrohBinding = Pick<
   | "endpointAddr"
   | "watchAddr"
   | "stopWatchAddr"
+  | "remoteInfo"
   | "endpointOnline"
   | "closeEndpoint"
   | "shareBlob"

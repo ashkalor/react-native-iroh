@@ -86,6 +86,18 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    */
   stopWatchAddr(watchId: number): void;
   /**
+   * Returns what this endpoint currently knows about the remote `remoteId`, as
+   * a JSON object string `{ id, addrs: [{ addr, kind, active }] }` (see the
+   * `RemoteInfo` TS type), or the JSON literal `null` if the remote is unknown.
+   *
+   * `kind` is `"relay"` or `"ip"`, and `active` marks the addresses actually
+   * carrying traffic. This is the only way to observe whether a transfer went
+   * direct or through a relay: {@link endpointAddr} reports what the *local*
+   * endpoint advertises, which says nothing about the path in use. Rejects
+   * (code 2000) if `remoteId` is not a valid endpoint id.
+   */
+  remoteInfo(endpoint: number, remoteId: string): Promise<string>;
+  /**
    * Resolves once the endpoint has a connected home relay, or rejects (code
    * 2000) if `timeoutMs` elapses first. On relay-less endpoints (the
    * `disabled` relay mode, or a `minimal` preset) it always times out, since

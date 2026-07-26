@@ -31,8 +31,8 @@ use crate::{
     coalesce::Coalescer,
     endpoint::{
         endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
-        endpoint_online, stop_watch_addr, watch_addr, EndpointAddrInfo, EndpointConfig,
-        EndpointHandle, NetworkPreset, WatchHandle,
+        endpoint_online, endpoint_remote_info, stop_watch_addr, watch_addr, EndpointAddrInfo,
+        EndpointConfig, EndpointHandle, NetworkPreset, RemoteEndpointInfo, WatchHandle,
     },
     error::IrohError,
     gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
@@ -138,6 +138,31 @@ fn endpoint_addr_to_json(info: &EndpointAddrInfo) -> String {
     out
 }
 
+/// Serializes a [`RemoteEndpointInfo`] as a JSON object string for the bridge,
+/// or the JSON literal `null` when the remote is unknown.
+fn remote_info_to_json(info: Option<&RemoteEndpointInfo>) -> String {
+    let Some(info) = info else {
+        return String::from("null");
+    };
+    let mut out = String::from("{\"id\":");
+    push_json_string(&mut out, &info.id);
+    out.push_str(",\"addrs\":[");
+    for (i, entry) in info.addrs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"addr\":");
+        push_json_string(&mut out, &entry.addr);
+        out.push_str(",\"kind\":");
+        push_json_string(&mut out, entry.kind);
+        out.push_str(",\"active\":");
+        out.push_str(if entry.active { "true" } else { "false" });
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
 /// Serializes the collection children as a JSON array string for the bridge.
 fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
     let mut out = String::from("[");
@@ -214,6 +239,16 @@ impl HybridIrohSpec for HybridIroh {
         // Idempotent: unknown or already-stopped watches are a no-op.
         stop_watch_addr(WatchHandle::from_raw(watch_id as u64));
         Ok(())
+    }
+
+    fn remote_info(&self, endpoint: f64, remote_id: String, promise: Completer<String>) {
+        endpoint_remote_info(endpoint_handle(endpoint), &remote_id, move |result| {
+            promise(
+                result
+                    .map(|info| remote_info_to_json(info.as_ref()))
+                    .map_err(encode_error),
+            );
+        });
     }
 
     fn endpoint_online(&self, endpoint: f64, timeout_ms: f64, promise: Completer<()>) {
@@ -372,6 +407,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::endpoint::RemoteAddrInfo;
 
     /// Drives a Promise-returning trait method to completion by blocking on its
     /// completer. Test-only: production callers never block, they let the
@@ -577,6 +613,57 @@ mod tests {
             json,
             r#"{"id":"node-id","relayUrls":["https://relay.example/"],"directAddrs":["127.0.0.1:1234","[::1]:1234"]}"#
         );
+    }
+
+    #[test]
+    fn remote_info_json_serializes_expected_shape() {
+        let info = RemoteEndpointInfo {
+            id: "remote-id".into(),
+            addrs: vec![
+                RemoteAddrInfo {
+                    addr: "https://relay.example/".into(),
+                    kind: "relay",
+                    active: false,
+                },
+                RemoteAddrInfo {
+                    addr: "192.168.1.9:41234".into(),
+                    kind: "ip",
+                    active: true,
+                },
+            ],
+        };
+        let json = super::remote_info_to_json(Some(&info));
+        assert_eq!(
+            json,
+            r#"{"id":"remote-id","addrs":[{"addr":"https://relay.example/","kind":"relay","active":false},{"addr":"192.168.1.9:41234","kind":"ip","active":true}]}"#
+        );
+    }
+
+    #[test]
+    fn remote_info_json_is_null_when_remote_is_unknown() {
+        assert_eq!(super::remote_info_to_json(None), "null");
+    }
+
+    #[test]
+    fn remote_info_via_trait_is_null_for_a_never_seen_peer() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+        // A syntactically valid id the endpoint has never talked to.
+        let stranger = "b".repeat(64);
+        let json = block_on(|done| hybrid.remote_info(endpoint, stranger, done))
+            .expect("remote_info resolves");
+        assert_eq!(json, "null");
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
+    }
+
+    #[test]
+    fn remote_info_via_trait_rejects_a_malformed_endpoint_id() {
+        let hybrid = HybridIroh::new();
+        let endpoint = create_minimal(&hybrid, None);
+        let err = block_on(|done| hybrid.remote_info(endpoint, "not-an-id".into(), done))
+            .expect_err("malformed id rejects");
+        assert!(err.contains("[iroh:2000]"), "unexpected error: {err}");
+        block_on(|done| hybrid.close_endpoint(endpoint, done)).unwrap();
     }
 
     #[test]

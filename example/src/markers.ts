@@ -31,6 +31,16 @@ export function e2eGossipAddr(addrJson: string): void {
   console.log(`E2E: GOSSIP_ADDR ${addrJson}`);
 }
 
+/**
+ * `E2E: PATH <remoteInfo-json>` - the network path a just-finished transfer
+ * used, as the `RemoteInfo` for the peer we pulled from. Entries with
+ * `active: true` are the addresses actually carrying traffic, so their `kind`
+ * ("relay" or "ip") is what distinguishes a relayed transfer from a direct one.
+ */
+export function e2ePath(remoteInfoJson: string): void {
+  console.log(`E2E: PATH ${remoteInfoJson}`);
+}
+
 /** `E2E: <event>` bare lifecycle marker (e.g. `DOWNLOAD_START`). */
 export function e2eEvent(event: string): void {
   console.log(`E2E: ${event}`);

@@ -8,8 +8,8 @@
 use std::{path::PathBuf, sync::Arc, sync::LazyLock, time::Duration};
 
 use iroh::{
-    address_lookup::memory::MemoryLookup, endpoint::presets, protocol::Router, Endpoint,
-    EndpointAddr, RelayMode, RelayUrl, TransportAddr, Watcher,
+    address_lookup::memory::MemoryLookup, endpoint::presets, endpoint::TransportAddrUsage,
+    protocol::Router, Endpoint, EndpointAddr, RelayMode, RelayUrl, TransportAddr, Watcher,
 };
 use iroh_blobs::{
     api::blobs::{ExportMode, ImportMode},
@@ -383,6 +383,92 @@ pub fn watch_addr(
 pub fn stop_watch_addr(handle: WatchHandle) {
     // Removing the state drops its `AbortOnDropHandle`, which aborts the task.
     ADDR_WATCHES.remove(handle.raw()).ok();
+}
+
+/// One transport address a remote endpoint is known by, plus whether the local
+/// endpoint is actually using it.
+///
+/// `active` is what distinguishes an observed network path from a merely
+/// advertised one: iroh keeps every address it has learned for a remote, but
+/// only the active ones carry traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAddrInfo {
+    /// The address itself: a relay URL, or a `host:port` socket address.
+    pub addr: String,
+    /// Which transport the address belongs to: `"relay"` or `"ip"`.
+    pub kind: &'static str,
+    /// Whether the address is in active use, as opposed to merely known.
+    pub active: bool,
+}
+
+/// A snapshot of what the local endpoint knows about a remote endpoint,
+/// produced by [`endpoint_remote_info`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEndpointInfo {
+    /// The remote endpoint's id (its public key) as a string.
+    pub id: String,
+    /// Every transport address known for the remote, active or not.
+    pub addrs: Vec<RemoteAddrInfo>,
+}
+
+/// Returns what `handle`'s endpoint currently knows about the remote endpoint
+/// `remote_id`, or `None` if it knows nothing about it (never connected, or the
+/// remote has since been forgotten).
+///
+/// This is the only way to tell whether traffic to a peer is flowing directly
+/// or through a relay: [`endpoint_addr`] reports what the *local* endpoint
+/// advertises, which says nothing about the path a transfer actually took.
+///
+/// The snapshot is not live; call again for a fresh one.
+pub fn endpoint_remote_info(
+    handle: EndpointHandle,
+    remote_id: &str,
+    on_complete: impl FnOnce(Result<Option<RemoteEndpointInfo>>) + Send + 'static,
+) {
+    let endpoint = match endpoint_state(handle) {
+        Ok(state) => state.endpoint.clone(),
+        Err(err) => {
+            guarded_callback(move || on_complete(Err(err)));
+            return;
+        }
+    };
+    let parsed = remote_id.parse::<iroh::EndpointId>();
+    let remote = match parsed {
+        Ok(id) => id,
+        Err(err) => {
+            let err = IrohError::EndpointBind(format!("invalid remote endpoint id: {err}"));
+            guarded_callback(move || on_complete(Err(err)));
+            return;
+        }
+    };
+    spawn_completing(
+        async move {
+            Ok(endpoint.remote_info(remote).await.map(|info| {
+                let id = info.id().to_string();
+                let addrs = info
+                    .addrs()
+                    .filter_map(|entry| {
+                        let active = matches!(entry.usage(), TransportAddrUsage::Active);
+                        match entry.addr() {
+                            TransportAddr::Relay(url) => Some(RemoteAddrInfo {
+                                addr: url.to_string(),
+                                kind: "relay",
+                                active,
+                            }),
+                            TransportAddr::Ip(socket) => Some(RemoteAddrInfo {
+                                addr: socket.to_string(),
+                                kind: "ip",
+                                active,
+                            }),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                RemoteEndpointInfo { id, addrs }
+            }))
+        },
+        on_complete,
+    );
 }
 
 /// Resolves when `handle`'s endpoint has a connected home relay, or fails with

@@ -60,6 +60,12 @@ export interface OnlineCall {
   deferred: Deferred<void>;
 }
 
+/** One recorded native remoteInfo call. */
+export interface RemoteInfoCall {
+  endpoint: number;
+  remoteId: string;
+}
+
 /** One recorded native gossipSubscribe call, drivable by the test. */
 export interface GossipSubscribeCall {
   endpoint: number;
@@ -100,6 +106,9 @@ export interface MockBinding {
   autoStartGossip: boolean;
   /** JSON string that {@link IrohBinding.endpointAddr} returns. */
   addrJson: string;
+  /** JSON string that {@link IrohBinding.remoteInfo} resolves with. */
+  remoteInfoJson: string;
+  remoteInfoCalls: RemoteInfoCall[];
   /** Ticket string that {@link IrohBinding.shareCollection} resolves with. */
   collectionTicket: string;
   /** JSON that {@link IrohBinding.collectionManifest} resolves with. */
@@ -113,6 +122,7 @@ export interface MockBinding {
     endpointAddr?: Error;
     watchAddr?: Error;
     endpointOnline?: Error;
+    remoteInfo?: Error;
     closeEndpoint?: Error;
     shareBlob?: Error;
     shareCollection?: Error;
@@ -169,6 +179,13 @@ export function createMockBinding(): MockBinding {
       },
       stopWatchAddr: (watchId) => {
         mock.stoppedWatches.push(watchId);
+      },
+      remoteInfo: (endpoint, remoteId) => {
+        mock.remoteInfoCalls.push({ endpoint, remoteId });
+        if (mock.failures.remoteInfo !== undefined) {
+          return Promise.reject(mock.failures.remoteInfo);
+        }
+        return Promise.resolve(mock.remoteInfoJson);
       },
       endpointOnline: (endpoint, timeoutMs) => {
         if (mock.failures.endpointOnline !== undefined) {
@@ -283,6 +300,14 @@ export function createMockBinding(): MockBinding {
       relayUrls: [],
       directAddrs: ["127.0.0.1:1234"],
     }),
+    remoteInfoJson: JSON.stringify({
+      id: "remote-1",
+      addrs: [
+        { addr: "https://relay.example/", kind: "relay", active: false },
+        { addr: "192.168.1.9:41234", kind: "ip", active: true },
+      ],
+    }),
+    remoteInfoCalls: [],
     collectionTicket: `blob${"c".repeat(56)}`,
     manifestJson: "[]",
     ticketInfo: { hash: "a".repeat(64), format: "raw", nodeId: "node-mock" },

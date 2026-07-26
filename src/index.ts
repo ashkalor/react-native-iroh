@@ -8,6 +8,9 @@ export type {
   EndpointOptions,
   Gossip,
   RelayMode,
+  RemoteAddr,
+  RemoteAddrKind,
+  RemoteInfo,
 } from "./endpoint";
 export { getIrohErrorCode, IrohError } from "./errors";
 // The hook functions live behind the `react-native-iroh/hooks` subpath so the

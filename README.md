@@ -301,6 +301,27 @@ latest-value-conflating iterator (a slow consumer observes only the newest
 address); iteration ends when the endpoint closes. Break out of the loop to
 detach early.
 
+#### `endpoint.remoteInfo(remoteId): Promise<RemoteInfo | undefined>`
+
+What this endpoint currently knows about the peer `remoteId`, or `undefined`
+if it knows nothing about it (never connected, or since forgotten). Each entry
+in `addrs` is `{ addr, kind, active }`, where `kind` is `"relay"` or `"ip"`.
+
+This is how you tell whether traffic to a peer is flowing directly or through
+a relay: `addr` above describes what _this_ endpoint advertises, which says
+nothing about the path in use. Only the entries with `active: true` are
+carrying traffic; iroh retains every address it has ever learned for a remote,
+so the inactive ones name paths that may never have been used.
+
+The result is a snapshot, not a live view. Sample it while a transfer is still
+warm, since a remote is forgotten some time after its last traffic.
+
+```ts
+const info = await endpoint.remoteInfo(providerId);
+const active = info?.addrs.filter((a) => a.active) ?? [];
+const viaRelay = active.some((a) => a.kind === "relay");
+```
+
 #### `endpoint.online(options?): Promise<void>`
 
 Resolves once the endpoint has a connected home relay, rejecting with an
@@ -464,6 +485,7 @@ discriminated `code`/`kind` pairing).
 | `Gossip`, `GossipSubscription`, `GossipMessage`, `GossipNeighborEvent`, `GossipSubscribeOptions` | types          | The `endpoint.gossip` namespace interface and its subscription, message, neighbor-event, and options types.                                                                                                                                                                                                                                                                                                               |
 | `EndpointOptions`, `Transfer`, `ProgressEvent`                                                   | types          | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EndpointAddr`, `RelayMode`                                                                      | types          | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
+| `RemoteInfo`, `RemoteAddr`, `RemoteAddrKind`                                                     | types          | The peer snapshot returned by `endpoint.remoteInfo()`, its per-address entries, and the `"relay" \| "ip"` transport tag.                                                                                                                                                                                                                                                                                                  |
 | `DEFAULT_ONLINE_TIMEOUT_MS`                                                                      | `const` (10s)  | Default timeout for `endpoint.online()`.                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## React hooks
