@@ -48,6 +48,10 @@ module.exports = {
         },
       },
     ],
+    // Writes CHANGELOG.md into the workspace during prepare. It is deliberately
+    // never committed back (see below), so it exists only inside the published
+    // npm tarball, which lists it in `files`. The repo's own history is the
+    // GitHub Release notes.
     [
       "@semantic-release/changelog",
       {
@@ -56,11 +60,13 @@ module.exports = {
     ],
     "@semantic-release/npm",
     "@semantic-release/github",
-    [
-      "@semantic-release/git",
-      {
-        assets: ["package.json", "CHANGELOG.md", "example/package.json"],
-      },
-    ],
+    // No @semantic-release/git. Pushing a release commit back to `main` requires
+    // the release identity to bypass the branch ruleset, which upstream warns
+    // "might require elevating the access level of the release user beyond what
+    // would otherwise be desired/considered secure". On a user-owned repo the
+    // GitHub Actions integration cannot be granted that bypass at all, so the
+    // only ways to keep the plugin are a PAT or a GitHub App token, both of
+    // which reintroduce the credential this workflow's OIDC publishing removes.
+    // semantic-release does not need the commit: versions come from git tags.
   ],
 };
