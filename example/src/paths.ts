@@ -66,22 +66,52 @@ export function ensureFallbackSource(): string {
 }
 
 /**
- * Wipes and recreates the smoke suite's scratch directory, returning its plain
- * path.
+ * Wipes and recreates a demo's scratch directory under the documents dir,
+ * returning its plain path.
  *
- * The suite builds blob stores under here. Re-running it against stores left by
- * an earlier run does not merely dirty the results, it breaks the run: the
- * export step fails with an I/O error on Android and the download hangs on iOS.
- * App data survives `adb install -r`, so a fresh build is not a fresh state and
- * the suite has to clear its own workspace.
+ * Demos build blob stores and export downloads under these. Re-running one
+ * against the state an earlier run left behind does not merely dirty the
+ * results, it breaks the run: the export step fails with an I/O error on
+ * Android and the download hangs on iOS. App data survives `adb install -r`, so
+ * a fresh build is not a fresh state and every demo has to clear its own
+ * workspace before it starts.
  */
-export function resetSmokeDir(): string {
-  const dir = new Directory(`${DOC_BASE_URI}/iroh-smoke`);
+function resetWorkspace(name: string): string {
+  const dir = new Directory(`${DOC_BASE_URI}/${name}`);
   if (dir.exists) {
     dir.delete();
   }
   dir.create({ intermediates: true });
   return fromFileUri(dir.uri);
+}
+
+/** Wipes and recreates the smoke suite's scratch directory. */
+export function resetSmokeDir(): string {
+  return resetWorkspace("iroh-smoke");
+}
+
+/** The collections demo's freshly reset directories. */
+export interface CollectionsDirs {
+  /** Root for the demo's blob stores. */
+  readonly storeRoot: string;
+  /** Existing, empty directory the collection's children are exported into. */
+  readonly destDir: string;
+}
+
+/**
+ * Wipes and recreates the collections demo's scratch directory, returning the
+ * store root and a ready-to-use export target.
+ *
+ * The export target is created here rather than by the caller because the
+ * native layer does not create missing parent directories, and is a
+ * subdirectory rather than the workspace root so it contains nothing but the
+ * collection's own children.
+ */
+export function resetCollectionsDir(): CollectionsDirs {
+  const storeRoot = resetWorkspace("iroh-collections");
+  const downloads = new Directory(`${DOC_BASE_URI}/iroh-collections/downloads`);
+  downloads.create({ intermediates: true });
+  return { storeRoot, destDir: fromFileUri(downloads.uri) };
 }
 
 /** Outcome of {@link shareFirstReadable}. */
