@@ -1,4 +1,4 @@
-import type { EndpointConfig } from "../specs/iroh.nitro";
+import type { EndpointConfig, StreamFraming } from "../specs/iroh.nitro";
 import type { IrohBinding } from "../native";
 import type { TicketInfo } from "../ticket";
 
@@ -77,6 +77,45 @@ export interface GossipSubscribeCall {
   onNeighbor: (event: string) => void;
 }
 
+/** One recorded native streamListen call, drivable by the test. */
+export interface StreamListenCall {
+  endpoint: number;
+  alpn: string;
+  listenerId: number;
+  onConnection: (line: string) => void;
+  onClose: (event: string) => void;
+}
+
+/** One recorded native streamConnect call, resolvable by the test. */
+export interface StreamConnectCall {
+  endpoint: number;
+  remoteAddr: string;
+  alpn: string;
+  deferred: Deferred<number>;
+}
+
+/** One recorded native streamConnectionSubscribe call, drivable by the test. */
+export interface StreamConnectionCall {
+  connectionId: number;
+  framing: StreamFraming;
+  onStream: (streamId: number) => void;
+  onClose: (event: string) => void;
+}
+
+/** One recorded native streamSubscribe call, drivable by the test. */
+export interface StreamSubscribeCall {
+  streamId: number;
+  onData: (chunk: ArrayBuffer) => void;
+  onClose: (event: string) => void;
+}
+
+/** One recorded native streamSend call, resolvable by the test. */
+export interface StreamSendCall {
+  streamId: number;
+  data: ArrayBuffer;
+  deferred: Deferred<void>;
+}
+
 /** One recorded native gossipBroadcast call, resolvable by the test. */
 export interface GossipBroadcastCall {
   subId: number;
@@ -102,6 +141,15 @@ export interface MockBinding {
   gossipSubscribes: GossipSubscribeCall[];
   gossipBroadcasts: GossipBroadcastCall[];
   gossipUnsubscribes: number[];
+  streamListens: StreamListenCall[];
+  stoppedListeners: number[];
+  streamConnects: StreamConnectCall[];
+  streamConnections: StreamConnectionCall[];
+  closedConnections: number[];
+  streamOpens: { connectionId: number; deferred: Deferred<number> }[];
+  streamSubscribes: StreamSubscribeCall[];
+  streamSends: StreamSendCall[];
+  closedStreams: number[];
   /** When false, gossipSubscribe does not auto-fire onStart (the test drives it). */
   autoStartGossip: boolean;
   /** JSON string that {@link IrohBinding.endpointAddr} returns. */
@@ -129,6 +177,10 @@ export interface MockBinding {
     collectionManifest?: Error;
     parseTicket?: Error;
     gossipSubscribe?: Error;
+    streamListen?: Error;
+    streamConnect?: Error;
+    streamSubscribe?: Error;
+    streamConnectionSubscribe?: Error;
   };
 }
 
@@ -137,6 +189,7 @@ export function createMockBinding(): MockBinding {
   let nextHandle = 1;
   let nextWatchId = 1;
   let nextSubId = 1;
+  let nextStreamId = 1;
   const open = new Set<number>();
   const mock: MockBinding = {
     binding: {
@@ -277,6 +330,59 @@ export function createMockBinding(): MockBinding {
       gossipUnsubscribe: (subId) => {
         mock.gossipUnsubscribes.push(subId);
       },
+      streamListen: (endpoint, alpn, onConnection, onClose) => {
+        if (mock.failures.streamListen !== undefined) {
+          throw mock.failures.streamListen;
+        }
+        const listenerId = nextStreamId;
+        nextStreamId += 1;
+        mock.streamListens.push({ endpoint, alpn, listenerId, onConnection, onClose });
+        return listenerId;
+      },
+      stopStreamListen: (listenerId) => {
+        mock.stoppedListeners.push(listenerId);
+      },
+      streamConnect: (endpoint, remoteAddr, alpn) => {
+        if (mock.failures.streamConnect !== undefined) {
+          return Promise.reject(mock.failures.streamConnect);
+        }
+        const call: StreamConnectCall = {
+          endpoint,
+          remoteAddr,
+          alpn,
+          deferred: deferred<number>(),
+        };
+        mock.streamConnects.push(call);
+        return call.deferred.promise;
+      },
+      streamConnectionSubscribe: (connectionId, framing, onStream, onClose) => {
+        if (mock.failures.streamConnectionSubscribe !== undefined) {
+          throw mock.failures.streamConnectionSubscribe;
+        }
+        mock.streamConnections.push({ connectionId, framing, onStream, onClose });
+      },
+      streamOpenStream: (connectionId) => {
+        const call = { connectionId, deferred: deferred<number>() };
+        mock.streamOpens.push(call);
+        return call.deferred.promise;
+      },
+      streamCloseConnection: (connectionId) => {
+        mock.closedConnections.push(connectionId);
+      },
+      streamSubscribe: (streamId, onData, onClose) => {
+        if (mock.failures.streamSubscribe !== undefined) {
+          throw mock.failures.streamSubscribe;
+        }
+        mock.streamSubscribes.push({ streamId, onData, onClose });
+      },
+      streamSend: (streamId, data) => {
+        const call: StreamSendCall = { streamId, data, deferred: deferred<void>() };
+        mock.streamSends.push(call);
+        return call.deferred.promise;
+      },
+      streamClose: (streamId) => {
+        mock.closedStreams.push(streamId);
+      },
     },
     configs: [],
     endpointIdCalls: [],
@@ -294,6 +400,15 @@ export function createMockBinding(): MockBinding {
     gossipSubscribes: [],
     gossipBroadcasts: [],
     gossipUnsubscribes: [],
+    streamListens: [],
+    stoppedListeners: [],
+    streamConnects: [],
+    streamConnections: [],
+    closedConnections: [],
+    streamOpens: [],
+    streamSubscribes: [],
+    streamSends: [],
+    closedStreams: [],
     autoStartGossip: true,
     addrJson: JSON.stringify({
       id: "endpoint-1",

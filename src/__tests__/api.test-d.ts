@@ -10,6 +10,8 @@ import type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "../errors";
 import type { IrohBinding } from "../native";
 import { parseTicket, validateTicketShape } from "../ticket";
 import type { BlobFormat, BlobTicket, TicketInfo } from "../ticket";
+import type { StreamFraming } from "../specs/iroh.nitro";
+import type { Connection, Stream, StreamListener } from "../streams";
 import type { CollectionTransfer, FileProgress, ProgressEvent, Transfer } from "../transfer";
 import { IROH_VERSION } from "../version";
 
@@ -21,13 +23,34 @@ type NotAny<T> = 0 extends 1 & T ? false : true;
 declare const transfer: Transfer;
 declare const endpoint: Endpoint;
 declare const options: Required<EndpointOptions>;
+declare const listener: StreamListener;
+declare const connection: Connection;
+declare const stream: Stream;
 
 export type Cases = [
   // Error unions are exactly the stable table.
   Expect<
     Equal<
       IrohErrorCode,
-      1000 | 1001 | 1002 | 1003 | 2000 | 3000 | 3001 | 3002 | 3003 | 4000 | 4001 | 4002
+      | 1000
+      | 1001
+      | 1002
+      | 1003
+      | 2000
+      | 3000
+      | 3001
+      | 3002
+      | 3003
+      | 4000
+      | 4001
+      | 4002
+      | 5000
+      | 5001
+      | 5002
+      | 5003
+      | 5004
+      | 5005
+      | 5006
     >
   >,
   Expect<
@@ -45,6 +68,13 @@ export type Cases = [
       | "gossip-subscribe"
       | "gossip-broadcast"
       | "gossip-message-too-large"
+      | "stream-listen"
+      | "stream-connect"
+      | "stream-open"
+      | "stream-send"
+      | "stream-closed"
+      | "stream-frame-too-large"
+      | "stream-overflow"
     >
   >,
   Expect<Equal<IrohErrorCase["code"], IrohErrorCode>>,
@@ -69,6 +99,22 @@ export type Cases = [
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["download"]>, Transfer>>,
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["shareCollection"]>, Promise<BlobTicket>>>,
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["downloadCollection"]>, CollectionTransfer>>,
+  // Raw streams namespace: listener -> connection -> stream.
+  Expect<Equal<ReturnType<(typeof endpoint)["streams"]["listen"]>, StreamListener>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["streams"]["connect"]>, Promise<Connection>>>,
+  Expect<Equal<typeof listener.connections, AsyncIterable<Connection>>>,
+  Expect<Equal<ReturnType<typeof listener.close>, void>>,
+  Expect<Equal<typeof connection.remoteId, EndpointId>>,
+  Expect<Equal<typeof connection.framing, StreamFraming>>,
+  Expect<Equal<typeof connection.incoming, AsyncIterable<Stream>>>,
+  Expect<Equal<ReturnType<typeof connection.openStream>, Promise<Stream>>>,
+  Expect<Equal<typeof connection.closed, Promise<void>>>,
+  Expect<Equal<typeof stream.data, AsyncIterable<Uint8Array>>>,
+  Expect<Equal<typeof stream.closed, Promise<void>>>,
+  Expect<Equal<Parameters<typeof stream.send>[0], Uint8Array>>,
+  Expect<Equal<ReturnType<typeof stream.send>, Promise<void>>>,
+  Expect<Equal<StreamFraming, "framed" | "raw">>,
+  Expect<Equal<typeof options.alpns, readonly string[]>>,
   // Branded strings: usable as strings, but plain strings do not brand.
   Expect<EndpointId extends string ? true : false>,
   Expect<BlobTicket extends string ? true : false>,

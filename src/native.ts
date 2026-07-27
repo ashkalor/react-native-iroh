@@ -27,6 +27,15 @@ export type IrohBinding = Pick<
   | "gossipSubscribe"
   | "gossipBroadcast"
   | "gossipUnsubscribe"
+  | "streamListen"
+  | "stopStreamListen"
+  | "streamConnect"
+  | "streamConnectionSubscribe"
+  | "streamOpenStream"
+  | "streamCloseConnection"
+  | "streamSubscribe"
+  | "streamSend"
+  | "streamClose"
 >;
 
 let singleton: IrohSpec | undefined;

@@ -20,7 +20,8 @@ use std::{path::PathBuf, sync::Arc, sync::Mutex, time::Duration};
 
 use iroh_rust::{
     endpoint_config::EndpointConfig as BridgeEndpointConfig, hybrid_iroh_spec::HybridIrohSpec,
-    network_preset::NetworkPreset as BridgeNetworkPreset,
+    network_preset::NetworkPreset as BridgeNetworkPreset, nitro_buffer::NitroBuffer,
+    stream_framing::StreamFraming as BridgeStreamFraming,
 };
 
 use crate::{
@@ -36,6 +37,11 @@ use crate::{
     },
     error::IrohError,
     gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
+    streams::{
+        stop_stream_listen, stream_close, stream_close_connection, stream_connect,
+        stream_connection_subscribe, stream_listen, stream_open_stream, stream_send,
+        stream_subscribe, ConnectionHandle, Framing, ListenerHandle, StreamHandle,
+    },
 };
 
 /// Minimum spacing between progress events crossing into JS: 34ms keeps the
@@ -63,6 +69,27 @@ impl Default for HybridIroh {
 /// `"[iroh:<code>] <message>"`, the one format JS parses (`/\[iroh:(\d+)\]/`).
 fn encode_error(err: IrohError) -> String {
     format!("[iroh:{}] {err}", err.code())
+}
+
+/// Encodes why a stream or connection ended, as the tagged line the host
+/// parses: `"end"` for an orderly finish, `"error <encoded>"` otherwise. The
+/// error keeps its `[iroh:<code>]` prefix, so a close is typed as precisely as
+/// a rejected Promise.
+fn encode_close(reason: Option<IrohError>) -> String {
+    match reason {
+        None => String::from("end"),
+        Some(err) => format!("error {}", encode_error(err)),
+    }
+}
+
+/// Splits one of the bridge's newline-joined string lists, dropping empty
+/// segments so a stray leading or trailing separator is harmless.
+fn split_joined(joined: &str) -> Vec<String> {
+    joined
+        .split('\n')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Narrows an incoming bridge endpoint handle (an `f64` on the wire) into a
@@ -189,11 +216,17 @@ impl HybridIrohSpec for HybridIroh {
         // Path validation (absolute blob store dir) and relay-mode parsing
         // both happen in the core.
         let blob_store_dir = config.blob_store_dir.map(PathBuf::from);
+        let alpns = config
+            .alpns
+            .as_deref()
+            .map(split_joined)
+            .unwrap_or_default();
         endpoint_create(
             EndpointConfig {
                 preset,
                 blob_store_dir,
                 relay_mode: config.relay_mode,
+                alpns,
             },
             move |result| {
                 promise(
@@ -397,6 +430,115 @@ impl HybridIrohSpec for HybridIroh {
         gossip_unsubscribe(GossipHandle::from_raw(sub_id as u64));
         Ok(())
     }
+
+    fn stream_listen(
+        &self,
+        endpoint: f64,
+        alpn: String,
+        on_connection: Box<dyn Fn(String) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<f64, String> {
+        stream_listen(
+            endpoint_handle(endpoint),
+            &alpn,
+            move |connection, remote_id| {
+                on_connection(format!("{} {remote_id}", connection.raw()));
+            },
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map(|listener| listener.raw() as f64)
+        .map_err(encode_error)
+    }
+
+    fn stop_stream_listen(&self, listener_id: f64) -> Result<(), String> {
+        stop_stream_listen(ListenerHandle::from_raw(listener_id as u64));
+        Ok(())
+    }
+
+    fn stream_connect(
+        &self,
+        endpoint: f64,
+        remote_id: String,
+        alpn: String,
+        promise: Completer<f64>,
+    ) {
+        stream_connect(endpoint_handle(endpoint), &remote_id, alpn, move |result| {
+            promise(
+                result
+                    .map(|connection| connection.raw() as f64)
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn stream_connection_subscribe(
+        &self,
+        connection_id: f64,
+        framing: BridgeStreamFraming,
+        on_stream: Box<dyn Fn(f64) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        let framing = match framing {
+            BridgeStreamFraming::Framed => Framing::Framed,
+            BridgeStreamFraming::Raw => Framing::Raw,
+        };
+        stream_connection_subscribe(
+            ConnectionHandle::from_raw(connection_id as u64),
+            framing,
+            move |stream| on_stream(stream.raw() as f64),
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map_err(encode_error)
+    }
+
+    fn stream_open_stream(&self, connection_id: f64, promise: Completer<f64>) {
+        stream_open_stream(
+            ConnectionHandle::from_raw(connection_id as u64),
+            move |result| {
+                promise(
+                    result
+                        .map(|stream| stream.raw() as f64)
+                        .map_err(encode_error),
+                );
+            },
+        );
+    }
+
+    fn stream_close_connection(&self, connection_id: f64) -> Result<(), String> {
+        stream_close_connection(ConnectionHandle::from_raw(connection_id as u64));
+        Ok(())
+    }
+
+    fn stream_subscribe(
+        &self,
+        stream_id: f64,
+        on_data: Box<dyn Fn(NitroBuffer) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        stream_subscribe(
+            StreamHandle::from_raw(stream_id as u64),
+            move |chunk| on_data(NitroBuffer::from_vec(chunk)),
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map_err(encode_error)
+    }
+
+    fn stream_send(&self, stream_id: f64, data: NitroBuffer, promise: Completer<()>) {
+        // The host's ArrayBuffer is only guaranteed valid for this call, so the
+        // bytes are copied out before the write is handed to the runtime.
+        stream_send(
+            StreamHandle::from_raw(stream_id as u64),
+            data.to_vec(),
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn stream_close(&self, stream_id: f64) -> Result<(), String> {
+        stream_close(StreamHandle::from_raw(stream_id as u64));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +569,7 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: store_dir.map(|p| p.to_string_lossy().into_owned()),
+                    alpns: None,
                     relay_mode: None,
                 },
                 done,
@@ -460,6 +603,7 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: Some("relative/store".into()),
+                    alpns: None,
                     relay_mode: None,
                 },
                 done,

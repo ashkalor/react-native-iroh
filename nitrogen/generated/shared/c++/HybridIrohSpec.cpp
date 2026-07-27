@@ -32,6 +32,15 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("gossipSubscribe", &HybridIrohSpec::gossipSubscribe);
       prototype.registerHybridMethod("gossipBroadcast", &HybridIrohSpec::gossipBroadcast);
       prototype.registerHybridMethod("gossipUnsubscribe", &HybridIrohSpec::gossipUnsubscribe);
+      prototype.registerHybridMethod("streamListen", &HybridIrohSpec::streamListen);
+      prototype.registerHybridMethod("stopStreamListen", &HybridIrohSpec::stopStreamListen);
+      prototype.registerHybridMethod("streamConnect", &HybridIrohSpec::streamConnect);
+      prototype.registerHybridMethod("streamConnectionSubscribe", &HybridIrohSpec::streamConnectionSubscribe);
+      prototype.registerHybridMethod("streamOpenStream", &HybridIrohSpec::streamOpenStream);
+      prototype.registerHybridMethod("streamCloseConnection", &HybridIrohSpec::streamCloseConnection);
+      prototype.registerHybridMethod("streamSubscribe", &HybridIrohSpec::streamSubscribe);
+      prototype.registerHybridMethod("streamSend", &HybridIrohSpec::streamSend);
+      prototype.registerHybridMethod("streamClose", &HybridIrohSpec::streamClose);
     });
   }
 

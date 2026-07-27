@@ -27,10 +27,20 @@ pub fn create_endpoint_blocking(config: EndpointConfig) -> Result<EndpointHandle
 
 /// Creates a `Minimal`-preset endpoint, panicking on failure.
 pub fn create_minimal_endpoint(blob_store_dir: Option<PathBuf>) -> EndpointHandle {
+    create_minimal_endpoint_with_alpns(blob_store_dir, Vec::new())
+}
+
+/// Creates a `Minimal`-preset endpoint accepting the given custom ALPNs,
+/// panicking on failure.
+pub fn create_minimal_endpoint_with_alpns(
+    blob_store_dir: Option<PathBuf>,
+    alpns: Vec<String>,
+) -> EndpointHandle {
     create_endpoint_blocking(EndpointConfig {
         preset: NetworkPreset::Minimal,
         blob_store_dir,
         relay_mode: None,
+        alpns,
     })
     .expect("endpoint created")
 }

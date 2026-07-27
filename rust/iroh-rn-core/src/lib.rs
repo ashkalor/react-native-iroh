@@ -30,6 +30,7 @@ mod hybrid_iroh;
 pub mod logging;
 pub(crate) mod registry;
 mod runtime;
+pub mod streams;
 #[doc(hidden)]
 pub mod test_support;
 

@@ -11,10 +11,10 @@
 //! existing [`iroh::protocol::Router`] (see [`crate::endpoint`]); this module
 //! drives the [`Gossip`] instance that router accepts connections into.
 
-use std::{net::SocketAddr, sync::LazyLock};
+use std::sync::LazyLock;
 
 use bytes::Bytes;
-use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
+use iroh::{EndpointAddr, EndpointId};
 use iroh_gossip::{
     api::{Event, GossipSender},
     proto::{TopicId, DEFAULT_MAX_MESSAGE_SIZE},
@@ -22,7 +22,7 @@ use iroh_gossip::{
 use n0_future::{task::AbortOnDropHandle, StreamExt};
 
 use crate::{
-    endpoint::{endpoint_state, EndpointHandle},
+    endpoint::{endpoint_state, parse_endpoint_addr, EndpointHandle},
     error::{IrohError, Result},
     guarded_callback,
     registry::Registry,
@@ -85,47 +85,11 @@ fn parse_bootstrap(joined: &str) -> Result<Vec<EndpointAddr>> {
     joined
         .split('\n')
         .filter(|line| !line.is_empty())
-        .map(parse_endpoint_addr)
+        .map(|line| {
+            parse_endpoint_addr(line)
+                .map_err(|detail| IrohError::GossipSubscribe(format!("bootstrap {detail}")))
+        })
         .collect()
-}
-
-/// Parses one bootstrap `EndpointAddr` JSON object into an [`EndpointAddr`].
-fn parse_endpoint_addr(json: &str) -> Result<EndpointAddr> {
-    let value: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| IrohError::GossipSubscribe(format!("invalid bootstrap addr json: {e}")))?;
-    let id_str = value
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| IrohError::GossipSubscribe("bootstrap addr missing id".into()))?;
-    let id: EndpointId = id_str
-        .parse()
-        .map_err(|e| IrohError::GossipSubscribe(format!("invalid bootstrap endpoint id: {e}")))?;
-
-    let mut transports: Vec<TransportAddr> = Vec::new();
-    for relay in json_strings(&value, "relayUrls") {
-        let url: RelayUrl = relay.parse().map_err(|e| {
-            IrohError::GossipSubscribe(format!("invalid bootstrap relay url {relay:?}: {e}"))
-        })?;
-        transports.push(TransportAddr::Relay(url));
-    }
-    for direct in json_strings(&value, "directAddrs") {
-        let socket: SocketAddr = direct.parse().map_err(|e| {
-            IrohError::GossipSubscribe(format!("invalid bootstrap direct addr {direct:?}: {e}"))
-        })?;
-        transports.push(TransportAddr::Ip(socket));
-    }
-    Ok(EndpointAddr::from_parts(id, transports))
-}
-
-/// The string members of `value[key]`, or nothing when the key is absent, not
-/// an array, or holds non-string entries.
-fn json_strings<'a>(value: &'a serde_json::Value, key: &str) -> impl Iterator<Item = &'a str> {
-    value
-        .get(key)
-        .and_then(|found| found.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.as_str())
 }
 
 /// Subscribes to the gossip topic derived from `topic` on `endpoint`.

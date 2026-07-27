@@ -17,10 +17,12 @@
 
 pub mod endpoint_config;
 pub mod func_void_double;
+pub mod func_void_std__shared_ptr_array_buffer_;
 pub mod func_void_std__string;
 pub mod hybrid_iroh_spec;
 pub mod network_preset;
 pub mod nitro_buffer;
+pub mod stream_framing;
 
 /// Free a Rust-allocated CString from C++.
 /// This is called by the C++ bridge to deallocate strings returned from Rust.
