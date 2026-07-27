@@ -101,6 +101,17 @@ function describePath(remote: RemoteInfo | undefined): string {
   return active.map((addr) => `${addr.kind === "ip" ? "direct" : "relay"} ${addr.addr}`).join(", ");
 }
 
+/** How far a transfer got, so a failure can be placed on the timeline. */
+interface TransferProgress {
+  events: number;
+  bytes: number;
+}
+
+function describeProgress({ events, bytes }: TransferProgress): string {
+  const kib = (bytes / 1024).toFixed(1);
+  return `${bytes} bytes (${kib} KiB) over ${events} progress events`;
+}
+
 function withTimeout<T>(work: Promise<T>, label: string, ms = STEP_TIMEOUT_MS): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
@@ -260,6 +271,7 @@ export function runPairTest({ endpoint, peer, onState }: PairTestOptions): PairT
     let collectionHandled = false;
     let verdictSent = false;
     let peerVerdict: boolean | null = null;
+    let progress: TransferProgress = { events: 0, bytes: 0 };
 
     const localWorkDone = (): boolean => blobHandled && collectionHandled;
     const localPassed = (): boolean => LOCAL_CHECK_IDS.every((id) => statusOf(id) === "pass");
@@ -352,13 +364,18 @@ export function runPairTest({ endpoint, peer, onState }: PairTestOptions): PairT
           set("blob", "running");
           const dest = `${dirs.blobDest}/peer.bin`;
           const transfer = endpoint.blobs.download(parsed.ticket, dest);
-          let events = 0;
-          const unsubscribe = transfer.onProgress(() => {
-            events += 1;
+          // Tracked outside the try/catch reporting so a failure can say how far
+          // the transfer got. "nothing ever arrived" and "died mid-stream" have
+          // completely different causes, and the error alone cannot tell them
+          // apart: iroh reports a truncated stream as an opaque I/O error.
+          progress = { events: 0, bytes: 0 };
+          const unsubscribe = transfer.onProgress((event) => {
+            progress.events += 1;
+            progress.bytes = event.bytesReceived;
           });
           await withTimeout(transfer.done, "blob download");
           unsubscribe();
-          set("blob", "pass", `${events} progress events`);
+          set("blob", "pass", `${describeProgress(progress)} received`);
 
           set("integrity", "running");
           const reShared = parseTicket(await endpoint.blobs.share(dest)).hash;
@@ -376,7 +393,7 @@ export function runPairTest({ endpoint, peer, onState }: PairTestOptions): PairT
           set("path", "running");
           set("path", "pass", describePath(await endpoint.remoteInfo(parsed.from)));
         } catch (error) {
-          set("blob", "fail", String(error));
+          set("blob", "fail", `${String(error)} [after ${describeProgress(progress)}]`);
           set("integrity", "fail", "skipped: download failed");
           set("path", "fail", "skipped: download failed");
         }
@@ -389,8 +406,18 @@ export function runPairTest({ endpoint, peer, onState }: PairTestOptions): PairT
         try {
           set("collection", "running");
           const transfer = endpoint.blobs.downloadCollection(parsed.ticket, dirs.collectionDest);
+          progress = { events: 0, bytes: 0 };
+          const unsubscribe = transfer.onProgress((event) => {
+            progress.events += 1;
+            progress.bytes = event.bytesReceived;
+          });
           await withTimeout(transfer.done, "collection download");
-          set("collection", "pass", `${transfer.files.length} children`);
+          unsubscribe();
+          set(
+            "collection",
+            "pass",
+            `${transfer.files.length} children, ${describeProgress(progress)}`,
+          );
 
           set("contents", "running");
           const present = Object.values(fileSizesIn(dirs.collectionDest)).sort((a, z) => a - z);
@@ -406,7 +433,7 @@ export function runPairTest({ endpoint, peer, onState }: PairTestOptions): PairT
               : `expected ${expected.join(", ")} got ${present.join(", ")}`,
           );
         } catch (error) {
-          set("collection", "fail", String(error));
+          set("collection", "fail", `${String(error)} [after ${describeProgress(progress)}]`);
           set("contents", "fail", "skipped: download failed");
         }
         maybeFinish();
