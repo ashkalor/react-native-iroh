@@ -587,6 +587,113 @@ mod tests {
     /// export with `TryReference`, which hard-links the blob and fails with a
     /// bare `EEXIST` if anything is already at the target, so without clearing
     /// it first the second download dies with an opaque I/O error.
+    /// Reproduces the two-device failure: a persistent store imports with
+    /// `ImportMode::TryReference`, so it points at the source file rather than
+    /// copying it. Replacing that file after sharing leaves the store holding a
+    /// reference to an unlinked inode, and the provider can no longer serve the
+    /// blob even though the bytes on disk are byte-identical.
+    /// Upstream reproduction attempt: interrupt a download mid-transfer so the
+    /// store is left holding partial state for that hash, then ask for it again.
+    /// On device this is what a network change does, and the retry is where
+    /// `poisoned storage should not be used` fires.
+    #[test]
+    fn retrying_an_interrupted_download_does_not_poison_the_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        // Large enough that the transfer cannot finish before the first
+        // progress event arrives and we cancel it.
+        std::fs::write(&src, vec![9u8; 48 * 1024 * 1024]).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src, move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        let dest = dir.path().join("out.bin");
+        let (done_tx, done_rx) = mpsc::channel();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let handle = blob_download(
+            receiver,
+            &ticket,
+            dest.clone(),
+            move |_bytes| {
+                seen_tx.send(()).ok();
+            },
+            move |result| {
+                done_tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+
+        // Cancel as soon as bytes are moving, leaving partial state behind.
+        seen_rx.recv_timeout(TIMEOUT).expect("progress observed");
+        blob_download_cancel(handle).expect("cancelled");
+        let first = done_rx.recv_timeout(TIMEOUT).unwrap();
+        assert!(first.is_err(), "expected the cancel to fail the transfer");
+
+        // The retry is the operation that has to reload the partial state.
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket,
+            dest,
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("retry started");
+        let retry = rx.recv_timeout(TIMEOUT).unwrap();
+        assert!(
+            retry.is_ok(),
+            "retry after an interrupted download failed: {retry:?}"
+        );
+    }
+
+    #[test]
+    fn sharing_survives_the_source_file_being_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        let bytes = vec![7u8; 64 * 1024];
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src.clone(), move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        // What resetPairDirs() does to the example app's source on every run.
+        std::fs::remove_file(&src).expect("remove");
+        std::fs::write(&src, &bytes).expect("rewrite");
+
+        let dest = dir.path().join("downloaded.bin");
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket,
+            dest.clone(),
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+        let outcome = rx.recv_timeout(TIMEOUT).unwrap();
+        assert!(
+            outcome.is_ok(),
+            "download failed after the source file was replaced: {outcome:?}"
+        );
+        assert_eq!(std::fs::read(&dest).expect("read back"), bytes);
+    }
+
     #[test]
     fn downloading_twice_to_the_same_path_overwrites() {
         let dir = tempfile::tempdir().expect("tempdir");

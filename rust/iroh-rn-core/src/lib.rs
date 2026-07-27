@@ -25,6 +25,7 @@ pub mod error;
 mod ffi;
 pub mod gossip;
 mod hybrid_iroh;
+pub mod logging;
 pub(crate) mod registry;
 mod runtime;
 #[doc(hidden)]

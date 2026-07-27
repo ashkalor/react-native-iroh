@@ -32,6 +32,16 @@ blake3 = "1"
 # addressing input back into an `iroh::EndpointAddr` is confined to the gossip
 # core module, where a real JSON parser is the robust, honest choice.
 serde_json = "1"
+# Routes the iroh stack's own `tracing` output to the platform log. Without a
+# subscriber installed, every `tracing` call in iroh, iroh-blobs and
+# iroh-gossip is discarded, which leaves a failing transfer diagnosable only
+# through the error that reaches JS.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+
+# Android's logging goes through liblog rather than stderr, so it needs a writer
+# that speaks it.
+[target.'cfg(target_os = "android")'.dependencies]
+paranoid-android = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -19,9 +19,9 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 | ---------------------------------------------------------------------- | ----------------------------- | ------------------------ |
 | Endpoint create / close                                                | Validated (device + emulator) | Validated (device + sim) |
 | Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator) | Validated (device + sim) |
-| Collections (`shareCollection` / `downloadCollection`)                 | Validated (emulator)          | Not yet validated        |
+| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator) | Validated (device)       |
 | Relay mode (`relayMode`)                                               | Validated (emulator)          | Validated (simulator)    |
-| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (emulator)          | Not yet validated        |
+| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator) | Validated (device)       |
 | Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)       |
 
 ### Cross-platform transfer
@@ -93,19 +93,37 @@ including the Rust core, rather than a previously installed binary with fresh
 JavaScript loaded over Metro.
 
 The device rows are narrower than the simulator and emulator rows, and the
-difference matters. On physical hardware the maintainers have exercised endpoint
-creation, a blob transfer, and a gossip topic between an iPhone and an Android
-phone, and nothing else. Collections, relay-mode selection and address
-observability have only been driven on the emulator and simulator. The code paths
-are platform-agnostic Rust plus the shared TypeScript layer, so they are expected
-to work, but "expected" is not "validated" and the matrix reflects that.
+difference matters. On physical hardware an iPhone and an Android phone have
+exercised endpoint creation, blob transfer, collections, address observability
+including `remoteInfo`, and a gossip topic, via the example app's Two-Device
+Test. **Relay-mode selection** is the exception: it has only ever been driven on
+the emulator and simulator. Its code path is platform-agnostic Rust plus the
+shared TypeScript layer, so it is expected to work, but "expected" is not
+"validated" and the matrix reflects that.
 
-The network path the cross-platform transfer actually took (a direct hole-punched
-route, or a relay) was not recorded, so relay fallback and NAT traversal remain
-uncharacterised on real networks. `endpoint.remoteInfo()` now exposes that path
-and the example samples it after every download, but it landed after the device
-session above, so the recorded result does not exist yet: the claim stays
-uncharacterised until the next real-hardware run produces one.
+The network path has now been recorded. `endpoint.remoteInfo()` reports the
+addresses actually carrying traffic, and the Two-Device Test samples it after
+every download. On real hardware a run reported a relay and a direct path both
+active at once, the direct one over IPv6:
+
+    relay https://aps1-1.relay.n0.iroh.link./, direct [2401:4900:...]:37476
+
+Both devices were on the same LAN for that run, so the direct path says nothing
+about NAT traversal: **relay fallback and hole punching across separate networks
+remain uncharacterised.** A run with the two devices on different networks is
+what would settle it, and the one attempt so far did not complete (see below).
+
+### Known limitation: changing networks breaks the blob store
+
+Switching a device between networks mid-session (Wi-Fi to cellular) has been
+observed to leave `iroh-blobs`' filesystem store unusable: it reports
+`failed to download blob: local failure` with zero bytes transferred, for every
+subsequent transfer, and clearing app data is the only known recovery. The
+underlying panic is `poisoned storage should not be used`, raised inside
+`iroh_blobs` when loading a blob's state fails. The originating fault has not
+been identified, no local reproduction exists, and the store's own error is
+discarded upstream before it can be reported, so the cause is not yet known.
+Gossip and discovery are unaffected and keep working across the same switch.
 
 ## React hooks
 

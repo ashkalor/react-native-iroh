@@ -193,6 +193,9 @@ pub fn endpoint_create(
     config: EndpointConfig,
     on_complete: impl FnOnce(Result<EndpointHandle>) + Send + 'static,
 ) {
+    // The first endpoint is the earliest point at which anything worth logging
+    // can happen, and every path into the core goes through one.
+    crate::logging::init();
     spawn_completing(create_inner(config), on_complete);
 }
 

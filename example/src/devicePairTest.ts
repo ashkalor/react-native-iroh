@@ -217,7 +217,13 @@ export function runPairTest({ endpoint, peer, onState }: PairTestOptions): PairT
 
     set("online", "running");
     await withTimeout(endpoint.online({ timeoutMs: STEP_TIMEOUT_MS }), "endpoint online");
-    set("online", "pass", endpoint.addr.relayUrls[0] ?? "no relay url");
+    // Label the relay explicitly. Showing a bare https URL on a row called
+    // "Endpoint online" reads as "this transfer is relayed", which is a
+    // different claim entirely: every n0-preset endpoint registers a home relay
+    // regardless of the path its traffic ends up taking. The row that answers
+    // direct-versus-relay is "Network path observed".
+    const home = endpoint.addr.relayUrls[0];
+    set("online", "pass", home === undefined ? "no home relay" : `home relay ${home}`);
     if (cancelled) {
       return;
     }
