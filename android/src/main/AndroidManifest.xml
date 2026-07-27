@@ -1,2 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- iroh reads the system resolver through ConnectivityService so it can use
+         the network's own DNS rather than a hardcoded fallback. Declared here
+         rather than in the example so every consuming app inherits it: without
+         it the lookup throws, iroh falls back to Google's resolvers, and
+         discovery quietly degrades. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
 </manifest>

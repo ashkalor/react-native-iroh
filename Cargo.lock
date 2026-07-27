@@ -1769,6 +1769,7 @@ dependencies = [
  "iroh-gossip",
  "iroh_rust",
  "n0-future",
+ "ndk-context",
  "paranoid-android",
  "serde_json",
  "tempfile",
