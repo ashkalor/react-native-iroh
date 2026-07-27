@@ -151,15 +151,15 @@ function seedFromId(endpointId: string): number {
   return hash;
 }
 
-function writeSeeded(uri: string, size: number, seed: number): string {
+/** Writes `uri` only if it is not already there, so a run reuses its sources. */
+function writeSeededOnce(uri: string, size: number, seed: number): string {
   const file = new File(uri);
-  if (file.exists) {
-    file.delete();
+  if (!file.exists) {
+    const bytes = new Uint8Array(size);
+    fillSeeded(bytes, seed);
+    file.create();
+    file.write(bytes);
   }
-  const bytes = new Uint8Array(size);
-  fillSeeded(bytes, seed);
-  file.create();
-  file.write(bytes);
   return fromFileUri(file.uri);
 }
 
@@ -171,26 +171,32 @@ function writeSeeded(uri: string, size: number, seed: number): string {
  * real transfer rather than of a local file it already had.
  */
 export function resetPairDirs(endpointId: string): PairDirs {
-  resetWorkspace("iroh-pair");
-  const blobDest = new Directory(`${DOC_BASE_URI}/iroh-pair/blob-in`);
-  blobDest.create({ intermediates: true });
-  const collectionDest = new Directory(`${DOC_BASE_URI}/iroh-pair/collection-in`);
-  collectionDest.create({ intermediates: true });
+  const root = new Directory(`${DOC_BASE_URI}/iroh-pair`);
+  if (!root.exists) {
+    root.create({ intermediates: true });
+  }
+  const blobDest = resetWorkspace("iroh-pair/blob-in");
+  const collectionDest = resetWorkspace("iroh-pair/collection-in");
   const sources = new Directory(`${DOC_BASE_URI}/iroh-pair/out`);
-  sources.create({ intermediates: true });
+  if (!sources.exists) {
+    sources.create({ intermediates: true });
+  }
 
   const seed = seedFromId(endpointId);
-  const blobSource = writeSeeded(`${DOC_BASE_URI}/iroh-pair/out/blob.bin`, 1024 * 1024, seed);
+  const blobSource = writeSeededOnce(
+    `${DOC_BASE_URI}/iroh-pair/out/blob-${seed}.bin`,
+    1024 * 1024,
+    seed,
+  );
   const collectionSources = PAIR_COLLECTION_SIZES.map((size, index) =>
-    writeSeeded(`${DOC_BASE_URI}/iroh-pair/out/part-${index}.bin`, size, seed + index + 1),
+    writeSeededOnce(
+      `${DOC_BASE_URI}/iroh-pair/out/part-${seed}-${index}.bin`,
+      size,
+      seed + index + 1,
+    ),
   );
 
-  return {
-    blobDest: fromFileUri(blobDest.uri),
-    collectionDest: fromFileUri(collectionDest.uri),
-    blobSource,
-    collectionSources,
-  };
+  return { blobDest, collectionDest, blobSource, collectionSources };
 }
 
 /** Sizes of the files actually present in `dir`, keyed by base name. */
