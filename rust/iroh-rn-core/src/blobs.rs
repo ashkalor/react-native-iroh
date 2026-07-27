@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     endpoint::{endpoint_state, EndpointHandle, NetworkPreset},
-    error::{IrohError, Result},
+    error::{error_chain, IrohError, Result},
     guarded_callback,
     registry::Registry,
     require_absolute,
@@ -267,7 +267,7 @@ async fn collection_manifest_inner(
         .endpoint
         .connect(ticket.addr().clone(), iroh_blobs::ALPN)
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("connect: {e}")))?;
+        .map_err(|e| IrohError::BlobDownload(format!("connect: {}", error_chain(&e))))?;
     let remote = state.store.api().remote();
 
     // Fetch just the HashSeq root blob (Raw, non-recursive), then read it to
@@ -276,14 +276,18 @@ async fn collection_manifest_inner(
     remote
         .fetch(connection.clone(), HashAndFormat::raw(root))
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("fetch collection root: {e}")))?;
+        .map_err(|e| {
+            IrohError::BlobDownload(format!("fetch collection root: {}", error_chain(&e)))
+        })?;
     let root_bytes = state
         .store
         .api()
         .blobs()
         .get_bytes(root)
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("read collection root: {e}")))?;
+        .map_err(|e| {
+            IrohError::BlobDownload(format!("read collection root: {}", error_chain(&e)))
+        })?;
     let hash_seq = HashSeq::new(root_bytes)
         .ok_or_else(|| IrohError::InvalidTicket("collection root is not a hash sequence".into()))?;
     let meta_hash = hash_seq
@@ -293,11 +297,13 @@ async fn collection_manifest_inner(
     remote
         .fetch(connection.clone(), HashAndFormat::raw(meta_hash))
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("fetch collection metadata: {e}")))?;
+        .map_err(|e| {
+            IrohError::BlobDownload(format!("fetch collection metadata: {}", error_chain(&e)))
+        })?;
 
     let collection = Collection::load(root, state.store.api())
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("load collection: {e}")))?;
+        .map_err(|e| IrohError::BlobDownload(format!("load collection: {}", error_chain(&e))))?;
     let provider = ticket.addr().clone();
     let entries = collection
         .iter()
@@ -393,7 +399,7 @@ async fn download_inner(
         .endpoint
         .connect(ticket.addr().clone(), iroh_blobs::ALPN)
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("connect: {e}")))?;
+        .map_err(|e| IrohError::BlobDownload(format!("connect: {}", error_chain(&e))))?;
 
     let mut stream = state
         .store
@@ -411,7 +417,7 @@ async fn download_inner(
                 finished = true;
             }
             GetProgressItem::Error(e) => {
-                return Err(IrohError::BlobDownload(e.to_string()));
+                return Err(IrohError::BlobDownload(error_chain(&e)));
             }
         }
     }
@@ -434,7 +440,7 @@ async fn download_inner(
             target: dest_path,
         })
         .await
-        .map_err(|e| IrohError::BlobExport(e.to_string()))?;
+        .map_err(|e| IrohError::BlobExport(error_chain(&e)))?;
     Ok(())
 }
 
