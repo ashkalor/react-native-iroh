@@ -133,31 +133,23 @@ impl BlobStore {
         }
     }
 
-    /// Whether the store persists blobs on the filesystem.
-    pub(crate) fn is_persistent(&self) -> bool {
-        matches!(self, BlobStore::Fs(_))
-    }
-
-    /// The [`ImportMode`] for adding a local file to this store. A persistent
-    /// store references the file in place (no byte copy); an in-memory store
-    /// cannot reference and must copy the bytes in.
+    /// `TryReference` would record the caller's path instead of copying the
+    /// bytes in, leaving the store dependent on a file it does not own. See
+    /// [`Self::export_mode`].
     pub(crate) fn import_mode(&self) -> ImportMode {
-        if self.is_persistent() {
-            ImportMode::TryReference
-        } else {
-            ImportMode::Copy
-        }
+        ImportMode::Copy
     }
 
-    /// The [`ExportMode`] for writing a stored blob to a destination path. A
-    /// persistent store can reference/move the file (avoiding a second byte
-    /// copy); an in-memory store must copy it out.
+    /// Never `TryReference`: it does not link the blob, it renames the store's
+    /// own file onto the destination and re-points the entry at it. A caller who
+    /// later deletes that download leaves the store loading a path that no
+    /// longer resolves, which iroh-blobs turns into a poisoned entry that panics
+    /// on every later use, permanently and across restarts.
+    ///
+    /// The price is a second write per transfer, reflinked where the filesystem
+    /// supports it (APFS) and a real copy where it does not (ext4/f2fs).
     pub(crate) fn export_mode(&self) -> ExportMode {
-        if self.is_persistent() {
-            ExportMode::TryReference
-        } else {
-            ExportMode::Copy
-        }
+        ExportMode::Copy
     }
 }
 
@@ -242,6 +234,15 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     // Socket binding and blob-store loading are independent; run them
     // concurrently and fail fast if either errors.
     let (endpoint, store) = tokio::try_join!(bind, load_store)?;
+    tracing::debug!(
+        kind = match &store {
+            BlobStore::Mem(_) => "mem",
+            BlobStore::Fs(_) => "fs",
+        },
+        import = ?store.import_mode(),
+        export = ?store.export_mode(),
+        "blob store ready, owning every byte it serves"
+    );
 
     let blobs = BlobsProtocol::new(store.api(), None);
     // Gossip is registered as a second ALPN on the same router, additively:
