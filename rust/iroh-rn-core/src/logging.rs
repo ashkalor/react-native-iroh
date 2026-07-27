@@ -11,14 +11,23 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
-/// Per-crate verbosity, as a `tracing` env-filter directive.
+/// Per-crate verbosity when `RUST_LOG` is unset.
 ///
-/// Deliberately narrow. Android caps its log ring buffer at 5 MiB, and
-/// `iroh_gossip::net` plus `iroh::_events::path` between them emit enough per
-/// second to rotate a whole session out of that buffer before it can be read.
-/// A default of `warn` keeps the connection machinery quiet while leaving the
-/// blob store, which is where storage panics originate, at full detail.
-const FILTER: &str = "warn,iroh_blobs::store=trace,iroh_blobs=debug,iroh_rn_core=debug,iroh::endpoint=info,iroh_rn_core::panic=error";
+/// Deliberately quiet. Android caps its log ring buffer at 5 MiB, and the iroh
+/// stack at trace level fills that in about a minute, rotating away the very
+/// failure the log was turned on to catch. `warn` still admits every error the
+/// stack reports, including the blob store's, so raising the level is for
+/// tracing working code rather than for seeing something break.
+const DEFAULT_FILTER: &str = "warn,iroh_rn_core=debug";
+
+/// Reads the filter from `RUST_LOG`, falling back to [`DEFAULT_FILTER`].
+///
+/// Verbosity is opt-in rather than compiled in: a fixed high level costs every
+/// user of the library log bandwidth to buy one debugging session.
+fn filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_FILTER))
+}
 
 /// Installs the platform log subscriber and panic reporter, at most once per
 /// process.
@@ -64,7 +73,7 @@ fn install_panic_reporter() {
 
 #[cfg(target_os = "android")]
 fn install() {
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    use tracing_subscriber::{fmt, util::SubscriberInitExt};
 
     // `paranoid-android` writes through liblog, so entries land in logcat under
     // this tag rather than being swallowed with stdout.
@@ -72,7 +81,7 @@ fn install() {
         .with_writer(paranoid_android::AndroidLogMakeWriter::new(
             "IrohRust".to_owned(),
         ))
-        .with_env_filter(EnvFilter::new(FILTER))
+        .with_env_filter(filter())
         .with_ansi(false)
         .finish()
         .try_init();
@@ -80,13 +89,13 @@ fn install() {
 
 #[cfg(not(target_os = "android"))]
 fn install() {
-    use tracing_subscriber::{fmt, util::SubscriberInitExt, EnvFilter};
+    use tracing_subscriber::{fmt, util::SubscriberInitExt};
 
     // Apple platforms capture a process's stderr into the device log, and it is
     // also the right destination when the core runs under `cargo test`.
     let _ = fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(EnvFilter::new(FILTER))
+        .with_env_filter(filter())
         .with_ansi(false)
         .finish()
         .try_init();
