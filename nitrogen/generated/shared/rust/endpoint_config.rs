@@ -25,5 +25,6 @@ pub struct EndpointConfig {
     pub docs: Option<bool>,
     pub docs_store_dir: Option<String>,
     pub relay_mode: Option<String>,
+    pub gc_interval_secs: Option<f64>,
     pub alpns: Option<String>,
 }

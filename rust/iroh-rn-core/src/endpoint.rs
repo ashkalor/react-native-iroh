@@ -16,7 +16,7 @@ use iroh::{
 };
 use iroh_blobs::{
     api::blobs::{ExportMode, ImportMode},
-    store::{fs::FsStore, mem::MemStore},
+    store::{fs::FsStore, mem::MemStore, GcConfig},
     BlobsProtocol,
 };
 use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
@@ -62,6 +62,18 @@ pub enum NetworkPreset {
     Minimal,
 }
 
+/// Opt-in blob garbage collection for an endpoint's store.
+///
+/// Off by default: an [`EndpointConfig`] with `gc: None` runs no GC loop, so
+/// retention is unchanged (nothing is ever reclaimed). When set, the store
+/// spawns a loop that reclaims untagged, un-temp-tagged blobs every
+/// [`Self::interval`]; tagged blobs (see [`crate::blobs::tags_create`]) survive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GcSettings {
+    /// How often the GC loop runs a mark-and-sweep pass.
+    pub interval: Duration,
+}
+
 /// Configuration for [`endpoint_create`].
 #[derive(Debug, Clone, Default)]
 pub struct EndpointConfig {
@@ -70,6 +82,10 @@ pub struct EndpointConfig {
     /// Directory for the persistent blob store. `None` keeps blobs in memory
     /// (blobs are lost when the endpoint closes).
     pub blob_store_dir: Option<PathBuf>,
+    /// Opt-in blob garbage collection. `None` (the default) runs no GC loop and
+    /// keeps every blob forever; `Some` spawns the reclaiming loop at store
+    /// load. Tagged blobs are always protected.
+    pub gc: Option<GcSettings>,
     /// Whether to run the iroh-docs meta-protocol on this endpoint. When
     /// `false` the endpoint pays no docs cost: no docs store, no `DOCS_ALPN`
     /// accept, no background docs engine.
@@ -262,14 +278,31 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
             .await
             .map_err(|e| IrohError::EndpointBind(e.to_string()))
     };
+    // The GC loop is spawned inside the store on load when a config is present;
+    // `add_protected` stays `None` because retention is driven entirely by tags
+    // (a JS-side ProtectCb is a documented follow-up, not wired here).
+    let gc = config.gc;
     let load_store = async {
+        let gc_config = gc.map(|settings| GcConfig {
+            interval: settings.interval,
+            add_protected: None,
+        });
         Ok(match blob_store_dir {
-            Some(dir) => BlobStore::Fs(
-                FsStore::load(dir)
-                    .await
-                    .map_err(|e| IrohError::EndpointBind(format!("blob store: {e}")))?,
-            ),
-            None => BlobStore::Mem(MemStore::new()),
+            Some(dir) => {
+                // `load` uses `<dir>/blobs.db` with default options; replicate
+                // that path so only the GC field differs from the default load.
+                let mut options = iroh_blobs::store::fs::options::Options::new(&dir);
+                options.gc = gc_config;
+                let db_path = dir.join("blobs.db");
+                BlobStore::Fs(
+                    FsStore::load_with_opts(db_path, options)
+                        .await
+                        .map_err(|e| IrohError::EndpointBind(format!("blob store: {e}")))?,
+                )
+            }
+            None => BlobStore::Mem(MemStore::new_with_opts(iroh_blobs::store::mem::Options {
+                gc_config,
+            })),
         })
     };
     // Socket binding and blob-store loading are independent; run them
@@ -664,7 +697,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         close_endpoint_blocking, create_endpoint_blocking, create_minimal_endpoint,
-        create_minimal_endpoint_with_docs,
+        create_minimal_endpoint_with_docs, create_minimal_endpoint_with_gc,
     };
 
     #[test]
@@ -683,6 +716,7 @@ mod tests {
         let result = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: Some(PathBuf::from("relative/store")),
+            gc: None,
             docs: false,
             docs_store_dir: None,
             relay_mode: None,
@@ -730,6 +764,7 @@ mod tests {
         let result = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: None,
+            gc: None,
             docs: true,
             docs_store_dir: Some(PathBuf::from("relative/docs")),
             relay_mode: None,
@@ -823,6 +858,7 @@ mod tests {
         let handle = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: None,
+            gc: None,
             docs: false,
             docs_store_dir: None,
             relay_mode: Some("disabled".into()),
@@ -884,6 +920,114 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("online completion fired");
         assert!(matches!(result, Err(IrohError::EndpointBind(_))));
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    /// The opt-in GC loop reclaims an untagged blob while a tagged one survives.
+    /// Retention is driven entirely by tags: a named tag protects its blob, an
+    /// unprotected (temp-tag-dropped) blob is swept.
+    #[test]
+    fn gc_reclaims_untagged_but_keeps_tagged_blobs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = create_minimal_endpoint_with_gc(
+            Some(dir.path().join("store")),
+            Duration::from_millis(200),
+        );
+        let state = endpoint_state(handle).expect("live endpoint");
+
+        let (tagged_hash, untagged_hash) = runtime().block_on(async {
+            let blobs = state.store.api().blobs();
+            let tagged = blobs
+                .add_slice(vec![1u8; 4096])
+                .temp_tag()
+                .await
+                .expect("add tagged");
+            let untagged = blobs
+                .add_slice(vec![2u8; 4096])
+                .temp_tag()
+                .await
+                .expect("add untagged");
+            let tagged_hash = tagged.hash();
+            let untagged_hash = untagged.hash();
+            state
+                .store
+                .api()
+                .tags()
+                .set("keep", tagged.hash_and_format())
+                .await
+                .expect("set tag");
+            // Drop both temp tags: the named tag still protects `tagged`, while
+            // `untagged` now has no protection and becomes GC-eligible.
+            drop(tagged);
+            drop(untagged);
+            state.store.api().wait_idle().await.expect("store idle");
+            (tagged_hash, untagged_hash)
+        });
+
+        // Poll until the loop has run a pass (the untagged blob is reclaimed).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let (has_tagged, has_untagged) = runtime().block_on(async {
+                let blobs = state.store.api().blobs();
+                (
+                    blobs.has(tagged_hash).await.expect("has tagged"),
+                    blobs.has(untagged_hash).await.expect("has untagged"),
+                )
+            });
+            if !has_untagged {
+                assert!(has_tagged, "the tagged blob must survive a GC pass");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "GC did not reclaim the untagged blob within the deadline"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    /// GC is OFF by default: a store loaded without a GC config runs no loop, so
+    /// an untagged blob is retained forever (today's unchanged semantics).
+    #[test]
+    fn gc_off_by_default_retains_untagged_blobs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = create_minimal_endpoint(Some(dir.path().join("store")));
+        let state = endpoint_state(handle).expect("live endpoint");
+
+        let untagged_hash = runtime().block_on(async {
+            let tt = state
+                .store
+                .api()
+                .blobs()
+                .add_slice(vec![7u8; 4096])
+                .temp_tag()
+                .await
+                .expect("add untagged");
+            let hash = tt.hash();
+            drop(tt);
+            state.store.api().wait_idle().await.expect("store idle");
+            hash
+        });
+
+        // No loop can reclaim it; after a delay well past any GC interval it is
+        // still present.
+        std::thread::sleep(Duration::from_millis(500));
+        let present = runtime().block_on(async {
+            state
+                .store
+                .api()
+                .blobs()
+                .has(untagged_hash)
+                .await
+                .expect("has untagged")
+        });
+        assert!(
+            present,
+            "with GC off the untagged blob must be retained (unchanged semantics)"
+        );
+
         close_endpoint_blocking(handle).expect("close succeeded");
     }
 }

@@ -98,6 +98,47 @@ pub trait HybridIrohSpec: Send + Sync {
         promise: Box<dyn FnOnce(Result<String, String>) + Send>,
     );
     fn parse_ticket(&self, ticket: String) -> Result<String, String>;
+    fn blob_status(
+        &self,
+        endpoint: f64,
+        hash: String,
+        promise: Box<dyn FnOnce(Result<String, String>) + Send>,
+    );
+    fn blob_has(
+        &self,
+        endpoint: f64,
+        hash: String,
+        promise: Box<dyn FnOnce(Result<bool, String>) + Send>,
+    );
+    fn blob_list(&self, endpoint: f64, promise: Box<dyn FnOnce(Result<String, String>) + Send>);
+    fn add_bytes(
+        &self,
+        endpoint: f64,
+        data: NitroBuffer,
+        promise: Box<dyn FnOnce(Result<String, String>) + Send>,
+    );
+    fn tags_list(&self, endpoint: f64, promise: Box<dyn FnOnce(Result<String, String>) + Send>);
+    fn tags_create(
+        &self,
+        endpoint: f64,
+        name: String,
+        hash: String,
+        format: String,
+        promise: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
+    fn tags_delete(
+        &self,
+        endpoint: f64,
+        name: String,
+        promise: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
+    fn tags_rename(
+        &self,
+        endpoint: f64,
+        from: String,
+        to: String,
+        promise: Box<dyn FnOnce(Result<(), String>) + Send>,
+    );
     fn gossip_subscribe(
         &self,
         endpoint: f64,
@@ -332,6 +373,7 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
                     docs: *mut std::ffi::c_void,
                     docsStoreDir: *mut std::ffi::c_void,
                     relayMode: *mut std::ffi::c_void,
+                    gcIntervalSecs: *mut std::ffi::c_void,
                     alpns: *mut std::ffi::c_void,
                 }
                 let __s = *Box::from_raw(config as *mut __Struct);
@@ -400,6 +442,19 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
                                     .to_string_lossy()
                                     .into_owned(),
                             )
+                        } else {
+                            None
+                        }
+                    },
+                    gc_interval_secs: {
+                        #[repr(C)]
+                        struct __Opt {
+                            has_value: u8,
+                            value: f64,
+                        }
+                        let __s = *Box::from_raw(__s.gcIntervalSecs as *mut __Opt);
+                        if __s.has_value != 0 {
+                            Some(__s.value)
                         } else {
                             None
                         }
@@ -1179,6 +1234,534 @@ pub unsafe extern "C" fn HybridIrohSpec_parse_ticket(
                 value: std::mem::zeroed(),
             },
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_blob_status(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    hash: *const std::ffi::c_char,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<String, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => {
+                        let __ffi_value = {
+                            let __s = __value.replace('\0', "");
+                            std::ffi::CString::new(__s).unwrap_or_default().into_raw()
+                        };
+                        unsafe { (self.resolve)(self.userdata, __ffi_value) };
+                    }
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<String, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            let __hash = std::ffi::CStr::from_ptr(hash)
+                .to_string_lossy()
+                .into_owned();
+            obj.blob_status(endpoint, __hash, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_blob_has(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    hash: *const std::ffi::c_char,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, bool),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, bool),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<bool, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => unsafe { (self.resolve)(self.userdata, __value) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<bool, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            let __hash = std::ffi::CStr::from_ptr(hash)
+                .to_string_lossy()
+                .into_owned();
+            obj.blob_has(endpoint, __hash, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_blob_list(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<String, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => {
+                        let __ffi_value = {
+                            let __s = __value.replace('\0', "");
+                            std::ffi::CString::new(__s).unwrap_or_default().into_raw()
+                        };
+                        unsafe { (self.resolve)(self.userdata, __ffi_value) };
+                    }
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<String, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            obj.blob_list(endpoint, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_add_bytes(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    data: *mut std::ffi::c_void,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<String, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => {
+                        let __ffi_value = {
+                            let __s = __value.replace('\0', "");
+                            std::ffi::CString::new(__s).unwrap_or_default().into_raw()
+                        };
+                        unsafe { (self.resolve)(self.userdata, __ffi_value) };
+                    }
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<String, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            let __data = *Box::from_raw(data as *mut super::nitro_buffer::NitroBuffer);
+            obj.add_bytes(endpoint, __data, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_tags_list(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<String, String>) {
+                self.armed = false;
+                match __result {
+                    Ok(__value) => {
+                        let __ffi_value = {
+                            let __s = __value.replace('\0', "");
+                            std::ffi::CString::new(__s).unwrap_or_default().into_raw()
+                        };
+                        unsafe { (self.resolve)(self.userdata, __ffi_value) };
+                    }
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<String, String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            obj.tags_list(endpoint, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_tags_create(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    name: *const std::ffi::c_char,
+    hash: *const std::ffi::c_char,
+    format: *const std::ffi::c_char,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<(), String>) {
+                self.armed = false;
+                match __result {
+                    Ok(()) => unsafe { (self.resolve)(self.userdata) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            let __name = std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned();
+            let __hash = std::ffi::CStr::from_ptr(hash)
+                .to_string_lossy()
+                .into_owned();
+            let __format = std::ffi::CStr::from_ptr(format)
+                .to_string_lossy()
+                .into_owned();
+            obj.tags_create(endpoint, __name, __hash, __format, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_tags_delete(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    name: *const std::ffi::c_char,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<(), String>) {
+                self.armed = false;
+                match __result {
+                    Ok(()) => unsafe { (self.resolve)(self.userdata) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            let __name = std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned();
+            obj.tags_delete(endpoint, __name, __complete);
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HybridIrohSpec_tags_rename(
+    ptr: *mut std::ffi::c_void,
+    endpoint: f64,
+    from: *const std::ffi::c_char,
+    to: *const std::ffi::c_char,
+    __resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+    __reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+    __userdata: *mut std::ffi::c_void,
+) {
+    unsafe {
+        // Completer: forwards the trait's async result to the C++ resolve/reject
+        // callbacks. Fires exactly once; keeps userdata (the C++ Promise) alive
+        // until completion; rejects on drop so the Promise never hangs.
+        struct __Completer {
+            resolve: unsafe extern "C" fn(*mut std::ffi::c_void),
+            reject: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_char),
+            userdata: *mut std::ffi::c_void,
+            armed: bool,
+        }
+        // SAFETY: the C++ side guarantees resolve/reject/userdata are valid and
+        // may be invoked from another thread.
+        unsafe impl Send for __Completer {}
+        impl __Completer {
+            fn complete(mut self, __result: Result<(), String>) {
+                self.armed = false;
+                match __result {
+                    Ok(()) => unsafe { (self.resolve)(self.userdata) },
+                    Err(__err) => {
+                        let __s = __err.replace('\0', "");
+                        let __c = std::ffi::CString::new(__s).unwrap_or_default().into_raw();
+                        unsafe { (self.reject)(self.userdata, __c) };
+                    }
+                }
+            }
+        }
+        impl Drop for __Completer {
+            fn drop(&mut self) {
+                if self.armed {
+                    let __c = std::ffi::CString::new("Promise dropped without completion")
+                        .unwrap_or_default()
+                        .into_raw();
+                    unsafe { (self.reject)(self.userdata, __c) };
+                }
+            }
+        }
+        let __completer = __Completer {
+            resolve: __resolve,
+            reject: __reject,
+            userdata: __userdata,
+            armed: true,
+        };
+        let __complete: Box<dyn FnOnce(Result<(), String>) + Send> =
+            Box::new(move |__r| __completer.complete(__r));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let obj = &*(ptr as *mut std::sync::Arc<dyn HybridIrohSpec>);
+            let __from = std::ffi::CStr::from_ptr(from)
+                .to_string_lossy()
+                .into_owned();
+            let __to = std::ffi::CStr::from_ptr(to).to_string_lossy().into_owned();
+            obj.tags_rename(endpoint, __from, __to, __complete);
+        }));
     }
 }
 

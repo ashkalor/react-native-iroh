@@ -26,8 +26,10 @@ use iroh_rust::{
 
 use crate::{
     blobs::{
-        blob_download, blob_download_cancel, blob_share, collection_manifest, collection_share,
-        parse_ticket, CollectionEntry, TicketInfo, TransferHandle,
+        blob_add_bytes, blob_download, blob_download_cancel, blob_has, blob_list, blob_share,
+        blob_status, collection_manifest, collection_share, parse_ticket, tags_create, tags_delete,
+        tags_list, tags_rename, BlobInfo, BlobStatusInfo, CollectionEntry, TagEntry, TicketInfo,
+        TransferHandle,
     },
     coalesce::Coalescer,
     docs::{
@@ -40,7 +42,7 @@ use crate::{
     endpoint::{
         endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
         endpoint_online, endpoint_remote_info, stop_watch_addr, watch_addr, EndpointAddrInfo,
-        EndpointConfig, EndpointHandle, NetworkPreset, RemoteEndpointInfo, WatchHandle,
+        EndpointConfig, EndpointHandle, GcSettings, NetworkPreset, RemoteEndpointInfo, WatchHandle,
     },
     error::IrohError,
     gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
@@ -269,6 +271,58 @@ fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
     out
 }
 
+/// Serializes a [`BlobStatusInfo`] as the JSON discriminated union the bridge
+/// exposes: `{"state":"notFound"}`, `{"state":"partial","size"?:n}`, or
+/// `{"state":"complete","size":n}`.
+fn blob_status_to_json(status: &BlobStatusInfo) -> String {
+    match status {
+        BlobStatusInfo::NotFound => String::from("{\"state\":\"notFound\"}"),
+        BlobStatusInfo::Partial { size } => match size {
+            Some(size) => format!("{{\"state\":\"partial\",\"size\":{size}}}"),
+            None => String::from("{\"state\":\"partial\"}"),
+        },
+        BlobStatusInfo::Complete { size } => {
+            format!("{{\"state\":\"complete\",\"size\":{size}}}")
+        }
+    }
+}
+
+/// Serializes the store's blobs as a JSON array string for the bridge.
+fn blob_infos_to_json(infos: &[BlobInfo]) -> String {
+    let mut out = String::from("[");
+    for (i, info) in infos.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"hash\":");
+        push_json_string(&mut out, &info.hash);
+        out.push_str(",\"size\":");
+        out.push_str(&info.size.to_string());
+        out.push('}');
+    }
+    out.push(']');
+    out
+}
+
+/// Serializes the store's tags as a JSON array string for the bridge.
+fn tag_entries_to_json(entries: &[TagEntry]) -> String {
+    let mut out = String::from("[");
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        push_json_string(&mut out, &entry.name);
+        out.push_str(",\"hash\":");
+        push_json_string(&mut out, &entry.hash);
+        out.push_str(",\"format\":");
+        push_json_string(&mut out, entry.format);
+        out.push('}');
+    }
+    out.push(']');
+    out
+}
+
 impl HybridIrohSpec for HybridIroh {
     fn create_endpoint(&self, config: BridgeEndpointConfig, promise: Completer<f64>) {
         let preset = match config.preset {
@@ -284,10 +338,19 @@ impl HybridIrohSpec for HybridIroh {
             .as_deref()
             .map(split_joined)
             .unwrap_or_default();
+        // A non-positive (or absent) interval means GC stays off, preserving
+        // today's keep-everything retention.
+        let gc = config
+            .gc_interval_secs
+            .filter(|secs| *secs > 0.0)
+            .map(|secs| GcSettings {
+                interval: Duration::from_secs_f64(secs),
+            });
         endpoint_create(
             EndpointConfig {
                 preset,
                 blob_store_dir,
+                gc,
                 docs: config.docs.unwrap_or(false),
                 docs_store_dir,
                 relay_mode: config.relay_mode,
@@ -456,6 +519,81 @@ impl HybridIrohSpec for HybridIroh {
         parse_ticket(&ticket)
             .map(|info| ticket_info_to_json(&info))
             .map_err(encode_error)
+    }
+
+    fn blob_status(&self, endpoint: f64, hash: String, promise: Completer<String>) {
+        blob_status(endpoint_handle(endpoint), hash, move |result| {
+            promise(
+                result
+                    .map(|status| blob_status_to_json(&status))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn blob_has(&self, endpoint: f64, hash: String, promise: Completer<bool>) {
+        blob_has(endpoint_handle(endpoint), hash, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn blob_list(&self, endpoint: f64, promise: Completer<String>) {
+        blob_list(endpoint_handle(endpoint), move |result| {
+            promise(
+                result
+                    .map(|infos| blob_infos_to_json(&infos))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn add_bytes(&self, endpoint: f64, data: NitroBuffer, promise: Completer<String>) {
+        // The host's ArrayBuffer is only guaranteed valid for this call, so the
+        // bytes are copied out before the import is handed to the runtime.
+        blob_add_bytes(endpoint_handle(endpoint), data.to_vec(), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn tags_list(&self, endpoint: f64, promise: Completer<String>) {
+        tags_list(endpoint_handle(endpoint), move |result| {
+            promise(
+                result
+                    .map(|entries| tag_entries_to_json(&entries))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn tags_create(
+        &self,
+        endpoint: f64,
+        name: String,
+        hash: String,
+        format: String,
+        promise: Completer<()>,
+    ) {
+        tags_create(
+            endpoint_handle(endpoint),
+            name,
+            hash,
+            format,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn tags_delete(&self, endpoint: f64, name: String, promise: Completer<()>) {
+        tags_delete(endpoint_handle(endpoint), name, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn tags_rename(&self, endpoint: f64, from: String, to: String, promise: Completer<()>) {
+        tags_rename(endpoint_handle(endpoint), from, to, move |result| {
+            promise(result.map_err(encode_error));
+        });
     }
 
     fn gossip_subscribe(
@@ -855,6 +993,7 @@ mod tests {
                     docs_store_dir: None,
                     alpns: None,
                     relay_mode: None,
+                    gc_interval_secs: None,
                 },
                 done,
             )
@@ -891,6 +1030,7 @@ mod tests {
                     docs_store_dir: None,
                     alpns: None,
                     relay_mode: None,
+                    gc_interval_secs: None,
                 },
                 done,
             )

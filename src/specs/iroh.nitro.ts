@@ -65,6 +65,14 @@ export interface EndpointConfig {
    */
   relayMode?: string;
   /**
+   * Opt-in blob garbage collection interval, in seconds. Omit (or pass a
+   * non-positive value) to keep GC OFF: nothing is ever reclaimed, exactly
+   * today's retention. When set, the store spawns a mark-and-sweep loop at this
+   * interval that reclaims untagged blobs; tagged blobs (see the tag lifecycle)
+   * always survive. Carried as a flat number to keep the bridge primitive.
+   */
+  gcIntervalSecs?: number;
+  /**
    * Custom ALPN protocol names this endpoint accepts inbound connections on,
    * newline-joined (the same convention as {@link EndpointConfig.relayMode}).
    * Omit for none.
@@ -208,6 +216,56 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * no network or store access. Throws (code 1002) on a malformed ticket.
    */
   parseTicket(ticket: string): string;
+  /**
+   * Reports the local presence of the blob `hash` (64-hex) in the endpoint's
+   * store as a JSON discriminated union string (see the `BlobStatus` TS type):
+   * `{"state":"notFound"}`, `{"state":"partial","size"?:number}`, or
+   * `{"state":"complete","size":number}`. A `partial` blob is one an
+   * interrupted {@link downloadBlob} left behind; re-issuing the download
+   * fetches only the missing ranges. Rejects (code 3004) on a malformed hash.
+   */
+  blobStatus(endpoint: number, hash: string): Promise<string>;
+  /**
+   * Whether the store holds the blob `hash` (64-hex) complete and
+   * BLAKE3-verified. A partially-present blob resolves `false`. Rejects
+   * (code 3004) on a malformed hash.
+   */
+  blobHas(endpoint: number, hash: string): Promise<boolean>;
+  /**
+   * Lists the complete blobs in the endpoint's store as a JSON array string of
+   * `{ hash, size }` objects (see the `BlobInfo` TS type).
+   */
+  blobList(endpoint: number): Promise<string>;
+  /**
+   * Imports the in-memory `data` into the endpoint's blob store and resolves
+   * with a shareable ticket string, the in-memory counterpart of
+   * {@link shareBlob}. On the `n0` preset it waits (bounded) for the endpoint
+   * to come online first. Rejects (code 3000) if the import fails.
+   */
+  addBytes(endpoint: number, data: ArrayBuffer): Promise<string>;
+  /**
+   * Lists every tag in the endpoint's store as a JSON array string of
+   * `{ name, hash, format }` objects (see the `TagInfo` TS type). Tags are the
+   * sanctioned retention mechanism: a tagged blob survives GC.
+   */
+  tagsList(endpoint: number): Promise<string>;
+  /**
+   * Creates (or overwrites) the tag `name`, pinning the blob `hash` (64-hex) in
+   * `format` (`"raw"` or `"hashSeq"`) so GC keeps it. Rejects (code 3004) on a
+   * malformed hash or an unknown format.
+   */
+  tagsCreate(endpoint: number, name: string, hash: string, format: string): Promise<void>;
+  /**
+   * Deletes the tag `name`. The blob it pinned is not removed here; it becomes
+   * GC-eligible and is reclaimed only if (and when) a GC loop runs. Deletion
+   * stays GC-only by design. Deleting an absent tag is not an error.
+   */
+  tagsDelete(endpoint: number, name: string): Promise<void>;
+  /**
+   * Renames the tag `from` to `to` atomically. Rejects (code 3004) if `from`
+   * does not exist.
+   */
+  tagsRename(endpoint: number, from: string, to: string): Promise<void>;
   /**
    * Subscribes to the gossip topic derived from `topic` (its BLAKE3 hash) on
    * `endpoint`. `bootstrapJoined` is a possibly-empty newline-joined list of

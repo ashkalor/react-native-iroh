@@ -25,6 +25,8 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 | Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)               |
 | Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)          | Code-complete, roundtrip pending |
 | Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)          | Not yet validated                |
+| Resumable download (`blobs.status` / `has`, resume of a partial)       | Code-complete, resume pending | Code-complete, resume pending    |
+| Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending | Code-complete, device pending    |
 
 ### Raw QUIC streams
 
@@ -71,6 +73,51 @@ TypeScript layer is covered by unit tests against a mocked bridge.
 What is still not covered is a two-_device_ docs sync over the relay (two separate
 handsets reconciling a document and comparing the synced bytes), and iOS has not
 run docs at all yet, which is why its cell stays "Not yet validated".
+
+### Resumable download
+
+Added in 0.2.3. A download that was interrupted (cancelled, or a network change
+mid-stream) leaves BLAKE3-verified ranges in the store, and re-issuing the same
+download resumes: `Remote::fetch` computes what is already local
+(`local_for_request` / `LocalInfo::missing`) and asks the provider for only the
+missing ranges, never the whole blob again. `blobs.status(hash)` reports this as
+`notFound` / `partial` / `complete`, and `blobs.has(hash)` is the complete-only
+predicate.
+
+Exercised off-device: the Rust core's
+`interrupted_download_resumes_only_the_missing_ranges` test pre-seeds a genuine
+partial (a bounded chunk-range get), asserts the store reports `partial` with a
+size strictly below the full blob and that `LocalInfo` is incomplete, then runs a
+full `blobs.download` and asserts the second pass moves strictly fewer payload
+bytes than the whole blob (the proof that only the missing ranges crossed the
+wire) and that the final file is BLAKE3-identical to the source. The TypeScript
+layer is covered by unit tests against a mocked bridge.
+
+What is still pending on both platforms is the on-device kill-and-resume: killing
+a transfer midway on a handset and re-issuing it, observing fewer bytes on the
+second pass. That is the device gate this row waits on.
+
+### Blob store management
+
+Added in 0.2.3. `blobs.list()` enumerates the store's blobs (hash + size);
+`blobs.addBytes(data)` imports an in-memory `ArrayBuffer` and mints a ticket (the
+counterpart of `blobs.share` for a file); and `blobs.tags` is the tag lifecycle
+(`list` / `create` / `rename` / `delete`). Tags are the sanctioned retention
+mechanism: garbage collection is opt-in (`gc: { intervalSecs }` at endpoint
+creation, OFF by default so retention is unchanged), and when enabled a tagged
+blob survives a GC pass while an untagged one is reclaimed. There is deliberately
+no direct blob delete: "removing" a blob is dropping its tag and letting GC
+reclaim it (deletion is GC-only, keeping the store the sole owner of every byte).
+
+Exercised off-device: the Rust core covers the full tag lifecycle
+(`tag_lifecycle_create_list_rename_delete`), the GC protect/reclaim behavior with
+a real short-interval loop (`gc_reclaims_untagged_but_keeps_tagged_blobs`), that
+GC stays off by default (`gc_off_by_default_retains_untagged_blobs`), and the
+in-memory import round-trip (`add_bytes_imports_and_is_downloadable`). The
+TypeScript layer is covered by unit tests against a mocked bridge.
+
+What is still pending is exercising these on a handset through the example app's
+smoke suite, which is why both cells stay "Code-complete, device pending".
 
 ### Cross-platform transfer
 

@@ -29,6 +29,14 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("shareCollection", &HybridIrohSpec::shareCollection);
       prototype.registerHybridMethod("collectionManifest", &HybridIrohSpec::collectionManifest);
       prototype.registerHybridMethod("parseTicket", &HybridIrohSpec::parseTicket);
+      prototype.registerHybridMethod("blobStatus", &HybridIrohSpec::blobStatus);
+      prototype.registerHybridMethod("blobHas", &HybridIrohSpec::blobHas);
+      prototype.registerHybridMethod("blobList", &HybridIrohSpec::blobList);
+      prototype.registerHybridMethod("addBytes", &HybridIrohSpec::addBytes);
+      prototype.registerHybridMethod("tagsList", &HybridIrohSpec::tagsList);
+      prototype.registerHybridMethod("tagsCreate", &HybridIrohSpec::tagsCreate);
+      prototype.registerHybridMethod("tagsDelete", &HybridIrohSpec::tagsDelete);
+      prototype.registerHybridMethod("tagsRename", &HybridIrohSpec::tagsRename);
       prototype.registerHybridMethod("gossipSubscribe", &HybridIrohSpec::gossipSubscribe);
       prototype.registerHybridMethod("gossipBroadcast", &HybridIrohSpec::gossipBroadcast);
       prototype.registerHybridMethod("gossipUnsubscribe", &HybridIrohSpec::gossipUnsubscribe);

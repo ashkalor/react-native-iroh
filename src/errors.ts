@@ -13,6 +13,7 @@ const KIND_BY_CODE = {
   3001: "blob-download",
   3002: "blob-export",
   3003: "cancelled",
+  3004: "blob-store",
   4000: "gossip-subscribe",
   4001: "gossip-broadcast",
   4002: "gossip-message-too-large",

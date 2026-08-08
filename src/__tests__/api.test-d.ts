@@ -54,6 +54,7 @@ export type Cases = [
       | 3001
       | 3002
       | 3003
+      | 3004
       | 4000
       | 4001
       | 4002
@@ -82,6 +83,7 @@ export type Cases = [
       | "blob-download"
       | "blob-export"
       | "cancelled"
+      | "blob-store"
       | "gossip-subscribe"
       | "gossip-broadcast"
       | "gossip-message-too-large"

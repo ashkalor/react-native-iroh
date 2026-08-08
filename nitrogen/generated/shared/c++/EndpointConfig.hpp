@@ -47,11 +47,12 @@ namespace margelo::nitro::iroh {
     std::optional<bool> docs     SWIFT_PRIVATE;
     std::optional<std::string> docsStoreDir     SWIFT_PRIVATE;
     std::optional<std::string> relayMode     SWIFT_PRIVATE;
+    std::optional<double> gcIntervalSecs     SWIFT_PRIVATE;
     std::optional<std::string> alpns     SWIFT_PRIVATE;
 
   public:
     EndpointConfig() = default;
-    explicit EndpointConfig(NetworkPreset preset, std::optional<std::string> blobStoreDir, std::optional<bool> docs, std::optional<std::string> docsStoreDir, std::optional<std::string> relayMode, std::optional<std::string> alpns): preset(preset), blobStoreDir(blobStoreDir), docs(docs), docsStoreDir(docsStoreDir), relayMode(relayMode), alpns(alpns) {}
+    explicit EndpointConfig(NetworkPreset preset, std::optional<std::string> blobStoreDir, std::optional<bool> docs, std::optional<std::string> docsStoreDir, std::optional<std::string> relayMode, std::optional<double> gcIntervalSecs, std::optional<std::string> alpns): preset(preset), blobStoreDir(blobStoreDir), docs(docs), docsStoreDir(docsStoreDir), relayMode(relayMode), gcIntervalSecs(gcIntervalSecs), alpns(alpns) {}
 
   public:
     friend bool operator==(const EndpointConfig& lhs, const EndpointConfig& rhs) = default;
@@ -72,6 +73,7 @@ namespace margelo::nitro {
         JSIConverter<std::optional<bool>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "docs"))),
         JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "docsStoreDir"))),
         JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "relayMode"))),
+        JSIConverter<std::optional<double>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "gcIntervalSecs"))),
         JSIConverter<std::optional<std::string>>::fromJSI(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "alpns")))
       );
     }
@@ -82,6 +84,7 @@ namespace margelo::nitro {
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "docs"), JSIConverter<std::optional<bool>>::toJSI(runtime, arg.docs));
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "docsStoreDir"), JSIConverter<std::optional<std::string>>::toJSI(runtime, arg.docsStoreDir));
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "relayMode"), JSIConverter<std::optional<std::string>>::toJSI(runtime, arg.relayMode));
+      obj.setProperty(runtime, PropNameIDCache::get(runtime, "gcIntervalSecs"), JSIConverter<std::optional<double>>::toJSI(runtime, arg.gcIntervalSecs));
       obj.setProperty(runtime, PropNameIDCache::get(runtime, "alpns"), JSIConverter<std::optional<std::string>>::toJSI(runtime, arg.alpns));
       return obj;
     }
@@ -98,6 +101,7 @@ namespace margelo::nitro {
       if (!JSIConverter<std::optional<bool>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "docs")))) return false;
       if (!JSIConverter<std::optional<std::string>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "docsStoreDir")))) return false;
       if (!JSIConverter<std::optional<std::string>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "relayMode")))) return false;
+      if (!JSIConverter<std::optional<double>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "gcIntervalSecs")))) return false;
       if (!JSIConverter<std::optional<std::string>>::canConvert(runtime, obj.getProperty(runtime, PropNameIDCache::get(runtime, "alpns")))) return false;
       return true;
     }

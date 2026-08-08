@@ -151,6 +151,24 @@ export interface MockBinding {
   shareCollectionCalls: { endpoint: number; pathsJoined: string }[];
   manifestCalls: { endpoint: number; ticket: string }[];
   parseTicketCalls: string[];
+  blobStatusCalls: { endpoint: number; hash: string }[];
+  blobHasCalls: { endpoint: number; hash: string }[];
+  blobListCalls: number[];
+  addBytesCalls: { endpoint: number; data: ArrayBuffer }[];
+  tagsListCalls: number[];
+  tagsCreateCalls: { endpoint: number; name: string; hash: string; format: string }[];
+  tagsDeleteCalls: { endpoint: number; name: string }[];
+  tagsRenameCalls: { endpoint: number; from: string; to: string }[];
+  /** JSON that {@link IrohBinding.blobStatus} resolves with. */
+  blobStatusJson: string;
+  /** Boolean that {@link IrohBinding.blobHas} resolves with. */
+  blobHasResult: boolean;
+  /** JSON that {@link IrohBinding.blobList} resolves with. */
+  blobListJson: string;
+  /** Ticket that {@link IrohBinding.addBytes} resolves with. */
+  addBytesTicket: string;
+  /** JSON that {@link IrohBinding.tagsList} resolves with. */
+  tagsListJson: string;
   addrCalls: number[];
   watches: WatchCall[];
   stoppedWatches: number[];
@@ -218,6 +236,10 @@ export interface MockBinding {
     shareCollection?: Error;
     collectionManifest?: Error;
     parseTicket?: Error;
+    blobStatus?: Error;
+    addBytes?: Error;
+    tagsCreate?: Error;
+    tagsRename?: Error;
     gossipSubscribe?: Error;
     streamListen?: Error;
     streamConnect?: Error;
@@ -343,6 +365,50 @@ export function createMockBinding(): MockBinding {
           throw mock.failures.parseTicket;
         }
         return JSON.stringify(mock.ticketInfo);
+      },
+      blobStatus: (endpoint, hash) => {
+        mock.blobStatusCalls.push({ endpoint, hash });
+        if (mock.failures.blobStatus !== undefined) {
+          return Promise.reject(mock.failures.blobStatus);
+        }
+        return Promise.resolve(mock.blobStatusJson);
+      },
+      blobHas: (endpoint, hash) => {
+        mock.blobHasCalls.push({ endpoint, hash });
+        return Promise.resolve(mock.blobHasResult);
+      },
+      blobList: (endpoint) => {
+        mock.blobListCalls.push(endpoint);
+        return Promise.resolve(mock.blobListJson);
+      },
+      addBytes: (endpoint, data) => {
+        mock.addBytesCalls.push({ endpoint, data });
+        if (mock.failures.addBytes !== undefined) {
+          return Promise.reject(mock.failures.addBytes);
+        }
+        return Promise.resolve(mock.addBytesTicket);
+      },
+      tagsList: (endpoint) => {
+        mock.tagsListCalls.push(endpoint);
+        return Promise.resolve(mock.tagsListJson);
+      },
+      tagsCreate: (endpoint, name, hash, format) => {
+        mock.tagsCreateCalls.push({ endpoint, name, hash, format });
+        if (mock.failures.tagsCreate !== undefined) {
+          return Promise.reject(mock.failures.tagsCreate);
+        }
+        return Promise.resolve();
+      },
+      tagsDelete: (endpoint, name) => {
+        mock.tagsDeleteCalls.push({ endpoint, name });
+        return Promise.resolve();
+      },
+      tagsRename: (endpoint, from, to) => {
+        mock.tagsRenameCalls.push({ endpoint, from, to });
+        if (mock.failures.tagsRename !== undefined) {
+          return Promise.reject(mock.failures.tagsRename);
+        }
+        return Promise.resolve();
       },
       gossipSubscribe: (endpoint, topic, bootstrapJoined, onStart, onMessage, onNeighbor) => {
         if (mock.failures.gossipSubscribe !== undefined) {
@@ -548,6 +614,19 @@ export function createMockBinding(): MockBinding {
     shareCollectionCalls: [],
     manifestCalls: [],
     parseTicketCalls: [],
+    blobStatusCalls: [],
+    blobHasCalls: [],
+    blobListCalls: [],
+    addBytesCalls: [],
+    tagsListCalls: [],
+    tagsCreateCalls: [],
+    tagsDeleteCalls: [],
+    tagsRenameCalls: [],
+    blobStatusJson: JSON.stringify({ state: "complete", size: 1024 }),
+    blobHasResult: true,
+    blobListJson: JSON.stringify([{ hash: "a".repeat(64), size: 1024 }]),
+    addBytesTicket: `blob${"d".repeat(56)}`,
+    tagsListJson: JSON.stringify([{ name: "keep", hash: "a".repeat(64), format: "raw" }]),
     addrCalls: [],
     watches: [],
     stoppedWatches: [],

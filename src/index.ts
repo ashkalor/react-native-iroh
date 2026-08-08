@@ -1,7 +1,9 @@
 export { DEFAULT_MAX_CONCURRENT_DOWNLOADS, DEFAULT_ONLINE_TIMEOUT_MS, Endpoint } from "./endpoint";
 export type {
   AbortSignalLike,
+  BlobInfo,
   Blobs,
+  BlobStatus,
   DownloadOptions,
   EndpointAddr,
   EndpointId,
@@ -12,6 +14,8 @@ export type {
   RemoteAddrKind,
   RemoteInfo,
   Streams,
+  TagInfo,
+  Tags,
 } from "./endpoint";
 export { parseDocTicket, validateDocTicketShape } from "./docs";
 export type {
