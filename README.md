@@ -98,10 +98,11 @@ broadcast messages to one another, namespaced under `endpoint.gossip`.
   stream: consuming a message removes it, so fan out yourself if several
   consumers each need every message.
 - `broadcast(text)` sends UTF-8 up to 4096 bytes per message; oversize payloads
-  reject with kind `"gossip-message-too-large"`. Payloads are strings in both
-  directions, so send binary as base64 (or another text encoding) until a
-  typed-array bridge lands, and budget for the encoding's size overhead against
-  the 4096-byte limit.
+  reject with kind `"gossip-message-too-large"`. Gossip payloads are strings in
+  both directions, so send binary as base64 (or another text encoding) and
+  budget for the encoding's size overhead against the 4096-byte limit. For
+  binary at any size, use a raw stream instead: those carry `Uint8Array`
+  directly.
 - On the `"minimal"` preset supply `options.bootstrap` peers (their
   `EndpointAddr`s) so endpoints can find each other; on `"n0"` discovery can
   resolve peers without one.
@@ -111,6 +112,35 @@ broadcast messages to one another, namespaced under `endpoint.gossip`.
   channel name, not a secret, and put your own authentication or encryption in
   the payload if a topic carries anything sensitive.
 
+### Raw QUIC streams (available now)
+
+The layer the two protocols above are themselves built on, exposed under
+`endpoint.streams` so you can define your own protocol instead of waiting for
+one to be bound here.
+
+- Declare the ALPNs you accept when you create the endpoint
+  (`Endpoint.create({ alpns: ["myapp/1"] })`), then `streams.listen(alpn)` for
+  an async-iterable of inbound `Connection`s. The ALPN set is fixed at creation
+  because iroh's router fixes its own when it spawns; dialling has no such
+  constraint.
+- `streams.connect(peer, alpn)` dials out, by `EndpointId` where discovery can
+  resolve the peer, or by full `EndpointAddr` where it cannot (the `minimal`
+  preset, LAN-only setups).
+- A `Connection` multiplexes any number of bidirectional `Stream`s:
+  `openStream()` for ones you start, the `incoming` async-iterable for ones the
+  peer starts. Each stream is `send(bytes)` plus a `data` async-iterable of
+  `Uint8Array` chunks.
+- Choose the framing per connection. `"framed"` (the default) length-prefixes
+  every send natively and reassembles whole frames on the other side, so one
+  `send` arrives as exactly one chunk. `"raw"` writes and delivers bytes
+  verbatim, for wire formats you do not control. Both peers must agree: framing
+  is part of the protocol the ALPN names.
+- Payloads are bytes, not strings, so binary protocols need no base64 detour.
+  Framed payloads are capped at 16 MiB; raw streams have no cap.
+- Overflow is fatal rather than lossy: if a consumer falls behind its buffer
+  (`options.capacity`), the stream fails with kind `"stream-overflow"` instead
+  of quietly dropping bytes and corrupting the protocol.
+
 ### Roadmap
 
 Planned protocol work, honestly labeled: none of this exists yet, and no dates
@@ -118,9 +148,7 @@ are attached.
 
 - **Docs** (`iroh-docs`): multi-writer replicated key-value documents.
 
-Raw QUIC connections and custom ALPN protocols are likewise not exposed
-today: the API is `Endpoint` plus `iroh-blobs` and `iroh-gossip`. If a
-protocol matters to you, open an issue.
+If a protocol matters to you, open an issue.
 
 ## Status
 
@@ -259,12 +287,13 @@ Creates an endpoint: binds sockets and loads the blob store.
 
 `EndpointOptions` (all fields optional):
 
-| Option                   | Type                                                           | Default        | Meaning                                                                                                                                                                                                                                                              |
-| ------------------------ | -------------------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `preset`                 | `"n0" \| "minimal"`                                            | `"n0"`         | Which of iroh's endpoint presets to bind with. `n0` uses n0's relay and discovery infrastructure (production). `minimal` uses only the mandatory configuration: peers are only reachable via direct addresses embedded in tickets.                                   |
-| `relayMode`              | `"default" \| "disabled" \| "staging" \| { custom: string[] }` | preset default | Overrides which relay servers the endpoint uses (discovery is left to the preset). `"disabled"` runs a LAN-only endpoint reachable only through direct addresses; `{ custom: [...] }` supplies HTTPS relay URLs (at least one). Omit to inherit the preset's relays. |
-| `blobStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                                         |
-| `maxConcurrentDownloads` | `number`                                                       | `4`            | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored, and non-finite values (`NaN`, `Infinity`) fall back to the default.                                       |
+| Option                   | Type                                                           | Default        | Meaning                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preset`                 | `"n0" \| "minimal"`                                            | `"n0"`         | Which of iroh's endpoint presets to bind with. `n0` uses n0's relay and discovery infrastructure (production). `minimal` uses only the mandatory configuration: peers are only reachable via direct addresses embedded in tickets.                                                                                      |
+| `relayMode`              | `"default" \| "disabled" \| "staging" \| { custom: string[] }` | preset default | Overrides which relay servers the endpoint uses (discovery is left to the preset). `"disabled"` runs a LAN-only endpoint reachable only through direct addresses; `{ custom: [...] }` supplies HTTPS relay URLs (at least one). Omit to inherit the preset's relays.                                                    |
+| `blobStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                                                                                            |
+| `maxConcurrentDownloads` | `number`                                                       | `4`            | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored, and non-finite values (`NaN`, `Infinity`) fall back to the default.                                                                                          |
+| `alpns`                  | `readonly string[]`                                            | none           | Custom ALPN protocol names this endpoint accepts inbound connections on (see `endpoint.streams`). Fixed here because iroh's router fixes its ALPN set when it spawns. An empty name, one over 255 bytes, a duplicate, or one shadowing the built-in blobs or gossip ALPNs rejects creation with kind `"endpoint-bind"`. |
 
 `create` also accepts a second, advanced `binding` parameter (an
 `IrohBinding`) that substitutes the native module, primarily for tests.
@@ -395,6 +424,34 @@ malformed bootstrap address (kind `"gossip-subscribe"`).
 neighbor that delivered it). Messages are also capped at 4096 bytes per the
 gossip protocol's default.
 
+#### `endpoint.streams.listen(alpn, options?): StreamListener`
+
+Starts accepting inbound connections that negotiated `alpn`, which must be one
+of the endpoint's `alpns`. Returns synchronously. Throws an `IrohError` of kind
+`"stream-listen"` for an ALPN that was not declared or is already being listened
+on, or `"invalid-handle"` for a closed endpoint.
+
+`StreamOptions` (shared with `connect`): `framing` (`"framed"` by default, or
+`"raw"`) and `capacity` (how many received chunks a stream buffers before the
+consumer is declared too slow; defaults to 1024).
+
+`StreamListener` members:
+
+| Member        | Type                        | Meaning                                                                                                                                                                      |
+| ------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `alpn`        | `string`                    | The ALPN this listener accepts.                                                                                                                                              |
+| `connections` | `AsyncIterable<Connection>` | Accepted connections. Ends when the listener or its endpoint closes, and throws on failure. One shared stream. Connections left unconsumed beyond 64 are closed, not queued. |
+| `close()`     | `() => void`                | Stops accepting and frees the ALPN for a later `listen`. Idempotent. Not a cascade: connections already handed to you stay open.                                             |
+
+#### `endpoint.streams.connect(peer, alpn, options?): Promise<Connection>`
+
+Dials `peer` on `alpn`. Pass a full `EndpointAddr` when the peer cannot be
+discovered (the `minimal` preset, or a LAN-only setup): its addresses are
+registered so the dial can reach it, exactly as a gossip bootstrap peer's are.
+A bare `EndpointId` leaves resolution to discovery, which needs the `n0` preset.
+Rejects with kind `"stream-connect"` if the peer is unreachable or does not
+accept `alpn`.
+
 #### `endpoint.close(): Promise<void>`
 
 Closes the endpoint: shuts down its router, sockets and blob store.
@@ -412,6 +469,38 @@ are settled by the native shutdown. On failure the promise rejects with an
 An alias of `close()` that makes endpoints usable with
 `await using endpoint = await Endpoint.create(...)`: the endpoint closes
 automatically when the binding goes out of scope.
+
+### Connection
+
+One QUIC connection to a peer on a custom ALPN, carrying any number of
+independent streams in both directions.
+
+| Member         | Type                    | Meaning                                                                                                                                               |
+| -------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `remoteId`     | `EndpointId`            | The peer's endpoint id.                                                                                                                               |
+| `alpn`         | `string`                | The ALPN this connection negotiated.                                                                                                                  |
+| `framing`      | `"framed" \| "raw"`     | The framing every stream on this connection uses.                                                                                                     |
+| `incoming`     | `AsyncIterable<Stream>` | Streams the peer opened. Ends when the connection closes, throws on failure. One shared stream; streams left unconsumed beyond 64 are closed.         |
+| `closed`       | `Promise<void>`         | Settles once: resolves on an orderly close by either side, rejects with an `IrohError` on failure. Pre-observed.                                      |
+| `isClosed`     | `boolean`               | Whether the connection has closed.                                                                                                                    |
+| `openStream()` | `() => Promise<Stream>` | Opens a bidirectional stream. QUIC does not announce a stream until it carries bytes, so the peer's `incoming` does not fire until your first `send`. |
+| `close()`      | `() => void`            | Closes the connection and every stream on it. Idempotent; also run automatically when the endpoint closes.                                            |
+
+### Stream
+
+One bidirectional QUIC stream: bytes in, bytes out, closed once.
+
+| Member        | Type                                  | Meaning                                                                                                                                                                                                                                                        |
+| ------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data`        | `AsyncIterable<Uint8Array>`           | Received chunks, in order. Under `"framed"` each chunk is exactly one peer `send`; under `"raw"` the boundaries are whatever the network produced. Ends on close, throws on failure. One shared stream.                                                        |
+| `closed`      | `Promise<void>`                       | Settles once: resolves when either side finishes the stream, rejects with an `IrohError` on failure. Pre-observed.                                                                                                                                             |
+| `isClosed`    | `boolean`                             | Whether the stream has ended.                                                                                                                                                                                                                                  |
+| `send(bytes)` | `(data: Uint8Array) => Promise<void>` | Writes to the peer, resolving once the bytes reach the QUIC send buffer (not a delivery receipt). Concurrent sends are serialized natively. Rejects with kind `"stream-closed"`, `"stream-frame-too-large"` (framed payloads over 16 MiB), or `"stream-send"`. |
+| `close()`     | `() => void`                          | Finishes this side's writes and stops reading. Idempotent; the peer sees an orderly end of stream.                                                                                                                                                             |
+
+Text protocols encode their own bytes: `data` always yields `Uint8Array`, and
+`send` always takes one, so nothing guesses an encoding on your behalf. Use
+`TextEncoder` / `TextDecoder` (or your own codec) at the edges.
 
 ### Transfer
 
@@ -464,6 +553,13 @@ Error codes are stable across releases:
 | `4000` | `gossip-subscribe`         | Subscribing to a gossip topic failed (e.g. a bad bootstrap address) |
 | `4001` | `gossip-broadcast`         | Broadcasting a gossip message failed                                |
 | `4002` | `gossip-message-too-large` | Gossip payload exceeded the 4096-byte per-message limit             |
+| `5000` | `stream-listen`            | Listening on a custom ALPN failed (undeclared, or already listened) |
+| `5001` | `stream-connect`           | Dialling a peer on a custom ALPN failed                             |
+| `5002` | `stream-open`              | Opening a bidirectional stream on a connection failed               |
+| `5003` | `stream-send`              | Writing to a stream failed                                          |
+| `5004` | `stream-closed`            | The stream or its connection is closed                              |
+| `5005` | `stream-frame-too-large`   | Framed payload exceeded the 16 MiB frame limit                      |
+| `5006` | `stream-overflow`          | The stream consumer fell behind its buffer, so bytes would be lost  |
 
 Exported error types: `IrohErrorCode` (union of the numeric codes),
 `IrohErrorKind` (union of the kind strings), `IrohErrorCase` (the
@@ -487,6 +583,8 @@ discriminated `code`/`kind` pairing).
 | `EndpointConfig`, `NetworkPreset`                                                                | types          | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
 | `Blobs`, `DownloadOptions`, `AbortSignalLike`                                                    | types          | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
 | `Gossip`, `GossipSubscription`, `GossipMessage`, `GossipNeighborEvent`, `GossipSubscribeOptions` | types          | The `endpoint.gossip` namespace interface and its subscription, message, neighbor-event, and options types.                                                                                                                                                                                                                                                                                                               |
+| `Streams`, `StreamListener`, `Connection`, `Stream`, `StreamOptions`, `StreamFraming`            | types          | The `endpoint.streams` namespace interface and its listener, connection, stream, options, and framing types.                                                                                                                                                                                                                                                                                                              |
+| `DEFAULT_STREAM_BACKLOG`                                                                         | `const` (`64`) | How many inbound connections (on a listener) or peer-opened streams (on a connection) are held for a consumer that has not picked them up yet; beyond this the oldest is closed.                                                                                                                                                                                                                                          |
 | `EndpointOptions`, `Transfer`, `ProgressEvent`                                                   | types          | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EndpointAddr`, `RelayMode`                                                                      | types          | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
 | `RemoteInfo`, `RemoteAddr`, `RemoteAddrKind`                                                     | types          | The peer snapshot returned by `endpoint.remoteInfo()`, its per-address entries, and the `"relay" \| "ip"` transport tag.                                                                                                                                                                                                                                                                                                  |

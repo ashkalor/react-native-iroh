@@ -15,11 +15,15 @@
 
 // Forward declaration of `EndpointConfig` to properly resolve imports.
 namespace margelo::nitro::iroh { struct EndpointConfig; }
+// Forward declaration of `StreamFraming` to properly resolve imports.
+namespace margelo::nitro::iroh { enum class StreamFraming; }
 
 #include <NitroModules/Promise.hpp>
 #include "EndpointConfig.hpp"
 #include <string>
 #include <functional>
+#include "StreamFraming.hpp"
+#include <NitroModules/ArrayBuffer.hpp>
 
 namespace margelo::nitro::iroh {
 
@@ -70,6 +74,15 @@ namespace margelo::nitro::iroh {
       virtual void gossipSubscribe(double endpoint, const std::string& topic, const std::string& bootstrapJoined, const std::function<void(double /* subId */)>& onStart, const std::function<void(const std::string& /* message */)>& onMessage, const std::function<void(const std::string& /* event */)>& onNeighbor) = 0;
       virtual std::shared_ptr<Promise<void>> gossipBroadcast(double subId, const std::string& payload) = 0;
       virtual void gossipUnsubscribe(double subId) = 0;
+      virtual double streamListen(double endpoint, const std::string& alpn, const std::function<void(const std::string& /* connection */)>& onConnection, const std::function<void(const std::string& /* event */)>& onClose) = 0;
+      virtual void stopStreamListen(double listenerId) = 0;
+      virtual std::shared_ptr<Promise<double>> streamConnect(double endpoint, const std::string& remoteAddr, const std::string& alpn) = 0;
+      virtual void streamConnectionSubscribe(double connectionId, StreamFraming framing, const std::function<void(double /* streamId */)>& onStream, const std::function<void(const std::string& /* event */)>& onClose) = 0;
+      virtual std::shared_ptr<Promise<double>> streamOpenStream(double connectionId) = 0;
+      virtual void streamCloseConnection(double connectionId) = 0;
+      virtual void streamSubscribe(double streamId, const std::function<void(const std::shared_ptr<ArrayBuffer>& /* chunk */)>& onData, const std::function<void(const std::string& /* event */)>& onClose) = 0;
+      virtual std::shared_ptr<Promise<void>> streamSend(double streamId, const std::shared_ptr<ArrayBuffer>& data) = 0;
+      virtual void streamClose(double streamId) = 0;
 
     protected:
       // Hybrid Setup

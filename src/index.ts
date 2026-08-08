@@ -11,6 +11,7 @@ export type {
   RemoteAddr,
   RemoteAddrKind,
   RemoteInfo,
+  Streams,
 } from "./endpoint";
 export { getIrohErrorCode, IrohError } from "./errors";
 // The hook functions live behind the `react-native-iroh/hooks` subpath so the
@@ -33,7 +34,14 @@ export type {
 } from "./gossip";
 export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";
 export type { IrohBinding } from "./native";
-export type { EndpointConfig, Iroh as IrohSpec, NetworkPreset } from "./specs/iroh.nitro";
+export type {
+  EndpointConfig,
+  Iroh as IrohSpec,
+  NetworkPreset,
+  StreamFraming,
+} from "./specs/iroh.nitro";
+export { DEFAULT_STREAM_BACKLOG } from "./streams";
+export type { Connection, Stream, StreamListener, StreamOptions } from "./streams";
 export { parseTicket, validateTicketShape } from "./ticket";
 export type { BlobFormat, BlobTicket, TicketInfo } from "./ticket";
 export type { CollectionTransfer, FileProgress, ProgressEvent, Transfer } from "./transfer";

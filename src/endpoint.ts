@@ -5,6 +5,14 @@ import {
   type GossipSubscription,
 } from "./gossip";
 import { getIroh, type IrohBinding } from "./native";
+import {
+  ConnectionController,
+  StreamListenerController,
+  type Connection,
+  type StreamListener,
+  type StreamOptions,
+  type StreamsBinding,
+} from "./streams";
 import { validateTicketShape, type BlobTicket } from "./ticket";
 import {
   CollectionTransferController,
@@ -13,7 +21,7 @@ import {
   type Transfer,
 } from "./transfer";
 import { Watchable } from "./watchable";
-import type { EndpointConfig, NetworkPreset } from "./specs/iroh.nitro";
+import type { EndpointConfig, NetworkPreset, StreamFraming } from "./specs/iroh.nitro";
 
 /**
  * Default cap on concurrently active downloads per endpoint. See
@@ -218,6 +226,50 @@ export interface Gossip {
 }
 
 /**
+ * Raw QUIC streams over an ALPN you choose: the layer the built-in protocols
+ * are themselves built on, exposed so you can define your own. Namespaced as
+ * {@link Endpoint.streams}.
+ *
+ * A {@link StreamListener} accepts inbound {@link Connection}s on one ALPN, and
+ * {@link connect} dials one out; either way a connection carries any number of
+ * independent bidirectional {@link Stream}s.
+ *
+ * The ALPNs an endpoint accepts are fixed at creation
+ * ({@link EndpointOptions.alpns}), because iroh's router fixes its ALPN set
+ * when it spawns. Dialling has no such constraint: any ALPN can be dialled at
+ * any time.
+ *
+ * @see https://docs.rs/iroh/1.0.2/iroh/protocol/index.html
+ */
+export interface Streams {
+  /**
+   * Starts accepting inbound connections that negotiated `alpn`, which must be
+   * one of the endpoint's {@link EndpointOptions.alpns}. Returns synchronously;
+   * throws an {@link IrohError} of kind `"stream-listen"` for an ALPN that was
+   * not declared or is already being listened on, or `"invalid-handle"` for a
+   * closed endpoint.
+   */
+  listen(alpn: string, options?: StreamOptions): StreamListener;
+  /**
+   * Dials `peer` on `alpn` and resolves with the live {@link Connection}.
+   *
+   * Pass a full {@link EndpointAddr} when the peer cannot be discovered (the
+   * `"minimal"` preset, or a LAN-only setup): its addresses are registered so
+   * the dial can reach it, exactly as a gossip bootstrap peer's are. A bare
+   * {@link EndpointId} leaves resolution to discovery, which needs the `"n0"`
+   * preset.
+   *
+   * Rejects with an {@link IrohError} of kind `"stream-connect"` if the peer is
+   * unreachable or does not accept `alpn`.
+   */
+  connect(
+    peer: EndpointId | EndpointAddr,
+    alpn: string,
+    options?: StreamOptions,
+  ): Promise<Connection>;
+}
+
+/**
  * The subset of the standard `AbortSignal` interface used by
  * {@link DownloadOptions.signal}. Any real `AbortSignal` satisfies it; it is
  * declared structurally so this package does not require DOM type libs.
@@ -345,6 +397,17 @@ export interface EndpointOptions {
    * concurrent long transfers; pass `Infinity` to disable it entirely.
    */
   maxConcurrentDownloads?: number;
+  /**
+   * Custom ALPN protocol names this endpoint accepts inbound connections on
+   * (see {@link Endpoint.streams}). Omit for none.
+   *
+   * They belong here rather than on {@link Streams.listen} because iroh's
+   * router fixes its ALPN set when it spawns, which happens while the endpoint
+   * is being created. An empty name, one over 255 bytes, a duplicate, or one
+   * that would shadow the built-in blobs or gossip protocols rejects creation
+   * with kind `"endpoint-bind"`.
+   */
+  alpns?: readonly string[];
 }
 
 /**
@@ -371,6 +434,10 @@ export class Endpoint {
   private addressWatch: Watchable<EndpointAddr> | null = null;
   private addressWatchId: number | null = null;
   private readonly gossipSubscriptions = new Set<GossipSubscriptionController>();
+  private readonly streamListeners = new Set<StreamListenerController>();
+  // Every live connection, however it was obtained (dialled or accepted), so
+  // closing the endpoint tears all of them down through one path.
+  private readonly streamConnections = new Set<ConnectionController>();
 
   /**
    * The endpoint's blob transfer API ({@link Blobs.share} /
@@ -388,6 +455,13 @@ export class Endpoint {
    * @see https://docs.rs/iroh-gossip/0.101.0/iroh_gossip/
    */
   readonly gossip: Gossip;
+
+  /**
+   * The endpoint's raw QUIC stream API ({@link Streams.listen} /
+   * {@link Streams.connect}): custom ALPNs and byte streams, for protocols this
+   * library does not implement for you.
+   */
+  readonly streams: Streams;
 
   private constructor(
     binding: IrohBinding,
@@ -408,6 +482,10 @@ export class Endpoint {
     };
     this.gossip = {
       subscribe: (topic, options) => this.subscribeGossip(topic, options),
+    };
+    this.streams = {
+      listen: (alpn, options) => this.listenStreams(alpn, options),
+      connect: (peer, alpn, options) => this.connectStreams(peer, alpn, options),
     };
   }
 
@@ -442,6 +520,11 @@ export class Endpoint {
     if (options.relayMode !== undefined) {
       // Throws a typed IrohError synchronously for an empty custom list.
       config.relayMode = serializeRelayMode(options.relayMode);
+    }
+    if (options.alpns !== undefined && options.alpns.length > 0) {
+      // Newline-joined, matching the collection paths and relay mode
+      // conventions for structured bridge inputs.
+      config.alpns = options.alpns.join("\n");
     }
     try {
       const handle = await binding.createEndpoint(config);
@@ -642,6 +725,95 @@ export class Endpoint {
     }
   }
 
+  /** See {@link Streams.listen}; exposed as {@link Endpoint.streams}`.listen`. */
+  private listenStreams(alpn: string, options?: StreamOptions): StreamListener {
+    const framing = options?.framing ?? "framed";
+    try {
+      const listener = new StreamListenerController(this.streamsBinding(), {
+        alpn,
+        createConnection: (connectionId, remoteId) =>
+          this.adoptStreamConnection(connectionId, {
+            remoteId,
+            alpn,
+            framing,
+            capacity: options?.capacity,
+          }),
+        onDispose: () => {
+          this.streamListeners.delete(listener);
+        },
+      });
+      this.streamListeners.add(listener);
+      return listener;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Streams.connect}; exposed as {@link Endpoint.streams}`.connect`. */
+  private async connectStreams(
+    peer: EndpointId | EndpointAddr,
+    alpn: string,
+    options?: StreamOptions,
+  ): Promise<Connection> {
+    // A bare id becomes an address with no transports, leaving resolution to
+    // discovery; a full address seeds the peer's transports natively first.
+    const addr: EndpointAddr =
+      typeof peer === "string" ? { id: peer, relayUrls: [], directAddrs: [] } : peer;
+    try {
+      const connectionId = await this.binding.streamConnect(
+        this.handle,
+        serializeEndpointAddr(addr),
+        alpn,
+      );
+      return this.adoptStreamConnection(connectionId, {
+        remoteId: addr.id,
+        alpn,
+        framing: options?.framing ?? "framed",
+        capacity: options?.capacity,
+      });
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /**
+   * Wraps one native connection and registers it for the endpoint's teardown.
+   * Both the dialled and the accepted path go through here so `close()` has a
+   * single set to cascade through.
+   */
+  private adoptStreamConnection(
+    connectionId: number,
+    init: { remoteId: EndpointId; alpn: string; framing: StreamFraming; capacity?: number },
+  ): Connection {
+    const connection = new ConnectionController(this.streamsBinding(), connectionId, {
+      ...init,
+      onDispose: () => {
+        this.streamConnections.delete(connection);
+      },
+    });
+    this.streamConnections.add(connection);
+    return connection;
+  }
+
+  /** The raw-stream calls, bound to this endpoint's handle. */
+  private streamsBinding(): StreamsBinding {
+    return {
+      listen: (alpn, onConnection, onClose) =>
+        this.binding.streamListen(this.handle, alpn, onConnection, onClose),
+      stopListen: (listenerId) => this.binding.stopStreamListen(listenerId),
+      connect: (remoteAddrJson, alpn) =>
+        this.binding.streamConnect(this.handle, remoteAddrJson, alpn),
+      subscribeConnection: (connectionId, framing, onStream, onClose) =>
+        this.binding.streamConnectionSubscribe(connectionId, framing, onStream, onClose),
+      openStream: (connectionId) => this.binding.streamOpenStream(connectionId),
+      closeConnection: (connectionId) => this.binding.streamCloseConnection(connectionId),
+      subscribeStream: (streamId, onData, onClose) =>
+        this.binding.streamSubscribe(streamId, onData, onClose),
+      send: (streamId, data) => this.binding.streamSend(streamId, data),
+      closeStream: (streamId) => this.binding.streamClose(streamId),
+    };
+  }
+
   /** See {@link Blobs.share}; exposed as {@link Endpoint.blobs}`.share`. */
   private async shareBlob(path: string): Promise<BlobTicket> {
     try {
@@ -774,6 +946,12 @@ export class Endpoint {
         }
         for (const subscription of [...this.gossipSubscriptions]) {
           subscription.unsubscribe();
+        }
+        for (const listener of [...this.streamListeners]) {
+          listener.close();
+        }
+        for (const connection of [...this.streamConnections]) {
+          connection.close();
         }
         // Stop the native address watch and end any addrChanges iterators.
         this.stopNativeAddrWatch();

@@ -26,7 +26,7 @@ import { DONE, WaiterQueue } from "./waiter-queue";
 export const DEFAULT_MESSAGE_QUEUE_CAPACITY = 1024;
 
 /** Construction options for a {@link MessageQueue}. */
-export interface MessageQueueOptions {
+export interface MessageQueueOptions<T = unknown> {
   /**
    * Maximum number of undelivered values buffered before the queue drops the
    * oldest on each further push. Defaults to
@@ -40,6 +40,17 @@ export interface MessageQueueOptions {
    * not throw.
    */
   onLagged?(totalDropped: number): void;
+  /**
+   * Invoked with each buffered value the queue discards without delivering it:
+   * one evicted by overflow, or one still buffered at {@link MessageQueue.close}.
+   * Together with iteration this completes the queue's contract: every pushed
+   * value is either delivered to a consumer or handed to this hook, never
+   * silently lost.
+   *
+   * Needed when a value owns a resource (a connection, a stream) that has to be
+   * released rather than forgotten. Must not throw.
+   */
+  onDropped?(value: T): void;
 }
 
 /**
@@ -49,13 +60,15 @@ export interface MessageQueueOptions {
 export class MessageQueue<T> implements AsyncIterableIterator<T> {
   private readonly capacity: number;
   private readonly onLagged?: (totalDropped: number) => void;
+  private readonly onDropped?: (value: T) => void;
   private readonly buffer: T[] = [];
   private readonly consumers = new WaiterQueue<T>();
   private droppedCount = 0;
 
-  constructor(options: MessageQueueOptions = {}) {
+  constructor(options: MessageQueueOptions<T> = {}) {
     this.capacity = Math.max(1, Math.floor(options.capacity ?? DEFAULT_MESSAGE_QUEUE_CAPACITY));
     this.onLagged = options.onLagged;
+    this.onDropped = options.onDropped;
   }
 
   /** Whether the queue has been closed (settled). */
@@ -86,7 +99,7 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
     }
     this.buffer.push(value);
     if (this.buffer.length > this.capacity) {
-      this.buffer.shift();
+      this.discard(this.buffer.shift() as T);
       this.recordDrop();
     }
   }
@@ -112,7 +125,9 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
     if (this.consumers.isSettled) {
       return;
     }
-    this.buffer.length = 0;
+    for (const undelivered of this.buffer.splice(0)) {
+      this.discard(undelivered);
+    }
     this.consumers.settle(error);
   }
 
@@ -132,6 +147,16 @@ export class MessageQueue<T> implements AsyncIterableIterator<T> {
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
     return this;
+  }
+
+  /** Hands a value the queue will never deliver to the drop hook. */
+  private discard(value: T): void {
+    try {
+      this.onDropped?.(value);
+    } catch (error) {
+      // A throwing drop handler must not break the producing native callback.
+      console.error("react-native-iroh: message-queue onDropped handler threw", error);
+    }
   }
 
   private recordDrop(): void {

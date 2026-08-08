@@ -7,8 +7,8 @@ building, so it is used in a real app rather than written as a demo. I
 open-sourced it so that nobody else has to build the same binding twice. That
 is the whole motivation, and it means contributions are genuinely welcome:
 bug reports, pull requests, documentation fixes, and especially the protocol
-bindings still on the roadmap (Docs; blobs, collections and gossip already
-ship, see `docs/support-matrix.md`). If a protocol or a
+bindings still on the roadmap (Docs; blobs, collections, gossip and raw QUIC
+streams already ship, see `docs/support-matrix.md`). If a protocol or a
 platform detail matters to you, open an issue and let's compare notes before
 you sink time into a big change.
 

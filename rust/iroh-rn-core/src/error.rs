@@ -18,6 +18,7 @@ pub type Result<T> = std::result::Result<T, IrohError>;
 /// | 2xxx  | endpoint lifecycle |
 /// | 3xxx  | blob transfer |
 /// | 4xxx  | gossip |
+/// | 5xxx  | raw QUIC streams |
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum IrohError {
@@ -58,6 +59,29 @@ pub enum IrohError {
     /// A gossip payload exceeded the topic's maximum message size.
     #[error("gossip message too large: {0}")]
     GossipMessageTooLarge(String),
+    /// Listening for inbound connections on a custom ALPN failed.
+    #[error("failed to listen on alpn: {0}")]
+    StreamListen(String),
+    /// Dialing a peer on a custom ALPN failed.
+    #[error("failed to connect: {0}")]
+    StreamConnect(String),
+    /// Opening a bidirectional stream on a connection failed.
+    #[error("failed to open stream: {0}")]
+    StreamOpen(String),
+    /// Writing to a stream failed.
+    #[error("failed to send on stream: {0}")]
+    StreamSend(String),
+    /// The stream or its connection is closed.
+    #[error("stream closed: {0}")]
+    StreamClosed(String),
+    /// A framed payload exceeded the maximum frame size.
+    #[error("stream frame too large: {0}")]
+    StreamFrameTooLarge(String),
+    /// The host fell behind the inbound byte stream and buffered chunks had to
+    /// be discarded. Raised by the TypeScript layer, which owns the buffer;
+    /// the code lives here so the taxonomy stays in one place.
+    #[error("stream overflow: {0}")]
+    StreamOverflow(String),
 }
 
 impl IrohError {
@@ -80,6 +104,13 @@ impl IrohError {
             IrohError::GossipSubscribe(_) => 4000,
             IrohError::GossipBroadcast(_) => 4001,
             IrohError::GossipMessageTooLarge(_) => 4002,
+            IrohError::StreamListen(_) => 5000,
+            IrohError::StreamConnect(_) => 5001,
+            IrohError::StreamOpen(_) => 5002,
+            IrohError::StreamSend(_) => 5003,
+            IrohError::StreamClosed(_) => 5004,
+            IrohError::StreamFrameTooLarge(_) => 5005,
+            IrohError::StreamOverflow(_) => 5006,
         }
     }
 }
@@ -129,6 +160,13 @@ mod tests {
             (IrohError::GossipSubscribe("x".into()), 4000),
             (IrohError::GossipBroadcast("x".into()), 4001),
             (IrohError::GossipMessageTooLarge("x".into()), 4002),
+            (IrohError::StreamListen("x".into()), 5000),
+            (IrohError::StreamConnect("x".into()), 5001),
+            (IrohError::StreamOpen("x".into()), 5002),
+            (IrohError::StreamSend("x".into()), 5003),
+            (IrohError::StreamClosed("x".into()), 5004),
+            (IrohError::StreamFrameTooLarge("x".into()), 5005),
+            (IrohError::StreamOverflow("x".into()), 5006),
         ];
         for (err, code) in cases {
             assert_eq!(err.code(), code, "code changed for {err:?}");

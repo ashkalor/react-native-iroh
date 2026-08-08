@@ -5,11 +5,14 @@
 //! Endpoints are addressed by opaque [`EndpointHandle`]s held in a
 //! process-wide registry.
 
-use std::{path::PathBuf, sync::Arc, sync::LazyLock, time::Duration};
+use std::{
+    collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, sync::LazyLock, time::Duration,
+};
 
 use iroh::{
     address_lookup::memory::MemoryLookup, endpoint::presets, endpoint::TransportAddrUsage,
-    protocol::Router, Endpoint, EndpointAddr, RelayMode, RelayUrl, TransportAddr, Watcher,
+    protocol::Router, Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, TransportAddr,
+    Watcher,
 };
 use iroh_blobs::{
     api::blobs::{ExportMode, ImportMode},
@@ -26,6 +29,7 @@ use crate::{
     require_absolute,
     runtime::runtime,
     spawn_completing,
+    streams::{inbound_alpn_channel, validate_alpns, InboundQueue},
 };
 
 /// Opaque handle to a live endpoint. `0` is never a valid handle.
@@ -68,6 +72,10 @@ pub struct EndpointConfig {
     /// Relay configuration as a delimited string, or `None` to inherit the
     /// preset's default. See [`parse_relay_mode`] for the accepted syntax.
     pub relay_mode: Option<String>,
+    /// Custom ALPN protocol names the endpoint accepts inbound connections on
+    /// (see [`crate::streams`]). Fixed here because the router's ALPN set is
+    /// fixed when it spawns, which happens during [`endpoint_create`].
+    pub alpns: Vec<String>,
 }
 
 /// Parses the bridge's `relay_mode` field into an [`iroh::RelayMode`].
@@ -168,6 +176,10 @@ pub(crate) struct EndpointState {
     /// with the endpoint's address-lookup chain at creation; entries are added
     /// to it thereafter.
     pub(crate) bootstrap_lookup: MemoryLookup,
+    /// One inbound connection queue per ALPN declared in
+    /// [`EndpointConfig::alpns`], keyed by the ALPN name that
+    /// [`crate::streams::stream_listen`] attaches to.
+    pub(crate) inbound_alpns: HashMap<String, InboundQueue>,
     router: Router,
 }
 
@@ -199,9 +211,10 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .map(|dir| require_absolute(dir, "blob store dir"))
         .transpose()?;
 
-    // Parse the relay override before any async work so a bad relay config
-    // fails fast, before sockets are bound or the store is touched.
+    // Parse the relay override and the custom ALPNs before any async work so a
+    // bad config fails fast, before sockets are bound or the store is touched.
     let relay_mode = parse_relay_mode(config.relay_mode.as_deref())?;
+    validate_alpns(&config.alpns)?;
     let preset = config.preset;
     let bind = async {
         let builder = match preset {
@@ -250,10 +263,19 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     // unaffected. The gossip instance shares the endpoint and is driven by
     // `crate::gossip`.
     let gossip = Gossip::builder().spawn(endpoint.clone());
-    let router = Router::builder(endpoint.clone())
+    let mut builder = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
-        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
-        .spawn();
+        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone());
+    // Custom ALPNs are additive on the same router. Each gets a queue the
+    // handler fills and a listener drains; `validate_alpns` has already refused
+    // any name that would shadow the two protocols registered above.
+    let mut inbound_alpns = HashMap::with_capacity(config.alpns.len());
+    for alpn in &config.alpns {
+        let (handler, queue) = inbound_alpn_channel();
+        builder = builder.accept(alpn.as_bytes(), handler);
+        inbound_alpns.insert(alpn.clone(), queue);
+    }
+    let router = builder.spawn();
 
     let bootstrap_lookup = MemoryLookup::new();
     endpoint
@@ -267,6 +289,7 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         preset: config.preset,
         gossip,
         bootstrap_lookup,
+        inbound_alpns,
         router,
     });
     Ok(EndpointHandle(handle))
@@ -319,6 +342,51 @@ fn addr_info(addr: &EndpointAddr) -> EndpointAddrInfo {
         relay_urls,
         direct_addrs,
     }
+}
+
+/// Parses one `EndpointAddr` JSON object (the shape [`addr_info`] is serialized
+/// to: `{ id, relayUrls, directAddrs }`) back into an [`EndpointAddr`].
+///
+/// This is the one place structured addressing input is parsed, shared by every
+/// caller that accepts a peer address from the host ([`crate::gossip`] bootstrap
+/// peers, [`crate::streams`] dial targets). Failures are plain messages so each
+/// caller can wrap them in the error variant its own API documents.
+pub(crate) fn parse_endpoint_addr(json: &str) -> std::result::Result<EndpointAddr, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("addr json is invalid: {e}"))?;
+    let id_str = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| String::from("addr is missing id"))?;
+    let id: EndpointId = id_str
+        .parse()
+        .map_err(|e| format!("endpoint id is invalid: {e}"))?;
+
+    let mut transports: Vec<TransportAddr> = Vec::new();
+    for relay in json_strings(&value, "relayUrls") {
+        let url: RelayUrl = relay
+            .parse()
+            .map_err(|e| format!("relay url {relay:?} is invalid: {e}"))?;
+        transports.push(TransportAddr::Relay(url));
+    }
+    for direct in json_strings(&value, "directAddrs") {
+        let socket: SocketAddr = direct
+            .parse()
+            .map_err(|e| format!("direct addr {direct:?} is invalid: {e}"))?;
+        transports.push(TransportAddr::Ip(socket));
+    }
+    Ok(EndpointAddr::from_parts(id, transports))
+}
+
+/// The string members of `value[key]`, or nothing when the key is absent, not
+/// an array, or holds non-string entries.
+fn json_strings<'a>(value: &'a serde_json::Value, key: &str) -> impl Iterator<Item = &'a str> {
+    value
+        .get(key)
+        .and_then(|found| found.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str())
 }
 
 /// Returns the endpoint's current address (its id plus the relay and direct
@@ -560,6 +628,7 @@ mod tests {
             preset: NetworkPreset::Minimal,
             blob_store_dir: Some(PathBuf::from("relative/store")),
             relay_mode: None,
+            alpns: Vec::new(),
         });
         assert!(matches!(result, Err(IrohError::InvalidPath(_))));
     }
@@ -650,6 +719,7 @@ mod tests {
             preset: NetworkPreset::Minimal,
             blob_store_dir: None,
             relay_mode: Some("disabled".into()),
+            alpns: Vec::new(),
         })
         .expect("endpoint with disabled relay binds");
         close_endpoint_blocking(handle).expect("close succeeded");

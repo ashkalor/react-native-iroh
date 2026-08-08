@@ -133,4 +133,48 @@ describe("MessageQueue termination", () => {
     expect(result.done).toBe(true);
     expect(queue.isClosed).toBe(true);
   });
+
+  it("hands overflow-evicted values to the drop hook", () => {
+    const dropped: number[] = [];
+    const queue = new MessageQueue<number>({ capacity: 2, onDropped: (v) => dropped.push(v) });
+    queue.push(1);
+    queue.push(2);
+    queue.push(3);
+    expect(dropped).toEqual([1]);
+  });
+
+  it("hands values still buffered at close to the drop hook", () => {
+    const dropped: number[] = [];
+    const queue = new MessageQueue<number>({ onDropped: (v) => dropped.push(v) });
+    queue.push(1);
+    queue.push(2);
+    queue.close();
+    expect(dropped).toEqual([1, 2]);
+  });
+
+  it("does not drop values that were delivered", async () => {
+    const dropped: number[] = [];
+    const queue = new MessageQueue<number>({ onDropped: (v) => dropped.push(v) });
+    queue.push(1);
+    expect((await queue.next()).value).toBe(1);
+    queue.close();
+    expect(dropped).toEqual([]);
+  });
+
+  it("keeps producing when the drop hook throws", () => {
+    const original = console.error;
+    console.error = () => {};
+    try {
+      const queue = new MessageQueue<number>({
+        capacity: 1,
+        onDropped: () => {
+          throw new Error("hook exploded");
+        },
+      });
+      queue.push(1);
+      expect(() => queue.push(2)).not.toThrow();
+    } finally {
+      console.error = original;
+    }
+  });
 });

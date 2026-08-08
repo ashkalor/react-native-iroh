@@ -15,6 +15,7 @@ package.
 | 3    | [share-file.ts](./share-file.ts)                 | `blobs.share`: import a file, get a `BlobTicket`                |
 | 4    | [download-progress.tsx](./download-progress.tsx) | `blobs.download` + `for await` progress in a React Native UI    |
 | 5    | [cancel-and-errors.ts](./cancel-and-errors.ts)   | Cancelling transfers and narrowing `IrohError` kinds            |
+| 6    | [echo-protocol.ts](./echo-protocol.ts)           | `streams.listen` / `streams.connect`: your own ALPN protocol    |
 
 ## Roadmap slots
 
@@ -29,5 +30,3 @@ yet.
   full working screen in the meantime.
 - `hooks` - the same flows written with the `react-native-iroh/hooks` layer
   (`useEndpoint`, `useTransfer`, `useGossip`).
-- `echo-protocol` - accept a custom ALPN protocol on the endpoint's router.
-  Custom protocols are not exposed yet.

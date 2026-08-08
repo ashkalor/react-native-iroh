@@ -23,4 +23,5 @@ pub struct EndpointConfig {
     pub preset: NetworkPreset,
     pub blob_store_dir: Option<String>,
     pub relay_mode: Option<String>,
+    pub alpns: Option<String>,
 }

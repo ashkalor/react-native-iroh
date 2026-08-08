@@ -16,6 +16,13 @@ const KIND_BY_CODE = {
   4000: "gossip-subscribe",
   4001: "gossip-broadcast",
   4002: "gossip-message-too-large",
+  5000: "stream-listen",
+  5001: "stream-connect",
+  5002: "stream-open",
+  5003: "stream-send",
+  5004: "stream-closed",
+  5005: "stream-frame-too-large",
+  5006: "stream-overflow",
 } as const;
 
 type KindByCode = typeof KIND_BY_CODE;
