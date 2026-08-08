@@ -84,6 +84,30 @@ impl IrohError {
     }
 }
 
+/// Renders `error` together with its whole `source` chain, joined by `": "`.
+///
+/// Several of the errors this crate wraps carry the useful part in `source`
+/// rather than in `Display`. `iroh_blobs::get::error::GetError::LocalFailure`
+/// is the worst case: it renders as the bare string `"local failure"` and the
+/// actual cause is only reachable through `source`, so formatting it with
+/// `{e}` alone discards the one detail a caller needs. Everything that crosses
+/// the FFI boundary as a message string should go through this.
+pub fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut rendered = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        // `#[error(transparent)]` wrappers repeat their source verbatim; adding
+        // the same sentence twice reads like two distinct failures.
+        if !rendered.ends_with(&text) {
+            rendered.push_str(": ");
+            rendered.push_str(&text);
+        }
+        source = cause.source();
+    }
+    rendered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +141,66 @@ mod tests {
         assert_eq!(err.to_string(), "invalid blob ticket: bad base32");
         let err = IrohError::InvalidHandle(42);
         assert_eq!(err.to_string(), "invalid or stale handle: 42");
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer")]
+    struct Outer {
+        source: Middle,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("middle")]
+    struct Middle {
+        source: std::io::Error,
+    }
+
+    #[test]
+    fn error_chain_appends_every_source() {
+        let err = Outer {
+            source: Middle {
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "disk on fire"),
+            },
+        };
+        assert_eq!(error_chain(&err), "outer: middle: disk on fire");
+    }
+
+    #[test]
+    fn error_chain_keeps_a_sourceless_error_intact() {
+        let err = std::io::Error::other("standalone");
+        assert_eq!(error_chain(&err), "standalone");
+    }
+
+    /// A `#[error(transparent)]` wrapper renders exactly as its source, so
+    /// naively appending would print the same sentence twice.
+    #[test]
+    fn error_chain_does_not_repeat_a_transparent_wrapper() {
+        #[derive(Debug, thiserror::Error)]
+        #[error(transparent)]
+        struct Transparent {
+            source: std::io::Error,
+        }
+
+        let err = Transparent {
+            source: std::io::Error::other("only once"),
+        };
+        assert_eq!(error_chain(&err), "only once");
+    }
+
+    /// The case this exists for: an error whose `Display` hides the cause
+    /// entirely, as `iroh_blobs`' `GetError::LocalFailure` does.
+    #[test]
+    fn error_chain_recovers_a_cause_hidden_behind_an_opaque_display() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("local failure")]
+        struct Opaque {
+            source: std::io::Error,
+        }
+
+        let err = Opaque {
+            source: std::io::Error::other("store write refused"),
+        };
+        assert_eq!(err.to_string(), "local failure");
+        assert_eq!(error_chain(&err), "local failure: store write refused");
     }
 }

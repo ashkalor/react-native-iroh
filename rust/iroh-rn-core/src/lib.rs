@@ -18,6 +18,8 @@
 #![allow(non_snake_case)]
 #![warn(missing_docs)]
 
+#[cfg(target_os = "android")]
+pub mod android_context;
 pub mod blobs;
 mod coalesce;
 pub mod endpoint;
@@ -25,6 +27,7 @@ pub mod error;
 mod ffi;
 pub mod gossip;
 mod hybrid_iroh;
+pub mod logging;
 pub(crate) mod registry;
 mod runtime;
 #[doc(hidden)]

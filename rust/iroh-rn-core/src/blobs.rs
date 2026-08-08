@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     endpoint::{endpoint_state, EndpointHandle, NetworkPreset},
-    error::{IrohError, Result},
+    error::{error_chain, IrohError, Result},
     guarded_callback,
     registry::Registry,
     require_absolute,
@@ -61,8 +61,8 @@ static TRANSFERS: LazyLock<Registry<TransferState>> = LazyLock::new(Registry::ne
 /// Imports the file at `path` into the endpoint's blob store and produces a
 /// shareable ticket string via `on_complete`.
 ///
-/// `path` must be absolute. With a persistent blob store the file is
-/// referenced in place (no byte copy); an in-memory store must read it.
+/// `path` must be absolute. The bytes are copied into the store, so the caller
+/// stays free to move, change or delete the file afterwards.
 pub fn blob_share(
     endpoint: EndpointHandle,
     path: PathBuf,
@@ -267,7 +267,7 @@ async fn collection_manifest_inner(
         .endpoint
         .connect(ticket.addr().clone(), iroh_blobs::ALPN)
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("connect: {e}")))?;
+        .map_err(|e| IrohError::BlobDownload(format!("connect: {}", error_chain(&e))))?;
     let remote = state.store.api().remote();
 
     // Fetch just the HashSeq root blob (Raw, non-recursive), then read it to
@@ -276,14 +276,18 @@ async fn collection_manifest_inner(
     remote
         .fetch(connection.clone(), HashAndFormat::raw(root))
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("fetch collection root: {e}")))?;
+        .map_err(|e| {
+            IrohError::BlobDownload(format!("fetch collection root: {}", error_chain(&e)))
+        })?;
     let root_bytes = state
         .store
         .api()
         .blobs()
         .get_bytes(root)
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("read collection root: {e}")))?;
+        .map_err(|e| {
+            IrohError::BlobDownload(format!("read collection root: {}", error_chain(&e)))
+        })?;
     let hash_seq = HashSeq::new(root_bytes)
         .ok_or_else(|| IrohError::InvalidTicket("collection root is not a hash sequence".into()))?;
     let meta_hash = hash_seq
@@ -293,11 +297,13 @@ async fn collection_manifest_inner(
     remote
         .fetch(connection.clone(), HashAndFormat::raw(meta_hash))
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("fetch collection metadata: {e}")))?;
+        .map_err(|e| {
+            IrohError::BlobDownload(format!("fetch collection metadata: {}", error_chain(&e)))
+        })?;
 
     let collection = Collection::load(root, state.store.api())
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("load collection: {e}")))?;
+        .map_err(|e| IrohError::BlobDownload(format!("load collection: {}", error_chain(&e))))?;
     let provider = ticket.addr().clone();
     let entries = collection
         .iter()
@@ -393,7 +399,7 @@ async fn download_inner(
         .endpoint
         .connect(ticket.addr().clone(), iroh_blobs::ALPN)
         .await
-        .map_err(|e| IrohError::BlobDownload(format!("connect: {e}")))?;
+        .map_err(|e| IrohError::BlobDownload(format!("connect: {}", error_chain(&e))))?;
 
     let mut stream = state
         .store
@@ -411,7 +417,7 @@ async fn download_inner(
                 finished = true;
             }
             GetProgressItem::Error(e) => {
-                return Err(IrohError::BlobDownload(e.to_string()));
+                return Err(IrohError::BlobDownload(error_chain(&e)));
             }
         }
     }
@@ -434,16 +440,15 @@ async fn download_inner(
             target: dest_path,
         })
         .await
-        .map_err(|e| IrohError::BlobExport(e.to_string()))?;
+        .map_err(|e| IrohError::BlobExport(error_chain(&e)))?;
     Ok(())
 }
 
 /// Removes an existing file at the export target so a download overwrites it.
 ///
-/// Persistent stores export with [`ExportMode::TryReference`], which hard-links
-/// the blob into place and therefore fails with a bare `EEXIST` if anything is
-/// already there. Downloading twice to the same path is ordinary usage, so the
-/// destination is cleared first rather than surfacing an opaque I/O error.
+/// Exporting fails with a bare `EEXIST` if anything is already at the target,
+/// and downloading twice to the same path is ordinary usage, so the destination
+/// is cleared first rather than surfacing an opaque I/O error.
 ///
 /// A directory is never removed: recursively deleting whatever the caller
 /// pointed at is far more destructive than refusing, so that case fails with an
@@ -486,6 +491,35 @@ mod tests {
 
     fn close(handle: EndpointHandle) {
         close_endpoint_blocking(handle).expect("endpoint closed");
+    }
+
+    fn share_blocking(endpoint: EndpointHandle, path: PathBuf) -> String {
+        let (tx, rx) = mpsc::channel();
+        blob_share(endpoint, path, move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT)
+            .expect("share completed")
+            .expect("shared")
+    }
+
+    fn download_blocking(
+        endpoint: EndpointHandle,
+        ticket: &str,
+        dest: &std::path::Path,
+    ) -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            endpoint,
+            ticket,
+            dest.to_path_buf(),
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+        rx.recv_timeout(TIMEOUT).expect("download completed")
     }
 
     #[test]
@@ -581,6 +615,182 @@ mod tests {
     /// export with `TryReference`, which hard-links the blob and fails with a
     /// bare `EEXIST` if anything is already at the target, so without clearing
     /// it first the second download dies with an opaque I/O error.
+    /// Reproduces the two-device failure: a persistent store imports with
+    /// `ImportMode::TryReference`, so it points at the source file rather than
+    /// copying it. Replacing that file after sharing leaves the store holding a
+    /// reference to an unlinked inode, and the provider can no longer serve the
+    /// blob even though the bytes on disk are byte-identical.
+    /// Upstream reproduction attempt: interrupt a download mid-transfer so the
+    /// store is left holding partial state for that hash, then ask for it again.
+    /// On device this is what a network change does, and the retry is where
+    /// `poisoned storage should not be used` fires.
+    #[test]
+    fn retrying_an_interrupted_download_does_not_poison_the_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        // Large enough that the transfer cannot finish before the first
+        // progress event arrives and we cancel it.
+        std::fs::write(&src, vec![9u8; 48 * 1024 * 1024]).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src, move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        let dest = dir.path().join("out.bin");
+        let (done_tx, done_rx) = mpsc::channel();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let handle = blob_download(
+            receiver,
+            &ticket,
+            dest.clone(),
+            move |_bytes| {
+                seen_tx.send(()).ok();
+            },
+            move |result| {
+                done_tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+
+        // Cancel as soon as bytes are moving, leaving partial state behind.
+        seen_rx.recv_timeout(TIMEOUT).expect("progress observed");
+        blob_download_cancel(handle).expect("cancelled");
+        let first = done_rx.recv_timeout(TIMEOUT).unwrap();
+        assert!(first.is_err(), "expected the cancel to fail the transfer");
+
+        // The retry is the operation that has to reload the partial state.
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket,
+            dest,
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("retry started");
+        let retry = rx.recv_timeout(TIMEOUT).unwrap();
+        assert!(
+            retry.is_ok(),
+            "retry after an interrupted download failed: {retry:?}"
+        );
+    }
+
+    /// The same fault on the import side, where it surfaces to the receiver as
+    /// `stream reset by peer` rather than as a local failure.
+    #[test]
+    fn deleting_a_shared_source_file_does_not_poison_the_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        // Above the 16 KiB inline threshold, so the entry references a file.
+        let bytes = vec![5u8; 256 * 1024];
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let ticket = share_blocking(provider, src.clone());
+
+        // The caller deletes their own file after sharing it.
+        std::fs::remove_file(&src).expect("remove source");
+
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+        let dest = dir.path().join("out.bin");
+        let outcome = download_blocking(receiver, &ticket, &dest);
+        assert!(
+            outcome.is_ok(),
+            "serving a blob failed after the caller deleted the source file: {outcome:?}"
+        );
+        assert_eq!(std::fs::read(&dest).expect("read back"), bytes);
+
+        close(receiver);
+        close(provider);
+    }
+
+    #[test]
+    fn sharing_survives_the_source_file_being_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        let bytes = vec![7u8; 64 * 1024];
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let (tx, rx) = mpsc::channel();
+        blob_share(provider, src.clone(), move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("shared");
+
+        // What resetPairDirs() does to the example app's source on every run.
+        std::fs::remove_file(&src).expect("remove");
+        std::fs::write(&src, &bytes).expect("rewrite");
+
+        let dest = dir.path().join("downloaded.bin");
+        let (tx, rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket,
+            dest.clone(),
+            |_| {},
+            move |result| {
+                tx.send(result).ok();
+            },
+        )
+        .expect("download started");
+        let outcome = rx.recv_timeout(TIMEOUT).unwrap();
+        assert!(
+            outcome.is_ok(),
+            "download failed after the source file was replaced: {outcome:?}"
+        );
+        assert_eq!(std::fs::read(&dest).expect("read back"), bytes);
+    }
+
+    /// Reproduces the two-device failure: `ExportMode::TryReference` renamed the
+    /// store's data file onto the destination, so deleting the download left the
+    /// metadata pointing at nothing and poisoned the entry for good.
+    #[test]
+    fn deleting_a_downloaded_file_does_not_poison_the_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("payload.bin");
+        // Above `max_data_inlined` (16 KiB), or the blob is inlined into the
+        // metadata db and no path exists to invalidate.
+        let bytes = vec![3u8; 256 * 1024];
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let ticket = share_blocking(provider, src);
+
+        let receiver_store = dir.path().join("receiver-store");
+        let dest = dir.path().join("out.bin");
+
+        let receiver = create_minimal_endpoint(Some(receiver_store.clone()));
+        download_blocking(receiver, &ticket, &dest).expect("first download");
+        assert_eq!(std::fs::read(&dest).expect("read back"), bytes);
+        close(receiver);
+
+        // What `resetPairDirs()` does to `iroh-pair/blob-in` on every run.
+        std::fs::remove_file(&dest).expect("remove download");
+
+        // Reopening forces the entry back out of the metadata db, which is where
+        // a missing data file becomes a poisoned one.
+        let receiver = create_minimal_endpoint(Some(receiver_store));
+        let retry = download_blocking(receiver, &ticket, &dest);
+        assert!(
+            retry.is_ok(),
+            "re-downloading after the caller deleted the file failed: {retry:?}"
+        );
+        assert_eq!(std::fs::read(&dest).expect("read back"), bytes);
+
+        close(receiver);
+        close(provider);
+    }
+
     #[test]
     fn downloading_twice_to_the_same_path_overwrites() {
         let dir = tempfile::tempdir().expect("tempdir");
