@@ -15,34 +15,39 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                                | Android                          | iOS                              |
-| ---------------------------------------------------------------------- | -------------------------------- | -------------------------------- |
-| Endpoint create / close                                                | Validated (device + emulator)    | Validated (device + sim)         |
-| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator)    | Validated (device + sim)         |
-| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator)    | Validated (device)               |
-| Relay mode (`relayMode`)                                               | Validated (emulator)             | Validated (simulator)            |
-| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator)    | Validated (device)               |
-| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)               | Validated (device)               |
-| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Code-complete, roundtrip pending | Code-complete, roundtrip pending |
+| Feature                                                                | Android                       | iOS                              |
+| ---------------------------------------------------------------------- | ----------------------------- | -------------------------------- |
+| Endpoint create / close                                                | Validated (device + emulator) | Validated (device + sim)         |
+| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator) | Validated (device + sim)         |
+| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator) | Validated (device)               |
+| Relay mode (`relayMode`)                                               | Validated (emulator)          | Validated (simulator)            |
+| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator) | Validated (device)               |
+| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)               |
+| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)          | Code-complete, roundtrip pending |
 
 ### Raw QUIC streams
 
-Added in 0.2.1 and not yet run on any device or emulator, which is why both
-cells read "Code-complete, roundtrip pending" rather than Validated.
+Added in 0.2.1. On Android this is now exercised on-device: the smoke suite
+listens on a custom ALPN, dials it from a second in-process endpoint, opens one
+bidirectional stream, sends two framed payloads (5 bytes and 5000 bytes), and
+the listener echoes each back. Both directions are asserted for exact byte
+equality and the two framed chunks arrive with their boundaries intact, so the
+`ArrayBuffer` chunk path (the first use of a typed-array parameter in this
+package's native surface) is proven across the Nitro bridge on the emulator. iOS
+has not run this yet, which is why its cell stays "Code-complete, roundtrip
+pending".
 
-What has been exercised: the Rust core's own test suite drives a real
-loopback roundtrip between two minimal-preset endpoints in process, covering
-both framing modes, message-boundary preservation under `framed`, stream and
-connection teardown in each direction, the frame-size limit, and a dial on an
-ALPN the peer never declared. The TypeScript layer is covered by unit tests
-against a mocked bridge. Neither of those is a device run: nothing has yet
-crossed the Nitro bridge on Android or iOS, so the `ArrayBuffer` chunk path in
-particular (the first use of a typed-array parameter in this package's native
-surface) is unproven on real hardware.
+Also exercised off-device: the Rust core's own test suite drives a real loopback
+roundtrip between two minimal-preset endpoints in process, covering both framing
+modes, message-boundary preservation under `framed`, stream and connection
+teardown in each direction, the frame-size limit, and a dial on an ALPN the peer
+never declared. The TypeScript layer is covered by unit tests against a mocked
+bridge.
 
-Promoting these cells needs the same evidence the other rows carry: two
-endpoints on real devices, a stream in each direction, and bytes compared on
-arrival.
+What is still not covered on either platform is a two-_device_ streams roundtrip
+over the relay (as opposed to the in-process loopback above): a stream between
+two separate handsets, bytes compared on arrival, the way the cross-platform
+transfer row is validated.
 
 ### Cross-platform transfer
 

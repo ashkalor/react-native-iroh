@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { Endpoint, IrohError, parseTicket } from "react-native-iroh";
-import type { EndpointAddr } from "react-native-iroh";
+import type { EndpointAddr, Stream } from "react-native-iroh";
 import { smokeAborted, smokeReport, smokeResult } from "./markers";
 import { SYSTEM_FILE_CANDIDATES, resetSmokeDir, shareFirstReadable } from "./paths";
 import { sectionStyles } from "./theme";
@@ -10,6 +10,75 @@ interface CheckResult {
   name: string;
   pass: boolean;
   detail: string;
+}
+
+const STREAMS_ALPN = "iroh-rn-smoke/streams/1";
+
+function bytesEqual(a: Uint8Array | undefined, b: Uint8Array): boolean {
+  if (!a || a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function rampBytes(length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = i % 256;
+  }
+  return out;
+}
+
+async function firstWithin<T>(
+  iterable: AsyncIterable<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const iterator = iterable[Symbol.asyncIterator]();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout waiting for ${label}`)), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([iterator.next(), timeout]);
+    if (result.done) {
+      throw new Error(`${label} ended before yielding`);
+    }
+    return result.value;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readChunksWithin(
+  stream: Stream,
+  count: number,
+  timeoutMs: number,
+  label: string,
+): Promise<Uint8Array[]> {
+  const iterator = stream.data[Symbol.asyncIterator]();
+  const chunks: Uint8Array[] = [];
+  while (chunks.length < count) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timeout reading ${label}`)), timeoutMs);
+    });
+    try {
+      const result = await Promise.race([iterator.next(), timeout]);
+      if (result.done) {
+        break;
+      }
+      chunks.push(result.value);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return chunks;
 }
 
 /**
@@ -36,6 +105,7 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
     preset: "minimal",
     relayMode: "disabled",
     blobStoreDir: `${smokeDir}/provider-store`,
+    alpns: [STREAMS_ALPN],
   });
   check("Endpoint.create provider", provider.isOpen, "provider endpoint (relay disabled) open");
   const receiver = await Endpoint.create({
@@ -172,6 +242,51 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
       invalidTicketError.kind === "invalid-ticket",
     `rejected with IrohError code=1002 kind=invalid-ticket`,
   );
+
+  // Raw QUIC streams over a custom ALPN. This is the first typed-array
+  // (ArrayBuffer) parameter to cross the Nitro bridge in the package, so it is
+  // the on-device proof that bytes survive the bridge in both directions and
+  // that framed sends keep their message boundaries. The receiver dials the
+  // provider's direct address (relay is disabled), opens one bidirectional
+  // stream, sends two framed payloads, and the provider echoes each back.
+  const listener = provider.streams.listen(STREAMS_ALPN);
+  const smallPayload = new Uint8Array([1, 2, 3, 4, 5]);
+  const largePayload = rampBytes(5000);
+  const serverEcho = (async () => {
+    const connection = await firstWithin(listener.connections, 5000, "server connection");
+    const stream = await firstWithin(connection.incoming, 5000, "server stream");
+    const inbound = await readChunksWithin(stream, 2, 5000, "server chunks");
+    for (const chunk of inbound) {
+      await stream.send(chunk);
+    }
+    return inbound;
+  })();
+
+  const clientConnection = await receiver.streams.connect(provider.addr, STREAMS_ALPN);
+  const clientStream = await clientConnection.openStream();
+  await clientStream.send(smallPayload);
+  await clientStream.send(largePayload);
+  const echoes = await readChunksWithin(clientStream, 2, 5000, "client echoes");
+  const serverReceived = await serverEcho;
+
+  check(
+    "streams framed receive",
+    serverReceived.length === 2 &&
+      bytesEqual(serverReceived[0], smallPayload) &&
+      bytesEqual(serverReceived[1], largePayload),
+    `${serverReceived.length} framed chunks, boundaries preserved`,
+  );
+  check(
+    "streams echo roundtrip",
+    echoes.length === 2 &&
+      bytesEqual(echoes[0], smallPayload) &&
+      bytesEqual(echoes[1], largePayload),
+    `${echoes.reduce((total, chunk) => total + chunk.length, 0)} bytes returned across the bridge`,
+  );
+
+  clientStream.close();
+  clientConnection.close();
+  listener.close();
 
   await provider.close();
   await receiver.close();
