@@ -56,6 +56,10 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("docsDeletePrefix", &HybridIrohSpec::docsDeletePrefix);
       prototype.registerHybridMethod("docsShare", &HybridIrohSpec::docsShare);
       prototype.registerHybridMethod("docsGetContent", &HybridIrohSpec::docsGetContent);
+      prototype.registerHybridMethod("docsSubscribe", &HybridIrohSpec::docsSubscribe);
+      prototype.registerHybridMethod("docsUnsubscribe", &HybridIrohSpec::docsUnsubscribe);
+      prototype.registerHybridMethod("docsStartSync", &HybridIrohSpec::docsStartSync);
+      prototype.registerHybridMethod("docsLeave", &HybridIrohSpec::docsLeave);
       prototype.registerHybridMethod("parseDocTicket", &HybridIrohSpec::parseDocTicket);
     });
   }

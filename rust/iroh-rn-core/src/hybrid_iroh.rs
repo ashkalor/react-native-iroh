@@ -33,8 +33,9 @@ use crate::{
     docs::{
         authors_create, authors_default, authors_import, authors_list, docs_create,
         docs_delete_prefix, docs_drop, docs_get_content, docs_get_exact, docs_get_many,
-        docs_import, docs_list, docs_open, docs_set_bytes, docs_share, parse_doc_ticket,
-        DocEntryInfo, DocTicketInfo,
+        docs_import, docs_leave, docs_list, docs_open, docs_set_bytes, docs_share, docs_start_sync,
+        docs_subscribe, docs_unsubscribe, parse_doc_ticket, DocEntryInfo, DocTicketInfo,
+        DocsSubHandle,
     },
     endpoint::{
         endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
@@ -764,6 +765,54 @@ impl HybridIrohSpec for HybridIroh {
     fn docs_get_content(&self, endpoint: f64, hash: String, promise: Completer<NitroBuffer>) {
         docs_get_content(endpoint_handle(endpoint), hash, move |result| {
             promise(result.map(NitroBuffer::from_vec).map_err(encode_error));
+        });
+    }
+
+    fn docs_subscribe(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_event: Box<dyn Fn(String) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        // Set-up errors (stale endpoint, docs disabled) surface synchronously;
+        // the handle is delivered later via on_start once the stream is live.
+        docs_subscribe(
+            endpoint_handle(endpoint),
+            namespace_id,
+            move |handle| on_start(handle.raw() as f64),
+            on_event,
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map_err(encode_error)
+    }
+
+    fn docs_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
+        docs_unsubscribe(DocsSubHandle::from_raw(sub_id as u64));
+        Ok(())
+    }
+
+    fn docs_start_sync(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        peers_joined: String,
+        promise: Completer<()>,
+    ) {
+        docs_start_sync(
+            endpoint_handle(endpoint),
+            namespace_id,
+            peers_joined,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_leave(&self, endpoint: f64, namespace_id: String, promise: Completer<()>) {
+        docs_leave(endpoint_handle(endpoint), namespace_id, move |result| {
+            promise(result.map_err(encode_error));
         });
     }
 

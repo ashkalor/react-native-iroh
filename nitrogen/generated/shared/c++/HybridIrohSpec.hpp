@@ -98,6 +98,10 @@ namespace margelo::nitro::iroh {
       virtual std::shared_ptr<Promise<double>> docsDeletePrefix(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& prefix) = 0;
       virtual std::shared_ptr<Promise<std::string>> docsShare(double endpoint, const std::string& namespaceId, const std::string& mode) = 0;
       virtual std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>> docsGetContent(double endpoint, const std::string& hash) = 0;
+      virtual void docsSubscribe(double endpoint, const std::string& namespaceId, const std::function<void(double /* subId */)>& onStart, const std::function<void(const std::string& /* event */)>& onEvent, const std::function<void(const std::string& /* event */)>& onClose) = 0;
+      virtual void docsUnsubscribe(double subId) = 0;
+      virtual std::shared_ptr<Promise<void>> docsStartSync(double endpoint, const std::string& namespaceId, const std::string& peersJoined) = 0;
+      virtual std::shared_ptr<Promise<void>> docsLeave(double endpoint, const std::string& namespaceId) = 0;
       virtual std::string parseDocTicket(const std::string& ticket) = 0;
 
     protected:

@@ -130,6 +130,16 @@ export interface DocsCall {
   args: unknown[];
 }
 
+/** One recorded native docsSubscribe call, drivable by the test. */
+export interface DocsSubscribeCall {
+  endpoint: number;
+  namespaceId: string;
+  subId: number;
+  onStart: (subId: number) => void;
+  onEvent: (event: string) => void;
+  onClose: (event: string) => void;
+}
+
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
@@ -159,6 +169,12 @@ export interface MockBinding {
   closedStreams: number[];
   /** Every recorded docs/authors native call, in order. */
   docsCalls: DocsCall[];
+  /** Every recorded docsSubscribe call, drivable by the test. */
+  docsSubscribes: DocsSubscribeCall[];
+  /** Every subId passed to docsUnsubscribe, in order. */
+  docsUnsubscribes: number[];
+  /** When false, docsSubscribe does not auto-fire onStart (the test drives it). */
+  autoStartDocsSub: boolean;
   /** Configurable return values for the docs bridge methods. */
   docsReturns: {
     authorsDefault: string;
@@ -207,6 +223,9 @@ export interface MockBinding {
     streamConnect?: Error;
     streamSubscribe?: Error;
     streamConnectionSubscribe?: Error;
+    docsSubscribe?: Error;
+    docsStartSync?: Error;
+    docsLeave?: Error;
   };
 }
 
@@ -481,6 +500,40 @@ export function createMockBinding(): MockBinding {
         mock.docsCalls.push({ method: "docsGetContent", endpoint, args: [hash] });
         return Promise.resolve(mock.docsReturns.docsGetContent);
       },
+      docsSubscribe: (endpoint, namespaceId, onStart, onEvent, onClose) => {
+        if (mock.failures.docsSubscribe !== undefined) {
+          throw mock.failures.docsSubscribe;
+        }
+        const subId = nextSubId;
+        nextSubId += 1;
+        mock.docsSubscribes.push({ endpoint, namespaceId, subId, onStart, onEvent, onClose });
+        // Native delivers the id asynchronously once the stream is live; the mock
+        // fires it synchronously by default (opt out with autoStartDocsSub = false).
+        if (mock.autoStartDocsSub) {
+          onStart(subId);
+        }
+      },
+      docsUnsubscribe: (subId) => {
+        mock.docsUnsubscribes.push(subId);
+      },
+      docsStartSync: (endpoint, namespaceId, peersJoined) => {
+        mock.docsCalls.push({
+          method: "docsStartSync",
+          endpoint,
+          args: [namespaceId, peersJoined],
+        });
+        if (mock.failures.docsStartSync !== undefined) {
+          return Promise.reject(mock.failures.docsStartSync);
+        }
+        return Promise.resolve();
+      },
+      docsLeave: (endpoint, namespaceId) => {
+        mock.docsCalls.push({ method: "docsLeave", endpoint, args: [namespaceId] });
+        if (mock.failures.docsLeave !== undefined) {
+          return Promise.reject(mock.failures.docsLeave);
+        }
+        return Promise.resolve();
+      },
       parseDocTicket: (ticket) => {
         mock.docsCalls.push({ method: "parseDocTicket", endpoint: 0, args: [ticket] });
         return mock.docsReturns.parseDocTicket;
@@ -512,6 +565,9 @@ export function createMockBinding(): MockBinding {
     streamSends: [],
     closedStreams: [],
     docsCalls: [],
+    docsSubscribes: [],
+    docsUnsubscribes: [],
+    autoStartDocsSub: true,
     docsReturns: {
       authorsDefault: "a".repeat(64),
       authorsCreate: "b".repeat(64),

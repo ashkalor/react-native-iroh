@@ -1,4 +1,9 @@
-import { DocsController, type DocsApi, type DocsBinding } from "./docs";
+import {
+  DocsController,
+  type DocsApi,
+  type DocsBinding,
+  type DocSubscriptionController,
+} from "./docs";
 import { IrohError } from "./errors";
 import {
   GossipSubscriptionController,
@@ -448,6 +453,7 @@ export class Endpoint {
   private addressWatch: Watchable<EndpointAddr> | null = null;
   private addressWatchId: number | null = null;
   private readonly gossipSubscriptions = new Set<GossipSubscriptionController>();
+  private readonly docSubscriptions = new Set<DocSubscriptionController>();
   private readonly streamListeners = new Set<StreamListenerController>();
   // Every live connection, however it was obtained (dialled or accepted), so
   // closing the endpoint tears all of them down through one path.
@@ -538,6 +544,18 @@ export class Endpoint {
         binding.docsDeletePrefix(endpoint, namespaceId, authorId, prefix),
       docsShare: (namespaceId, mode) => binding.docsShare(endpoint, namespaceId, mode),
       docsGetContent: (hash) => binding.docsGetContent(endpoint, hash),
+      docsSubscribe: (namespaceId, onStart, onEvent, onClose) =>
+        binding.docsSubscribe(endpoint, namespaceId, onStart, onEvent, onClose),
+      docsUnsubscribe: (subId) => binding.docsUnsubscribe(subId),
+      docsStartSync: (namespaceId, peers) =>
+        binding.docsStartSync(endpoint, namespaceId, peers.map(serializeEndpointAddr).join("\n")),
+      docsLeave: (namespaceId) => binding.docsLeave(endpoint, namespaceId),
+      adoptSubscription: (controller) => {
+        this.docSubscriptions.add(controller);
+      },
+      releaseSubscription: (controller) => {
+        this.docSubscriptions.delete(controller);
+      },
     };
   }
 
@@ -1003,6 +1021,9 @@ export class Endpoint {
           queued.cancel();
         }
         for (const subscription of [...this.gossipSubscriptions]) {
+          subscription.unsubscribe();
+        }
+        for (const subscription of [...this.docSubscriptions]) {
           subscription.unsubscribe();
         }
         for (const listener of [...this.streamListeners]) {

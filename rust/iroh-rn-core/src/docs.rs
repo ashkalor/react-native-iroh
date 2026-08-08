@@ -18,21 +18,28 @@
 //! which fails with [`IrohError::DocsDisabled`] on a docs-off endpoint so a
 //! docs-disabled endpoint is entirely unaffected.
 
+use std::sync::{Arc, LazyLock};
+
 use bytes::Bytes;
+use iroh::EndpointAddr;
 use iroh_blobs::Hash;
 use iroh_docs::{
     api::{
         protocol::{AddrInfoOptions, ShareMode},
         Doc, DocsApi,
     },
+    engine::LiveEvent,
     store::Query,
-    Author, AuthorId, CapabilityKind, DocTicket, Entry, NamespaceId,
+    Author, AuthorId, CapabilityKind, ContentStatus, DocTicket, Entry, NamespaceId,
 };
-use n0_future::StreamExt;
+use n0_future::{task::AbortOnDropHandle, StreamExt};
 
 use crate::{
-    endpoint::{endpoint_state, EndpointHandle},
+    endpoint::{endpoint_state, parse_endpoint_addr, EndpointHandle},
     error::{error_chain, IrohError, Result},
+    guarded_callback,
+    registry::Registry,
+    runtime::runtime,
     spawn_completing,
 };
 
@@ -271,9 +278,12 @@ pub fn docs_open(
     );
 }
 
-/// Imports a document from a [`DocTicket`] string, joining the peers it names,
-/// and returns its [`NamespaceId`] (hex). Live sync is Phase 3; this only
-/// registers the document and its peers.
+/// Imports a document from a [`DocTicket`] string and returns its
+/// [`NamespaceId`] (hex). This registers the document and seeds the addresses of
+/// the peers the ticket names into the endpoint's address lookup, so a later
+/// [`docs_start_sync`] (or [`docs_subscribe`]) can reach them even on the
+/// minimal preset. Live sync is NOT started here: it begins on an explicit
+/// [`docs_start_sync`].
 pub fn docs_import(
     endpoint: EndpointHandle,
     ticket: String,
@@ -281,12 +291,18 @@ pub fn docs_import(
 ) {
     spawn_completing(
         async move {
+            let state = endpoint_state(endpoint)?;
             let api = docs_api(endpoint)?;
             let ticket: DocTicket = ticket
                 .parse()
                 .map_err(|e| IrohError::DocsInvalidTicket(format!("{e}")))?;
+            // Seed the ticket's peer addresses so a later sync can dial them by
+            // id without a discovery service (mirrors the gossip bootstrap seed).
+            for node in &ticket.nodes {
+                state.bootstrap_lookup.add_endpoint_info(node.clone());
+            }
             let doc = api
-                .import(ticket)
+                .import_namespace(ticket.capability)
                 .await
                 .map_err(|e| IrohError::Docs(format!("import document: {e:#}")))?;
             let id = doc.id().to_string();
@@ -544,6 +560,254 @@ pub fn parse_doc_ticket(ticket: &str) -> Result<DocTicketInfo> {
         capability,
         node_ids,
     })
+}
+
+/// Opaque handle to a live document subscription. `0` is never a valid handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DocsSubHandle(u64);
+
+impl DocsSubHandle {
+    /// Reconstructs a handle from its raw FFI representation.
+    pub fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The raw numeric value passed across the FFI boundary.
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// A live document subscription: the open [`Doc`] handle that keeps the replica
+/// loaded plus the abort-on-drop task forwarding [`LiveEvent`]s into the host
+/// callback. Dropping the state (via [`docs_unsubscribe`]) aborts the task; the
+/// replica handle is closed separately so the open count is balanced.
+struct DocsSubscription {
+    doc: Doc,
+    _task: AbortOnDropHandle<()>,
+}
+
+static DOCS_SUBS: LazyLock<Registry<DocsSubscription>> = LazyLock::new(Registry::new);
+
+/// Maps a [`ContentStatus`] onto its JS discriminator.
+fn content_status_str(status: ContentStatus) -> &'static str {
+    match status {
+        ContentStatus::Complete => "complete",
+        ContentStatus::Incomplete => "incomplete",
+        ContentStatus::Missing => "missing",
+    }
+}
+
+/// Builds the JSON value for an [`Entry`] carried by a live event, matching the
+/// `DocEntry` TS shape.
+fn entry_json(entry: &Entry) -> serde_json::Value {
+    serde_json::json!({
+        "author": entry.author().to_string(),
+        "key": String::from_utf8_lossy(entry.key()),
+        "hash": entry.content_hash().to_string(),
+        "size": entry.content_len(),
+        "timestamp": entry.timestamp(),
+    })
+}
+
+/// Serializes a [`LiveEvent`] into the JS discriminated-union JSON the bridge
+/// forwards to a subscription's `on_event`.
+fn live_event_to_json(event: &LiveEvent) -> String {
+    let value = match event {
+        LiveEvent::InsertLocal { entry } => serde_json::json!({
+            "type": "insert-local",
+            "entry": entry_json(entry),
+        }),
+        LiveEvent::InsertRemote {
+            from,
+            entry,
+            content_status,
+        } => serde_json::json!({
+            "type": "insert-remote",
+            "from": from.to_string(),
+            "entry": entry_json(entry),
+            "contentStatus": content_status_str(*content_status),
+        }),
+        LiveEvent::ContentReady { hash } => serde_json::json!({
+            "type": "content-ready",
+            "hash": hash.to_string(),
+        }),
+        LiveEvent::PendingContentReady => serde_json::json!({ "type": "pending-content-ready" }),
+        LiveEvent::NeighborUp(id) => serde_json::json!({
+            "type": "neighbor-up",
+            "endpointId": id.to_string(),
+        }),
+        LiveEvent::NeighborDown(id) => serde_json::json!({
+            "type": "neighbor-down",
+            "endpointId": id.to_string(),
+        }),
+        LiveEvent::SyncFinished(sync) => serde_json::json!({
+            "type": "sync-finished",
+            "peer": sync.peer.to_string(),
+        }),
+    };
+    value.to_string()
+}
+
+/// Parses the newline-joined `EndpointAddr` JSON list (the shape the bridge
+/// emits, matching the gossip bootstrap convention) into [`EndpointAddr`]s.
+/// Empty segments are ignored; a malformed entry fails the whole call.
+fn parse_peers(joined: &str) -> Result<Vec<EndpointAddr>> {
+    joined
+        .split('\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            parse_endpoint_addr(line)
+                .map_err(|detail| IrohError::Docs(format!("sync peer {detail}")))
+        })
+        .collect()
+}
+
+/// Subscribes to the [`LiveEvent`] stream of the document `namespace` on
+/// `endpoint`, holding the replica open for the subscription's lifetime.
+///
+/// Set-up is validated synchronously (a stale endpoint or docs-disabled endpoint
+/// returns an error immediately, nothing is spawned). The replica is opened and
+/// the event stream established asynchronously; once live, `on_start` fires once
+/// with the subscription's [`DocsSubHandle`] (pass it to [`docs_unsubscribe`]),
+/// thereafter `on_event` fires per event as a JSON discriminated union.
+///
+/// `on_close` fires exactly once when the subscription ends: `None` for an
+/// orderly finish (the stream ended, e.g. the endpoint closed) or `Some(error)`
+/// on failure. If opening the replica or the stream fails, `on_close` receives
+/// the error and `on_start` never fires: the subscription is dead and any host
+/// waiting on it should settle.
+///
+/// Subscribing does NOT start live sync; drive sync with [`docs_start_sync`].
+/// The subscription only keeps the replica open and forwards its events.
+pub fn docs_subscribe(
+    endpoint: EndpointHandle,
+    namespace: String,
+    on_start: impl Fn(DocsSubHandle) + Send + Sync + 'static,
+    on_event: impl Fn(String) + Send + Sync + 'static,
+    on_close: impl Fn(Option<IrohError>) + Send + Sync + 'static,
+) -> Result<()> {
+    let api = docs_api(endpoint)?;
+    let namespace = parse_namespace(&namespace)?;
+    // `on_close` is fired from either the set-up path (open/subscribe failed) or
+    // the forward loop (stream ended); share it so exactly one path settles it.
+    let on_close = Arc::new(on_close);
+
+    runtime().spawn(async move {
+        let doc = match open_doc(&api, namespace).await {
+            Ok(doc) => doc,
+            Err(e) => {
+                let on_close = Arc::clone(&on_close);
+                guarded_callback(move || on_close(Some(e)));
+                return;
+            }
+        };
+        let mut events = match doc.subscribe().await {
+            Ok(events) => events,
+            Err(e) => {
+                close_doc(doc).await;
+                let err = IrohError::Docs(format!("subscribe to document: {e:#}"));
+                let on_close = Arc::clone(&on_close);
+                guarded_callback(move || on_close(Some(err)));
+                return;
+            }
+        };
+
+        let close_on_end = Arc::clone(&on_close);
+        let forward = runtime().spawn(async move {
+            while let Some(item) = events.next().await {
+                match item {
+                    Ok(event) => {
+                        let json = live_event_to_json(&event);
+                        guarded_callback(|| on_event(json));
+                    }
+                    Err(e) => {
+                        let err = IrohError::Docs(format!("subscription stream errored: {e:#}"));
+                        guarded_callback(move || close_on_end(Some(err)));
+                        return;
+                    }
+                }
+            }
+            guarded_callback(move || close_on_end(None));
+        });
+
+        let handle = DOCS_SUBS.insert(DocsSubscription {
+            doc,
+            _task: AbortOnDropHandle::new(forward),
+        });
+        guarded_callback(|| on_start(DocsSubHandle(handle)));
+    });
+
+    Ok(())
+}
+
+/// Ends a subscription started with [`docs_subscribe`]: aborts its forwarding
+/// task and closes the replica handle it held open. Idempotent: unsubscribing an
+/// unknown or already-ended subscription is a no-op.
+pub fn docs_unsubscribe(sub: DocsSubHandle) {
+    if let Ok(subscription) = DOCS_SUBS.remove(sub.raw()) {
+        // Closing the replica is an async RPC; the Doc handle is cheap to clone.
+        // Dropping `subscription` at the end of this scope aborts the forward
+        // task via its AbortOnDropHandle.
+        let doc = subscription.doc.clone();
+        runtime().spawn(async move {
+            close_doc(doc).await;
+        });
+    }
+}
+
+/// Starts (or refreshes) live sync of the document `namespace` with `peers`
+/// (a newline-joined `EndpointAddr` JSON list; empty to sync with already-known
+/// peers). Non-empty peers do an initial set-reconciliation with each and join
+/// the document's gossip swarm; their addresses are seeded into the endpoint's
+/// lookup first so they are dialable on the minimal preset.
+pub fn docs_start_sync(
+    endpoint: EndpointHandle,
+    namespace: String,
+    peers_joined: String,
+    on_complete: impl FnOnce(Result<()>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            let api = docs_api(endpoint)?;
+            let namespace = parse_namespace(&namespace)?;
+            let peers = parse_peers(&peers_joined)?;
+            for addr in &peers {
+                state.bootstrap_lookup.add_endpoint_info(addr.clone());
+            }
+            let doc = open_doc(&api, namespace).await?;
+            let result = doc
+                .start_sync(peers)
+                .await
+                .map_err(|e| IrohError::Docs(format!("start sync: {e:#}")));
+            close_doc(doc).await;
+            result
+        },
+        on_complete,
+    );
+}
+
+/// Stops the live sync for the document `namespace` and leaves its gossip swarm.
+pub fn docs_leave(
+    endpoint: EndpointHandle,
+    namespace: String,
+    on_complete: impl FnOnce(Result<()>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let api = docs_api(endpoint)?;
+            let namespace = parse_namespace(&namespace)?;
+            let doc = open_doc(&api, namespace).await?;
+            let result = doc
+                .leave()
+                .await
+                .map_err(|e| IrohError::Docs(format!("leave document: {e:#}")));
+            close_doc(doc).await;
+            result
+        },
+        on_complete,
+    );
 }
 
 #[cfg(test)]
@@ -826,5 +1090,131 @@ mod tests {
             parse_doc_ticket("not-a-doc-ticket"),
             Err(IrohError::DocsInvalidTicket(_))
         ));
+    }
+
+    /// End-to-end live sync over two docs-enabled minimal-preset endpoints on
+    /// loopback (relay disabled): Alice writes a key, Bob imports the ticket and
+    /// subscribes BEFORE any sync (so the insert cannot be missed), both start
+    /// sync, and Bob observes the REMOTE insert of Alice's key plus its content
+    /// becoming ready, then fetches the content and finds it equal to Alice's
+    /// bytes. Bounded timeouts turn a hang into a failure.
+    #[test]
+    fn two_endpoint_loopback_sync_observes_remote_insert() {
+        let alice = create_minimal_endpoint_with_docs(None);
+        let bob = create_minimal_endpoint_with_docs(None);
+
+        // Alice authors an entry and mints a write ticket for the document.
+        let author = block_on(|done| authors_default(alice, done)).expect("alice author");
+        let namespace = block_on(|done| docs_create(alice, done)).expect("alice creates doc");
+        let value = b"the remote treaty of the meadow".to_vec();
+        let hash = block_on(|done| {
+            docs_set_bytes(
+                alice,
+                namespace.clone(),
+                author.clone(),
+                "chapter/1".into(),
+                value.clone(),
+                done,
+            )
+        })
+        .expect("alice set bytes");
+        let ticket = block_on(|done| docs_share(alice, namespace.clone(), "write".into(), done))
+            .expect("alice share");
+
+        // Bob imports the ticket (registers the doc, no sync yet) and subscribes
+        // before sync starts, so the remote insert lands on a live subscriber.
+        let bob_namespace = block_on(|done| docs_import(bob, ticket, done)).expect("bob import");
+        assert_eq!(bob_namespace, namespace, "bob imported the same namespace");
+        let (sub, events) = subscribe_collecting(bob, &namespace);
+
+        // Alice enables her side; Bob dials Alice by her address and reconciles.
+        block_on(|done| docs_start_sync(alice, namespace.clone(), String::new(), done))
+            .expect("alice start_sync");
+        let alice_addr = addr_json(alice);
+        block_on(|done| docs_start_sync(bob, namespace.clone(), alice_addr, done))
+            .expect("bob start_sync");
+
+        // Bob's subscription observes the remote insert (authored by Alice, not a
+        // local echo) and the content download completing.
+        wait_for_remote_insert(&events, &author, "chapter/1");
+        wait_for_content_ready(&events, &hash);
+
+        // Bob fetches the synced content: byte-for-byte equal to Alice's write.
+        let content =
+            block_on(|done| docs_get_content(bob, hash.clone(), done)).expect("bob content");
+        assert_eq!(content, value, "synced content equals the origin bytes");
+
+        docs_unsubscribe(sub);
+        // Unsubscribe is idempotent.
+        docs_unsubscribe(sub);
+        close_endpoint_blocking(alice).expect("close alice");
+        close_endpoint_blocking(bob).expect("close bob");
+    }
+
+    type CollectedDocs = (DocsSubHandle, mpsc::Receiver<String>);
+
+    /// Subscribes to a document's live events, returning the handle plus a
+    /// channel of the JSON event payloads. Blocks until `on_start` fires.
+    fn subscribe_collecting(endpoint: EndpointHandle, namespace: &str) -> CollectedDocs {
+        let (start_tx, start_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        docs_subscribe(
+            endpoint,
+            namespace.to_owned(),
+            move |handle| {
+                start_tx.send(handle).ok();
+            },
+            move |json| {
+                event_tx.send(json).ok();
+            },
+            |_reason| {},
+        )
+        .expect("subscribe started");
+        let handle = start_rx.recv_timeout(TIMEOUT).expect("on_start fired");
+        (handle, event_rx)
+    }
+
+    /// Blocks until a live event whose parsed JSON satisfies `predicate` arrives,
+    /// or the timeout elapses.
+    fn wait_for_event(
+        events: &mpsc::Receiver<String>,
+        predicate: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("matching event within timeout");
+            let json = events.recv_timeout(remaining).expect("event arrived");
+            let value: serde_json::Value =
+                serde_json::from_str(&json).expect("event is valid json");
+            if predicate(&value) {
+                return;
+            }
+        }
+    }
+
+    fn wait_for_remote_insert(events: &mpsc::Receiver<String>, author: &str, key: &str) {
+        wait_for_event(events, |value| {
+            value["type"].as_str() == Some("insert-remote")
+                && value["entry"]["author"].as_str() == Some(author)
+                && value["entry"]["key"].as_str() == Some(key)
+        });
+    }
+
+    fn wait_for_content_ready(events: &mpsc::Receiver<String>, hash: &str) {
+        wait_for_event(events, |value| {
+            value["type"].as_str() == Some("content-ready") && value["hash"].as_str() == Some(hash)
+        });
+    }
+
+    fn addr_json(endpoint: EndpointHandle) -> String {
+        let info = crate::endpoint::endpoint_addr(endpoint).expect("addr");
+        let directs: Vec<String> = info.direct_addrs.iter().map(|a| format!("{a:?}")).collect();
+        format!(
+            "{{\"id\":\"{}\",\"relayUrls\":[],\"directAddrs\":[{}]}}",
+            info.id,
+            directs.join(",")
+        )
     }
 }

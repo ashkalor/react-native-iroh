@@ -1,4 +1,11 @@
-import { DocsController, parseDocTicket, validateDocTicketShape, type DocsBinding } from "../docs";
+import {
+  DocsController,
+  DocSubscriptionController,
+  parseDocTicket,
+  validateDocTicketShape,
+  type DocSubscriptionBinding,
+  type DocsBinding,
+} from "../docs";
 import { Endpoint } from "../endpoint";
 import { IrohError } from "../errors";
 import { createMockBinding } from "./helpers";
@@ -81,6 +88,51 @@ function fakeDocs(): FakeDocs {
     },
     docsShare: (ns, mode) => record("docsShare", [ns, mode], fake.returns.docsShare),
     docsGetContent: (hash) => record("docsGetContent", [hash], fake.returns.docsGetContent),
+    docsSubscribe: (ns) => {
+      fake.calls.push({ method: "docsSubscribe", args: [ns] });
+    },
+    docsUnsubscribe: (subId) => {
+      fake.calls.push({ method: "docsUnsubscribe", args: [subId] });
+    },
+    docsStartSync: (ns, peers) =>
+      record("docsStartSync", [ns, peers], undefined as unknown as void),
+    docsLeave: (ns) => record("docsLeave", [ns], undefined as unknown as void),
+  };
+  return fake;
+}
+
+/** A hand-drivable {@link DocSubscriptionBinding} for exercising the controller. */
+interface FakeDocSub {
+  binding: DocSubscriptionBinding;
+  onStart?: (subId: number) => void;
+  onEvent?: (event: string) => void;
+  onClose?: (event: string) => void;
+  unsubscribed: number[];
+  disposed: number;
+  startThrows?: Error;
+}
+
+function fakeDocSub(capacity?: number): FakeDocSub {
+  const fake: FakeDocSub = {
+    unsubscribed: [],
+    disposed: 0,
+    binding: {
+      capacity,
+      startSubscribe: (onStart, onEvent, onClose) => {
+        if (fake.startThrows !== undefined) {
+          throw fake.startThrows;
+        }
+        fake.onStart = onStart;
+        fake.onEvent = onEvent;
+        fake.onClose = onClose;
+      },
+      unsubscribe: (subId) => {
+        fake.unsubscribed.push(subId);
+      },
+      onDispose: () => {
+        fake.disposed += 1;
+      },
+    },
   };
   return fake;
 }
@@ -339,6 +391,200 @@ describe("parseDocTicket", () => {
       expect(error).toBeInstanceOf(IrohError);
       expect((error as IrohError).kind).toBe("docs-invalid-ticket");
     }
+  });
+});
+
+const INSERT_REMOTE_EVENT = JSON.stringify({
+  type: "insert-remote",
+  from: "peer-alice",
+  entry: {
+    author: "a".repeat(64),
+    key: "chapter/1",
+    hash: "f".repeat(64),
+    size: 12,
+    timestamp: 1_700_000_000,
+  },
+  contentStatus: "missing",
+});
+
+describe("Doc live sync", () => {
+  it("subscribe streams parsed live events, holds started, and forwards the namespace", async () => {
+    const fake = fakeDocs();
+    const doc = await new DocsController(fake.binding).create();
+    const sub = doc.subscribe();
+    expect(fake.calls.at(-1)).toEqual({
+      method: "docsSubscribe",
+      args: ["d".repeat(64)],
+    });
+    // Not started until the native subscription id arrives; the fakeDocs binding
+    // does not fire onStart, so this stays a bare controller with no id yet.
+    expect(sub).toBeInstanceOf(DocSubscriptionController);
+  });
+
+  it("startSync forwards the peer list and leave forwards the namespace", async () => {
+    const fake = fakeDocs();
+    const doc = await new DocsController(fake.binding).create();
+    await doc.startSync([{ id: "peer-1" as never, relayUrls: [], directAddrs: ["127.0.0.1:1"] }]);
+    expect(fake.calls.at(-1)!.method).toBe("docsStartSync");
+    const [ns, peers] = fake.calls.at(-1)!.args as [string, unknown];
+    expect(ns).toBe("d".repeat(64));
+    // The binding receives the EndpointAddr list; the endpoint serializes it.
+    expect(peers).toEqual([{ id: "peer-1", relayUrls: [], directAddrs: ["127.0.0.1:1"] }]);
+
+    await doc.startSync();
+    expect((fake.calls.at(-1)!.args as [string, unknown[]])[1]).toEqual([]);
+
+    await doc.leave();
+    expect(fake.calls.at(-1)).toEqual({ method: "docsLeave", args: ["d".repeat(64)] });
+  });
+
+  it("maps a native startSync failure to an IrohError", async () => {
+    const fake = fakeDocs();
+    fake.failures.docsStartSync = new Error("[iroh:6001] docs operation failed: start sync");
+    const doc = await new DocsController(fake.binding).create();
+    await expect(doc.startSync()).rejects.toBeInstanceOf(IrohError);
+    await expect(doc.startSync()).rejects.toHaveProperty("kind", "docs");
+  });
+});
+
+describe("DocSubscriptionController events", () => {
+  it("parses a JSON live event into a DocLiveEvent on the events stream", async () => {
+    const fake = fakeDocSub();
+    const sub = new DocSubscriptionController(fake.binding);
+    fake.onStart?.(3);
+    fake.onEvent?.(INSERT_REMOTE_EVENT);
+    const iterator = sub.events[Symbol.asyncIterator]();
+    expect(await iterator.next()).toEqual({
+      value: {
+        type: "insert-remote",
+        from: "peer-alice",
+        entry: {
+          author: "a".repeat(64),
+          key: "chapter/1",
+          hash: "f".repeat(64),
+          size: 12,
+          timestamp: 1_700_000_000,
+        },
+        contentStatus: "missing",
+      },
+      done: false,
+    });
+  });
+
+  it("resolves started once onStart fires", async () => {
+    const fake = fakeDocSub();
+    const sub = new DocSubscriptionController(fake.binding);
+    fake.onStart?.(9);
+    await expect(sub.started).resolves.toBeUndefined();
+  });
+
+  it("honors a custom event-buffer capacity, dropping the oldest", async () => {
+    const original = console.warn;
+    console.warn = () => undefined;
+    try {
+      const fake = fakeDocSub(2);
+      const sub = new DocSubscriptionController(fake.binding);
+      fake.onStart?.(1);
+      const event = (hash: string): string => JSON.stringify({ type: "content-ready", hash });
+      fake.onEvent?.(event("a"));
+      fake.onEvent?.(event("b"));
+      fake.onEvent?.(event("c"));
+      const events = sub.events[Symbol.asyncIterator]();
+      expect((await events.next()).value).toEqual({ type: "content-ready", hash: "b" });
+      expect((await events.next()).value).toEqual({ type: "content-ready", hash: "c" });
+    } finally {
+      console.warn = original;
+    }
+  });
+});
+
+describe("DocSubscriptionController teardown", () => {
+  it("unsubscribe ends the stream, calls native unsubscribe, and disposes", async () => {
+    const fake = fakeDocSub();
+    const sub = new DocSubscriptionController(fake.binding);
+    fake.onStart?.(9);
+    const events = sub.events[Symbol.asyncIterator]();
+    const pending = events.next();
+    sub.unsubscribe();
+    expect(fake.unsubscribed).toEqual([9]);
+    expect(fake.disposed).toBe(1);
+    expect((await pending).done).toBe(true);
+    // Idempotent.
+    sub.unsubscribe();
+    expect(fake.unsubscribed).toEqual([9]);
+  });
+
+  it("unsubscribe before onStart tears down once the id arrives and rejects started", async () => {
+    const fake = fakeDocSub();
+    const sub = new DocSubscriptionController(fake.binding);
+    const started = sub.started.catch((e: unknown) => e);
+    sub.unsubscribe();
+    expect(await started).toBeInstanceOf(IrohError);
+    expect(fake.unsubscribed).toEqual([]);
+    fake.onStart?.(5);
+    expect(fake.unsubscribed).toEqual([5]);
+  });
+
+  it("a close error before start rejects started and ends the stream with it", async () => {
+    const fake = fakeDocSub();
+    const sub = new DocSubscriptionController(fake.binding);
+    const started = sub.started.catch((e: unknown) => e);
+    const parked = sub.events[Symbol.asyncIterator]().next();
+    fake.onClose?.("error [iroh:6001] docs operation failed: open document");
+
+    const error = await started;
+    expect(error).toBeInstanceOf(IrohError);
+    expect((error as IrohError).kind).toBe("docs");
+    await expect(parked).rejects.toBeInstanceOf(IrohError);
+    expect(fake.disposed).toBe(1);
+  });
+
+  it("a graceful close ends the events stream", async () => {
+    const fake = fakeDocSub();
+    const sub = new DocSubscriptionController(fake.binding);
+    fake.onStart?.(1);
+    const events = sub.events[Symbol.asyncIterator]();
+    const pending = events.next();
+    fake.onClose?.("end");
+    expect((await pending).done).toBe(true);
+  });
+
+  it("propagates a synchronous startSubscribe failure", () => {
+    const fake = fakeDocSub();
+    fake.startThrows = new Error("[iroh:6000] docs are not enabled on this endpoint");
+    expect(() => new DocSubscriptionController(fake.binding)).toThrow();
+  });
+});
+
+describe("Endpoint.docs.subscribe wiring", () => {
+  it("streams events and tears down live subscriptions when the endpoint closes", async () => {
+    const mock = createMockBinding();
+    const endpoint = await Endpoint.create({ docs: true }, mock.binding);
+    const doc = await endpoint.docs.create();
+    const sub = doc.subscribe();
+    expect(mock.docsSubscribes).toHaveLength(1);
+    await sub.started;
+
+    mock.docsSubscribes[0]!.onEvent(INSERT_REMOTE_EVENT);
+    const events = sub.events[Symbol.asyncIterator]();
+    expect((await events.next()).value).toMatchObject({
+      type: "insert-remote",
+      from: "peer-alice",
+    });
+
+    const parked = events.next();
+    await endpoint.close();
+    expect((await parked).done).toBe(true);
+    expect(mock.docsUnsubscribes).toHaveLength(1);
+  });
+
+  it("throws a typed error when the native subscribe fails synchronously", async () => {
+    const mock = createMockBinding();
+    mock.failures.docsSubscribe = new Error("[iroh:6000] docs are not enabled on this endpoint");
+    const endpoint = await Endpoint.create({ docs: true }, mock.binding);
+    const doc = await endpoint.docs.create();
+    expect(() => doc.subscribe()).toThrow(IrohError);
+    await endpoint.close();
   });
 });
 

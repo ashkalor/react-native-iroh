@@ -1,5 +1,6 @@
-import type { EndpointId } from "./endpoint";
+import type { EndpointAddr, EndpointId } from "./endpoint";
 import { IrohError } from "./errors";
+import { MessageQueue } from "./message-queue";
 import { getIroh, type IrohBinding } from "./native";
 
 declare const NamespaceIdBrand: unique symbol;
@@ -36,6 +37,128 @@ export type DocTicket = string & { readonly [DocTicketBrand]: "DocTicket" };
 
 /** The access a {@link Doc.share} ticket grants: read-only or read/write. */
 export type DocShareMode = "read" | "write";
+
+/**
+ * Whether an entry's content is available locally, as reported on an
+ * {@link DocInsertRemoteEvent}.
+ *
+ * @see https://docs.rs/iroh-docs/0.101.0/iroh_docs/enum.ContentStatus.html
+ */
+export type DocContentStatus = "complete" | "incomplete" | "missing";
+
+/** A local write landed in the replica (this node authored it). */
+export interface DocInsertLocalEvent {
+  readonly type: "insert-local";
+  /** The inserted entry. */
+  readonly entry: DocEntry;
+}
+
+/** A remote peer's write was inserted into the replica during sync. */
+export interface DocInsertRemoteEvent {
+  readonly type: "insert-remote";
+  /** The peer that delivered the entry. */
+  readonly from: EndpointId;
+  /** The inserted entry. Its content may not be local yet (see
+   * {@link contentStatus}); await a matching {@link DocContentReadyEvent}. */
+  readonly entry: DocEntry;
+  /** Whether the entry's content is available locally at insert time. */
+  readonly contentStatus: DocContentStatus;
+}
+
+/** An entry's content finished downloading and is now available locally. */
+export interface DocContentReadyEvent {
+  readonly type: "content-ready";
+  /** The content hash that is now available (hex). */
+  readonly hash: string;
+}
+
+/**
+ * All content queued by the last sync run has finished (downloaded or failed).
+ * Emitted only after a {@link DocSyncFinishedEvent}.
+ */
+export interface DocPendingContentReadyEvent {
+  readonly type: "pending-content-ready";
+}
+
+/** A new direct neighbor joined the document's sync swarm. */
+export interface DocNeighborUpEvent {
+  readonly type: "neighbor-up";
+  /** The neighbor endpoint's id. */
+  readonly endpointId: EndpointId;
+}
+
+/** A direct neighbor left the document's sync swarm. */
+export interface DocNeighborDownEvent {
+  readonly type: "neighbor-down";
+  /** The neighbor endpoint's id. */
+  readonly endpointId: EndpointId;
+}
+
+/** A set-reconciliation sync run with a peer completed. */
+export interface DocSyncFinishedEvent {
+  readonly type: "sync-finished";
+  /** The peer this node synced with. */
+  readonly peer: EndpointId;
+}
+
+/**
+ * One live event on a document, a discriminated union keyed by `type`. Surfaced
+ * from {@link Doc.subscribe}; mirrors iroh-docs'
+ * {@link https://docs.rs/iroh-docs/0.101.0/iroh_docs/engine/enum.LiveEvent.html LiveEvent}.
+ */
+export type DocLiveEvent =
+  | DocInsertLocalEvent
+  | DocInsertRemoteEvent
+  | DocContentReadyEvent
+  | DocPendingContentReadyEvent
+  | DocNeighborUpEvent
+  | DocNeighborDownEvent
+  | DocSyncFinishedEvent;
+
+/** Options for {@link Doc.subscribe}. */
+export interface DocSubscribeOptions {
+  /**
+   * How many events to buffer before the oldest are dropped (a lagged warning
+   * is logged when that happens). Defaults to the message-queue default (1024).
+   */
+  capacity?: number;
+}
+
+/**
+ * A live subscription to a document's events: an async-iterable event stream, a
+ * readiness promise, and teardown. Obtain one from {@link Doc.subscribe}.
+ *
+ * Subscribing does NOT start sync; the stream carries the replica's events
+ * (local writes plus whatever live sync delivers). Drive sync with
+ * {@link Doc.startSync}.
+ */
+export interface DocSubscription {
+  /**
+   * An `AsyncIterable` of {@link DocLiveEvent}s in arrival order
+   * (`for await (const e of sub.events)`). Buffering is bounded (see
+   * {@link DocSubscribeOptions.capacity}); under overflow the oldest unread
+   * events are dropped. Iteration ends when the subscription is torn down
+   * ({@link unsubscribe} or the endpoint closing).
+   *
+   * This is ONE shared stream: consuming an event removes it, and `break`ing
+   * out of the loop ends the subscription. Fan out in your own code if more than
+   * one consumer needs every event.
+   */
+  readonly events: AsyncIterable<DocLiveEvent>;
+  /**
+   * Resolves once the subscription is live (the replica is open and its event
+   * stream is attached). Rejects with an {@link IrohError} if the subscription
+   * fails to start (e.g. the document is unknown) or is torn down before it
+   * started.
+   */
+  readonly started: Promise<void>;
+  /**
+   * Ends the subscription and its {@link events} iterator, closing the replica
+   * handle it held open. Does not stop live sync (use {@link Doc.leave}).
+   * Idempotent.
+   */
+  unsubscribe(): void;
+}
 
 /**
  * One document entry's metadata. The value bytes live out-of-band in the blob
@@ -157,6 +280,27 @@ export interface Doc {
    * or `"docs"` if the content is not present in the store.
    */
   getContent(entry: DocEntry): Promise<ArrayBuffer>;
+  /**
+   * Subscribes to this document's live {@link DocLiveEvent}s (local writes plus
+   * whatever sync delivers), returning a {@link DocSubscription}: an
+   * async-iterable event stream, a `started` promise, and `unsubscribe()`. The
+   * subscription holds the replica open for its lifetime.
+   *
+   * Subscribing does NOT start sync. To receive remote changes call
+   * {@link startSync}; to observe the initial sync of an imported document,
+   * subscribe first, then start sync, so no event is missed.
+   */
+  subscribe(options?: DocSubscribeOptions): DocSubscription;
+  /**
+   * Starts (or refreshes) live sync of this document with `peers`. Non-empty
+   * peers do an initial set-reconciliation with each and join the document's
+   * gossip swarm (their addresses are seeded so they are dialable on the
+   * `"minimal"` preset). Omit (or pass an empty list) to sync with peers already
+   * known to this node (e.g. those named by an imported ticket).
+   */
+  startSync(peers?: readonly EndpointAddr[]): Promise<void>;
+  /** Stops live sync of this document and leaves its gossip swarm. */
+  leave(): Promise<void>;
 }
 
 /**
@@ -217,6 +361,23 @@ export interface DocsBinding {
   docsDeletePrefix(namespaceId: string, authorId: string, prefix: string): Promise<number>;
   docsShare(namespaceId: string, mode: string): Promise<string>;
   docsGetContent(hash: string): Promise<ArrayBuffer>;
+  /** Starts a native docs subscription; `onStart` fires with the subscription id. */
+  docsSubscribe(
+    namespaceId: string,
+    onStart: (subId: number) => void,
+    onEvent: (event: string) => void,
+    onClose: (event: string) => void,
+  ): void;
+  /** Ends a started docs subscription (idempotent natively). */
+  docsUnsubscribe(subId: number): void;
+  /** Starts/refreshes live sync with the given peers (newline-joined natively). */
+  docsStartSync(namespaceId: string, peers: readonly EndpointAddr[]): Promise<void>;
+  /** Stops live sync of the document. */
+  docsLeave(namespaceId: string): Promise<void>;
+  /** Registers a live subscription so the endpoint can tear it down on close. */
+  adoptSubscription?(controller: DocSubscriptionController): void;
+  /** Deregisters a subscription that has disposed itself. */
+  releaseSubscription?(controller: DocSubscriptionController): void;
 }
 
 /**
@@ -354,6 +515,174 @@ export class DocController implements Doc {
     } catch (error) {
       throw IrohError.from(error);
     }
+  }
+
+  subscribe(options?: DocSubscribeOptions): DocSubscription {
+    const binding = this.binding;
+    const namespaceId = this.id;
+    try {
+      let controller!: DocSubscriptionController;
+      controller = new DocSubscriptionController({
+        startSubscribe: (onStart, onEvent, onClose) =>
+          binding.docsSubscribe(namespaceId, onStart, onEvent, onClose),
+        unsubscribe: (subId) => binding.docsUnsubscribe(subId),
+        capacity: options?.capacity,
+        onDispose: () => binding.releaseSubscription?.(controller),
+      });
+      binding.adoptSubscription?.(controller);
+      return controller;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  async startSync(peers: readonly EndpointAddr[] = []): Promise<void> {
+    try {
+      await this.binding.docsStartSync(this.id, peers);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  async leave(): Promise<void> {
+    try {
+      await this.binding.docsLeave(this.id);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+}
+
+/** The native calls a {@link DocSubscriptionController} needs, injected by
+ * {@link DocController} so the controller stays testable in isolation. */
+export interface DocSubscriptionBinding {
+  /** Starts the native subscription; `onStart` fires with the subscription id. */
+  startSubscribe(
+    onStart: (subId: number) => void,
+    onEvent: (event: string) => void,
+    onClose: (event: string) => void,
+  ): void;
+  /** Ends a started subscription (idempotent natively). */
+  unsubscribe(subId: number): void;
+  /** Optional capacity for the event buffer. */
+  capacity?: number;
+  /** Invoked once the controller is torn down, so the owner can drop it. */
+  onDispose?(): void;
+}
+
+/** Parses one native docs event line (a JSON {@link DocLiveEvent}). */
+function parseLiveEvent(json: string): DocLiveEvent {
+  return JSON.parse(json) as DocLiveEvent;
+}
+
+/**
+ * Parses a native subscription close line (`"end"` or `"error <detail>"`) into
+ * either a graceful end (`null`) or the typed {@link IrohError} that ended it.
+ */
+function parseCloseReason(event: string): IrohError | null {
+  if (event === "end") {
+    return null;
+  }
+  const detail = event.startsWith("error ") ? event.slice("error ".length) : event;
+  return IrohError.from(new Error(detail));
+}
+
+/**
+ * Internal implementation of {@link DocSubscription}. Bridges the native
+ * onStart/onEvent/onClose callbacks to a {@link MessageQueue} of parsed events,
+ * and settles `started` once the subscription id arrives (or rejects if it never
+ * does). Not part of the public API surface.
+ */
+export class DocSubscriptionController implements DocSubscription {
+  private readonly binding: DocSubscriptionBinding;
+  private readonly queue: MessageQueue<DocLiveEvent>;
+  private subId: number | null = null;
+  private disposed = false;
+  /** Resolves with the subscription id once onStart fires. */
+  private readonly ready: Promise<number>;
+  readonly started: Promise<void>;
+  private resolveReady!: (subId: number) => void;
+  private rejectReady!: (error: unknown) => void;
+
+  constructor(binding: DocSubscriptionBinding) {
+    this.binding = binding;
+    this.queue = new MessageQueue<DocLiveEvent>({
+      capacity: binding.capacity,
+      onLagged: (dropped) => {
+        console.warn(`react-native-iroh: doc events lagging, ${dropped} dropped`);
+      },
+    });
+    this.ready = new Promise<number>((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
+    });
+    // The readiness rejection must be observed somewhere even if the caller
+    // ignores `started`; mark both handled here.
+    this.ready.catch(() => undefined);
+    this.started = this.ready.then(() => undefined);
+    this.started.catch(() => undefined);
+    // May throw synchronously (stale endpoint handle, docs disabled): let it
+    // propagate to the subscribe() caller.
+    this.binding.startSubscribe(
+      (subId) => this.onStart(subId),
+      (event) => this.queue.push(parseLiveEvent(event)),
+      (event) => this.onClose(event),
+    );
+  }
+
+  get events(): AsyncIterable<DocLiveEvent> {
+    return this.queue;
+  }
+
+  unsubscribe(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    if (this.subId !== null) {
+      this.unsubscribeNativeIgnoringTeardownRaces(this.subId);
+    } else {
+      // The id has not arrived yet; settle `started` and tear down natively once
+      // onStart eventually fires (see onStart).
+      this.rejectReady(new IrohError(6001, "doc subscription ended before it started"));
+    }
+    this.queue.close();
+    this.binding.onDispose?.();
+  }
+
+  private onStart(subId: number): void {
+    this.subId = subId;
+    if (this.disposed) {
+      // Unsubscribed while the subscription was still starting: tear the native
+      // side down now that we have its id.
+      this.unsubscribeNativeIgnoringTeardownRaces(subId);
+      return;
+    }
+    this.resolveReady(subId);
+  }
+
+  private onClose(event: string): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    const error = parseCloseReason(event);
+    if (this.subId === null) {
+      // Close before start: the subscription never became live, so settle
+      // `started` with the failure (or a generic one for a graceful pre-start
+      // close, which should not happen but must not hang).
+      this.rejectReady(error ?? new IrohError(6001, "doc subscription closed before it started"));
+    }
+    this.queue.close(error);
+    this.binding.onDispose?.();
+  }
+
+  /** Native unsubscribe is idempotent, and teardown can race an endpoint the
+   * subscription is being closed out from under; either way nothing to recover. */
+  private unsubscribeNativeIgnoringTeardownRaces(subId: number): void {
+    try {
+      this.binding.unsubscribe(subId);
+    } catch {}
   }
 }
 

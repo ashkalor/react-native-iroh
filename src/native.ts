@@ -51,6 +51,10 @@ export type IrohBinding = Pick<
   | "docsDeletePrefix"
   | "docsShare"
   | "docsGetContent"
+  | "docsSubscribe"
+  | "docsUnsubscribe"
+  | "docsStartSync"
+  | "docsLeave"
   | "parseDocTicket"
 >;
 

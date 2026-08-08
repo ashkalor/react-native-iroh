@@ -432,6 +432,53 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    */
   docsGetContent(endpoint: number, hash: string): Promise<ArrayBuffer>;
   /**
+   * Subscribes to the live {@link https://docs.rs/iroh-docs/0.101.0/iroh_docs/engine/enum.LiveEvent.html LiveEvent}
+   * stream of the document `namespaceId`, holding the replica open for the
+   * subscription's lifetime.
+   *
+   * Set-up is validated synchronously (a stale endpoint handle throws code 1001;
+   * a docs-disabled endpoint throws code 6000). Once the replica is open and the
+   * stream is live, `onStart` fires once with the subscription's numeric handle
+   * (pass it to {@link docsUnsubscribe}). `onEvent` then fires per event with a
+   * JSON discriminated union `{ type, ... }` (see the `DocLiveEvent` TS type):
+   * `insert-local`, `insert-remote`, `content-ready`, `pending-content-ready`,
+   * `neighbor-up`, `neighbor-down`, `sync-finished`.
+   *
+   * `onClose` fires exactly once when the subscription ends, as the tagged line
+   * `"end"` (the stream finished, e.g. the endpoint closed) or `"error <detail>"`
+   * (opening the replica or the stream failed, in which case `onStart` never
+   * fires). Subscribing does NOT start live sync; drive sync with
+   * {@link docsStartSync}.
+   */
+  docsSubscribe(
+    endpoint: number,
+    namespaceId: string,
+    onStart: (subId: number) => void,
+    onEvent: (event: string) => void,
+    onClose: (event: string) => void,
+  ): void;
+  /**
+   * Ends a subscription started with {@link docsSubscribe}, closing the replica
+   * handle it held open. Idempotent: ending an unknown or already-ended
+   * subscription is a no-op.
+   */
+  docsUnsubscribe(subId: number): void;
+  /**
+   * Starts (or refreshes) live sync of the document `namespaceId` with the peers
+   * in `peersJoined` (a possibly-empty newline-joined list of `EndpointAddr`
+   * JSON strings, the same convention as {@link gossipSubscribe}'s
+   * bootstrap). Non-empty peers do an initial set-reconciliation with each and
+   * join the document's gossip swarm; their addresses are seeded into the
+   * endpoint's lookup so they are dialable on the `minimal` preset. An empty
+   * list syncs with already-known peers.
+   */
+  docsStartSync(endpoint: number, namespaceId: string, peersJoined: string): Promise<void>;
+  /**
+   * Stops the live sync for the document `namespaceId` and leaves its gossip
+   * swarm.
+   */
+  docsLeave(endpoint: number, namespaceId: string): Promise<void>;
+  /**
    * Decodes `ticket` and returns a JSON object string
    * `{ namespace, capability, nodeIds }` (see the `DocTicketInfo` TS type).
    * Synchronous and side-effect-free. Throws code 6003 on a malformed ticket.
