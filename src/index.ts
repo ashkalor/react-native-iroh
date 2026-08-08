@@ -42,9 +42,14 @@ export { getIrohErrorCode, IrohError } from "./errors";
 // root entry stays free of any `react` import; only their (react-free) public
 // result types are surfaced here for convenience.
 export type {
+  DocEntryView,
+  DocStatus,
   EndpointStatus,
   GossipStatus,
   TransferStatus,
+  UseDocOptions,
+  UseDocResult,
+  UseDocsResult,
   UseEndpointResult,
   UseGossipOptions,
   UseGossipResult,

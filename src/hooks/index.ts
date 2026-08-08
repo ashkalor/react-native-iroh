@@ -13,3 +13,9 @@ export type { TransferStatus, UseTransferState } from "./useTransfer";
 
 export { useGossip } from "./useGossip";
 export type { GossipStatus, UseGossipOptions, UseGossipResult } from "./useGossip";
+
+export { useDoc } from "./useDoc";
+export type { DocEntryView, DocStatus, UseDocOptions, UseDocResult } from "./useDoc";
+
+export { useDocs } from "./useDocs";
+export type { UseDocsResult } from "./useDocs";
