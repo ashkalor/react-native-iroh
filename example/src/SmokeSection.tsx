@@ -1,7 +1,13 @@
 import React, { useCallback, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { Endpoint, IrohError, parseTicket } from "react-native-iroh";
-import type { EndpointAddr, Stream } from "react-native-iroh";
+import type {
+  DocEntry,
+  DocLiveEvent,
+  DocSubscription,
+  EndpointAddr,
+  Stream,
+} from "react-native-iroh";
 import { smokeAborted, smokeReport, smokeResult } from "./markers";
 import { SYSTEM_FILE_CANDIDATES, resetSmokeDir, shareFirstReadable } from "./paths";
 import { sectionStyles } from "./theme";
@@ -79,6 +85,167 @@ async function readChunksWithin(
     }
   }
   return chunks;
+}
+
+type CheckFn = (name: string, pass: boolean, detail: string) => void;
+
+/** Sentinel a raced timer resolves with, so a stalled `next()` breaks the loop
+ * instead of throwing. */
+const DOC_SYNC_TIMED_OUT = Symbol("doc-sync-timeout");
+
+/**
+ * Drains a document subscription until it has both observed the remote insert
+ * for `author`+`key` and confirmed the entry's content is local (a
+ * `content-ready` for `hash`, or an `insert-remote` that already reports the
+ * content complete). Bounded by `timeoutMs`: a sync that never lands returns
+ * with the missing flags unset rather than hanging, so the caller's checks fail
+ * the suite instead of stalling it.
+ */
+async function awaitDocSync(
+  sub: DocSubscription,
+  author: string,
+  key: string,
+  hash: string,
+  timeoutMs: number,
+): Promise<{ sawInsert: boolean; sawContent: boolean }> {
+  const iterator = sub.events[Symbol.asyncIterator]();
+  const deadline = Date.now() + timeoutMs;
+  let sawInsert = false;
+  let sawContent = false;
+  while (!(sawInsert && sawContent)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      break;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<typeof DOC_SYNC_TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(DOC_SYNC_TIMED_OUT), remaining);
+    });
+    let raced: IteratorResult<DocLiveEvent> | typeof DOC_SYNC_TIMED_OUT;
+    try {
+      raced = await Promise.race([iterator.next(), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (raced === DOC_SYNC_TIMED_OUT || raced.done) {
+      break;
+    }
+    const event = raced.value;
+    if (
+      event.type === "insert-remote" &&
+      event.entry.author === author &&
+      event.entry.key === key
+    ) {
+      sawInsert = true;
+      if (event.contentStatus === "complete") {
+        sawContent = true;
+      }
+    } else if (event.type === "content-ready" && event.hash === hash) {
+      sawContent = true;
+    }
+  }
+  return { sawInsert, sawContent };
+}
+
+/**
+ * Docs vertical, in process on-device: two docs-enabled endpoints (relay
+ * disabled) reconcile a document over loopback. Alice authors an entry and mints
+ * a write ticket; Bob imports it, subscribes, and starts sync against Alice's
+ * direct address; Bob observes the remote insert and content download, then
+ * reads the synced bytes back and compares them to Alice's write. Mirrors the
+ * Rust core's `two_endpoint_loopback_sync_observes_remote_insert` test.
+ *
+ * Persistent docs stores (`docsStoreDir`) under the fresh smoke workspace,
+ * mirroring the blob store dirs the rest of the suite uses; the workspace is
+ * wiped each run so no prior replica leaks in.
+ */
+async function runDocsSmoke(check: CheckFn, smokeDir: string): Promise<void> {
+  const alice = await Endpoint.create({
+    preset: "minimal",
+    relayMode: "disabled",
+    docs: true,
+    blobStoreDir: `${smokeDir}/alice-blob-store`,
+    docsStoreDir: `${smokeDir}/alice-docs-store`,
+  });
+  const bob = await Endpoint.create({
+    preset: "minimal",
+    relayMode: "disabled",
+    docs: true,
+    blobStoreDir: `${smokeDir}/bob-blob-store`,
+    docsStoreDir: `${smokeDir}/bob-docs-store`,
+  });
+  try {
+    check(
+      "docs endpoints",
+      alice.isOpen && bob.isOpen,
+      "two docs-enabled endpoints (relay disabled) open",
+    );
+
+    const author = await alice.docs.authors.default();
+    check("docs author", author.length === 64, `default author ${author.slice(0, 12)}...`);
+
+    const doc = await alice.docs.create();
+    check("docs create", doc.id.length === 64, `namespace ${doc.id.slice(0, 12)}...`);
+
+    const key = "chapter/1";
+    const value = rampBytes(256);
+    const hash = await doc.setBytes(author, key, value.buffer as ArrayBuffer);
+    check(
+      "docs setBytes",
+      hash.length === 64,
+      `hash ${hash.slice(0, 16)}... for ${value.length} bytes`,
+    );
+
+    const ticket = await doc.share("write");
+    check(
+      "docs share",
+      ticket.startsWith("doc") && ticket.length > 50,
+      `write ticket[${ticket.length} chars]`,
+    );
+
+    const bobDoc = await bob.docs.import(ticket);
+    check("docs import", bobDoc.id === doc.id, "bob imported alice's namespace");
+
+    // Subscribe before sync starts so the remote insert lands on a live
+    // subscriber and no event is missed.
+    const sub = bobDoc.subscribe();
+    await sub.started;
+    check("docs subscribe", true, "bob live subscription started");
+
+    // Alice enables her side (peers already known via the ticket), then Bob dials
+    // Alice's direct address (relay disabled) and reconciles.
+    await doc.startSync();
+    await bobDoc.startSync([alice.addr]);
+
+    const { sawInsert, sawContent } = await awaitDocSync(sub, author, key, hash, 20000);
+    check(
+      "docs remote insert",
+      sawInsert,
+      `insert-remote for ${key} authored by ${author.slice(0, 12)}...`,
+    );
+    check("docs content ready", sawContent, `content available for ${hash.slice(0, 16)}...`);
+
+    const entry = await bobDoc.getExact(author, key);
+    check(
+      "docs getExact",
+      entry !== null && entry.hash === hash,
+      entry === null ? "no entry synced" : `entry hash matches, size=${entry.size}`,
+    );
+
+    const content = new Uint8Array(await bobDoc.getContent(entry as DocEntry));
+    check(
+      "docs getContent integrity",
+      bytesEqual(content, value),
+      `${content.length} synced bytes equal alice's write`,
+    );
+
+    sub.unsubscribe();
+    await bobDoc.leave();
+    await doc.leave();
+  } finally {
+    await alice.close();
+    await bob.close();
+  }
 }
 
 /**
@@ -304,6 +471,8 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
     staleError instanceof IrohError && staleError.code === 1001,
     `blobs.share after close rejected with code ${staleError instanceof IrohError ? staleError.code : "?"}`,
   );
+
+  await runDocsSmoke(check, smokeDir);
 }
 
 type SuiteStatus = "idle" | "running" | "all-pass" | "failed";

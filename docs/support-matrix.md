@@ -24,6 +24,7 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 | Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator) | Validated (device)               |
 | Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)               |
 | Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)          | Code-complete, roundtrip pending |
+| Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)          | Not yet validated                |
 
 ### Raw QUIC streams
 
@@ -48,6 +49,28 @@ What is still not covered on either platform is a two-_device_ streams roundtrip
 over the relay (as opposed to the in-process loopback above): a stream between
 two separate handsets, bytes compared on arrival, the way the cross-platform
 transfer row is validated.
+
+### Docs
+
+Added in 0.2.3. On Android this is exercised on-device by the smoke suite: two
+docs-enabled endpoints are created with relays disabled, so they can reach each
+other only through the direct addresses in a ticket. One authors an entry, writes
+its bytes, and mints a write ticket; the other imports the ticket, subscribes to
+the document, and starts sync against the author's direct address. The subscriber
+observes the remote insert (authored by the peer, not a local echo) and the
+content download completing, then reads the synced value back out of its blob
+store and compares it byte-for-byte with the origin write. All of that folds into
+the suite's `SMOKE: RESULT ALL PASS`, so the emulator gate covers docs create /
+set / share / import / subscribe / startSync / getContent in one loopback run.
+
+Also exercised off-device: the Rust core's
+`two_endpoint_loopback_sync_observes_remote_insert` test drives the same
+reconciliation between two in-process minimal-preset endpoints, and the
+TypeScript layer is covered by unit tests against a mocked bridge.
+
+What is still not covered is a two-_device_ docs sync over the relay (two separate
+handsets reconciling a document and comparing the synced bytes), and iOS has not
+run docs at all yet, which is why its cell stays "Not yet validated".
 
 ### Cross-platform transfer
 
@@ -153,7 +176,7 @@ Gossip and discovery are unaffected and keep working across the same switch.
 ## React hooks
 
 The `react-native-iroh/hooks` layer (`useEndpoint`, `useTransfer`, `useDownload`,
-`useGossip`) is pure TypeScript over the APIs above, with no native code of its
+`useGossip`, `useDocs`, `useDoc`) is pure TypeScript over the APIs above, with no native code of its
 own. It is validated by renderer and unit tests (mocking the native binding), so
 on any given platform a hook inherits exactly the status of the feature it wraps
 from the table above.
