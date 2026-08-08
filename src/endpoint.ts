@@ -1,3 +1,4 @@
+import { DocsController, type DocsApi, type DocsBinding } from "./docs";
 import { IrohError } from "./errors";
 import {
   GossipSubscriptionController,
@@ -384,6 +385,19 @@ export interface EndpointOptions {
    */
   blobStoreDir?: string;
   /**
+   * Enable the iroh-docs meta-protocol on this endpoint, exposing
+   * {@link Endpoint.docs} (author identity + document CRUD). Omit (or `false`)
+   * to pay zero docs cost: no docs store, no ALPN, no background engine, and
+   * every {@link Endpoint.docs} call rejects with kind `"docs-disabled"`.
+   */
+  docs?: boolean;
+  /**
+   * Absolute directory path for the persistent docs store (replicas and
+   * authors), used only when {@link EndpointOptions.docs} is enabled. Omit to
+   * keep docs in memory (they are lost when the endpoint closes).
+   */
+  docsStoreDir?: string;
+  /**
    * Optional app-level throttle on concurrently active downloads for this
    * endpoint; further downloads wait in a FIFO queue. Defaults to
    * {@link DEFAULT_MAX_CONCURRENT_DOWNLOADS}. Values below 1 are clamped to 1
@@ -463,6 +477,16 @@ export class Endpoint {
    */
   readonly streams: Streams;
 
+  /**
+   * The endpoint's document API ({@link DocsApi}): author identity plus
+   * document CRUD over the iroh-docs meta-protocol. Present always, but every
+   * call rejects with kind `"docs-disabled"` unless the endpoint was created
+   * with {@link EndpointOptions.docs} enabled.
+   *
+   * @see https://docs.rs/iroh-docs/0.101.0/iroh_docs/
+   */
+  readonly docs: DocsApi;
+
   private constructor(
     binding: IrohBinding,
     handle: number,
@@ -486,6 +510,34 @@ export class Endpoint {
     this.streams = {
       listen: (alpn, options) => this.listenStreams(alpn, options),
       connect: (peer, alpn, options) => this.connectStreams(peer, alpn, options),
+    };
+    this.docs = new DocsController(this.docsBinding());
+  }
+
+  /** Binds the native docs calls to this endpoint's handle for the docs API. */
+  private docsBinding(): DocsBinding {
+    const endpoint = this.handle;
+    const binding = this.binding;
+    return {
+      authorsDefault: () => binding.authorsDefault(endpoint),
+      authorsCreate: () => binding.authorsCreate(endpoint),
+      authorsList: () => binding.authorsList(endpoint),
+      authorsImport: (secretKey) => binding.authorsImport(endpoint, secretKey),
+      docsCreate: () => binding.docsCreate(endpoint),
+      docsOpen: (namespaceId) => binding.docsOpen(endpoint, namespaceId),
+      docsImport: (ticket) => binding.docsImport(endpoint, ticket),
+      docsList: () => binding.docsList(endpoint),
+      docsDrop: (namespaceId) => binding.docsDrop(endpoint, namespaceId),
+      docsSetBytes: (namespaceId, authorId, key, value) =>
+        binding.docsSetBytes(endpoint, namespaceId, authorId, key, value),
+      docsGetExact: (namespaceId, authorId, key) =>
+        binding.docsGetExact(endpoint, namespaceId, authorId, key),
+      docsGetMany: (namespaceId, queryJson) =>
+        binding.docsGetMany(endpoint, namespaceId, queryJson),
+      docsDeletePrefix: (namespaceId, authorId, prefix) =>
+        binding.docsDeletePrefix(endpoint, namespaceId, authorId, prefix),
+      docsShare: (namespaceId, mode) => binding.docsShare(endpoint, namespaceId, mode),
+      docsGetContent: (hash) => binding.docsGetContent(endpoint, hash),
     };
   }
 
@@ -516,6 +568,12 @@ export class Endpoint {
     const config: EndpointConfig = { preset };
     if (options.blobStoreDir !== undefined) {
       config.blobStoreDir = options.blobStoreDir;
+    }
+    if (options.docs !== undefined) {
+      config.docs = options.docs;
+    }
+    if (options.docsStoreDir !== undefined) {
+      config.docsStoreDir = options.docsStoreDir;
     }
     if (options.relayMode !== undefined) {
       // Throws a typed IrohError synchronously for an empty custom list.

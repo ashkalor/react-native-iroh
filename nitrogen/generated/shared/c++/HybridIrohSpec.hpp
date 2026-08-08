@@ -83,6 +83,22 @@ namespace margelo::nitro::iroh {
       virtual void streamSubscribe(double streamId, const std::function<void(const std::shared_ptr<ArrayBuffer>& /* chunk */)>& onData, const std::function<void(const std::string& /* event */)>& onClose) = 0;
       virtual std::shared_ptr<Promise<void>> streamSend(double streamId, const std::shared_ptr<ArrayBuffer>& data) = 0;
       virtual void streamClose(double streamId) = 0;
+      virtual std::shared_ptr<Promise<std::string>> authorsDefault(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<std::string>> authorsCreate(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<std::string>> authorsList(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<std::string>> authorsImport(double endpoint, const std::string& secretKey) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsCreate(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<bool>> docsOpen(double endpoint, const std::string& namespaceId) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsImport(double endpoint, const std::string& ticket) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsList(double endpoint) = 0;
+      virtual std::shared_ptr<Promise<void>> docsDrop(double endpoint, const std::string& namespaceId) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsSetBytes(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& key, const std::shared_ptr<ArrayBuffer>& value) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsGetExact(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& key) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsGetMany(double endpoint, const std::string& namespaceId, const std::string& queryJson) = 0;
+      virtual std::shared_ptr<Promise<double>> docsDeletePrefix(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& prefix) = 0;
+      virtual std::shared_ptr<Promise<std::string>> docsShare(double endpoint, const std::string& namespaceId, const std::string& mode) = 0;
+      virtual std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>> docsGetContent(double endpoint, const std::string& hash) = 0;
+      virtual std::string parseDocTicket(const std::string& ticket) = 0;
 
     protected:
       // Hybrid Setup

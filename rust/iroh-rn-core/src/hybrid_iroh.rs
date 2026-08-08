@@ -30,6 +30,12 @@ use crate::{
         parse_ticket, CollectionEntry, TicketInfo, TransferHandle,
     },
     coalesce::Coalescer,
+    docs::{
+        authors_create, authors_default, authors_import, authors_list, docs_create,
+        docs_delete_prefix, docs_drop, docs_get_content, docs_get_exact, docs_get_many,
+        docs_import, docs_list, docs_open, docs_set_bytes, docs_share, parse_doc_ticket,
+        DocEntryInfo, DocTicketInfo,
+    },
     endpoint::{
         endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
         endpoint_online, endpoint_remote_info, stop_watch_addr, watch_addr, EndpointAddrInfo,
@@ -185,6 +191,61 @@ fn remote_info_to_json(info: Option<&RemoteEndpointInfo>) -> String {
         out.push_str(",\"active\":");
         out.push_str(if entry.active { "true" } else { "false" });
         out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+/// Serializes a [`DocEntryInfo`] as a JSON object string for the bridge.
+fn doc_entry_to_json(entry: &DocEntryInfo) -> String {
+    let mut out = String::from("{\"author\":");
+    push_json_string(&mut out, &entry.author);
+    out.push_str(",\"key\":");
+    push_json_string(&mut out, &entry.key);
+    out.push_str(",\"hash\":");
+    push_json_string(&mut out, &entry.hash);
+    out.push_str(",\"size\":");
+    out.push_str(&entry.size.to_string());
+    out.push_str(",\"timestamp\":");
+    out.push_str(&entry.timestamp.to_string());
+    out.push('}');
+    out
+}
+
+/// Serializes an optional [`DocEntryInfo`] for the bridge: the entry object, or
+/// the JSON literal `null` when the entry is absent (e.g. deleted).
+fn doc_entry_opt_to_json(entry: Option<&DocEntryInfo>) -> String {
+    match entry {
+        Some(entry) => doc_entry_to_json(entry),
+        None => String::from("null"),
+    }
+}
+
+/// Serializes a list of [`DocEntryInfo`] as a JSON array string for the bridge.
+fn doc_entries_to_json(entries: &[DocEntryInfo]) -> String {
+    let mut out = String::from("[");
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&doc_entry_to_json(entry));
+    }
+    out.push(']');
+    out
+}
+
+/// Serializes a [`DocTicketInfo`] as a JSON object string for the bridge.
+fn doc_ticket_info_to_json(info: &DocTicketInfo) -> String {
+    let mut out = String::from("{\"namespace\":");
+    push_json_string(&mut out, &info.namespace);
+    out.push_str(",\"capability\":");
+    push_json_string(&mut out, info.capability);
+    out.push_str(",\"nodeIds\":[");
+    for (i, node) in info.node_ids.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, node);
     }
     out.push_str("]}");
     out
@@ -541,6 +602,175 @@ impl HybridIrohSpec for HybridIroh {
     fn stream_close(&self, stream_id: f64) -> Result<(), String> {
         stream_close(StreamHandle::from_raw(stream_id as u64));
         Ok(())
+    }
+
+    fn authors_default(&self, endpoint: f64, promise: Completer<String>) {
+        authors_default(endpoint_handle(endpoint), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn authors_create(&self, endpoint: f64, promise: Completer<String>) {
+        authors_create(endpoint_handle(endpoint), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn authors_list(&self, endpoint: f64, promise: Completer<String>) {
+        authors_list(endpoint_handle(endpoint), move |result| {
+            promise(result.map(|ids| ids.join("\n")).map_err(encode_error));
+        });
+    }
+
+    fn authors_import(&self, endpoint: f64, secret_key: String, promise: Completer<String>) {
+        authors_import(endpoint_handle(endpoint), secret_key, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_create(&self, endpoint: f64, promise: Completer<String>) {
+        docs_create(endpoint_handle(endpoint), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_open(&self, endpoint: f64, namespace_id: String, promise: Completer<bool>) {
+        docs_open(endpoint_handle(endpoint), namespace_id, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_import(&self, endpoint: f64, ticket: String, promise: Completer<String>) {
+        docs_import(endpoint_handle(endpoint), ticket, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_list(&self, endpoint: f64, promise: Completer<String>) {
+        docs_list(endpoint_handle(endpoint), move |result| {
+            promise(result.map(|ids| ids.join("\n")).map_err(encode_error));
+        });
+    }
+
+    fn docs_drop(&self, endpoint: f64, namespace_id: String, promise: Completer<()>) {
+        docs_drop(endpoint_handle(endpoint), namespace_id, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_set_bytes(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        author_id: String,
+        key: String,
+        value: NitroBuffer,
+        promise: Completer<String>,
+    ) {
+        // The host's ArrayBuffer is only guaranteed valid for this call, so the
+        // bytes are copied out before the write is handed to the runtime.
+        docs_set_bytes(
+            endpoint_handle(endpoint),
+            namespace_id,
+            author_id,
+            key,
+            value.to_vec(),
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_get_exact(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        author_id: String,
+        key: String,
+        promise: Completer<String>,
+    ) {
+        docs_get_exact(
+            endpoint_handle(endpoint),
+            namespace_id,
+            author_id,
+            key,
+            move |result| {
+                promise(
+                    result
+                        .map(|entry| doc_entry_opt_to_json(entry.as_ref()))
+                        .map_err(encode_error),
+                );
+            },
+        );
+    }
+
+    fn docs_get_many(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        query_json: String,
+        promise: Completer<String>,
+    ) {
+        docs_get_many(
+            endpoint_handle(endpoint),
+            namespace_id,
+            query_json,
+            move |result| {
+                promise(
+                    result
+                        .map(|entries| doc_entries_to_json(&entries))
+                        .map_err(encode_error),
+                );
+            },
+        );
+    }
+
+    fn docs_delete_prefix(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        author_id: String,
+        prefix: String,
+        promise: Completer<f64>,
+    ) {
+        docs_delete_prefix(
+            endpoint_handle(endpoint),
+            namespace_id,
+            author_id,
+            prefix,
+            move |result| {
+                promise(result.map(|removed| removed as f64).map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_share(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        mode: String,
+        promise: Completer<String>,
+    ) {
+        docs_share(
+            endpoint_handle(endpoint),
+            namespace_id,
+            mode,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_get_content(&self, endpoint: f64, hash: String, promise: Completer<NitroBuffer>) {
+        docs_get_content(endpoint_handle(endpoint), hash, move |result| {
+            promise(result.map(NitroBuffer::from_vec).map_err(encode_error));
+        });
+    }
+
+    fn parse_doc_ticket(&self, ticket: String) -> Result<String, String> {
+        parse_doc_ticket(&ticket)
+            .map(|info| doc_ticket_info_to_json(&info))
+            .map_err(encode_error)
     }
 }
 

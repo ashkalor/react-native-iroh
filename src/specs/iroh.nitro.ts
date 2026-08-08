@@ -342,4 +342,99 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * Idempotent.
    */
   streamClose(streamId: number): void;
+  /**
+   * Returns this node's default author id (hex), creating it on first use.
+   * Rejects with code 6000 if the endpoint was created without docs enabled.
+   */
+  authorsDefault(endpoint: number): Promise<string>;
+  /** Creates a new author and resolves with its id (hex). */
+  authorsCreate(endpoint: number): Promise<string>;
+  /**
+   * Resolves with the ids (hex) of every author this node holds a secret key
+   * for, newline-joined (empty string when there are none).
+   */
+  authorsList(endpoint: number): Promise<string>;
+  /**
+   * Imports an author from its secret key (hex) and resolves with its id (hex).
+   * Rejects with code 6002 if the secret is malformed.
+   */
+  authorsImport(endpoint: number, secretKey: string): Promise<string>;
+  /** Creates a new document and resolves with its namespace id (hex). */
+  docsCreate(endpoint: number): Promise<string>;
+  /**
+   * Whether a document with `namespaceId` (hex) is known to this node. Backs
+   * `open() -> Doc | null`. Rejects with code 6002 for a malformed id.
+   */
+  docsOpen(endpoint: number, namespaceId: string): Promise<boolean>;
+  /**
+   * Imports a document from a `DocTicket` string, joining the peers it names,
+   * and resolves with its namespace id (hex). Live sync is not started here.
+   * Rejects with code 6003 for a malformed ticket.
+   */
+  docsImport(endpoint: number, ticket: string): Promise<string>;
+  /**
+   * Resolves with the namespace ids (hex) of every document on this node,
+   * newline-joined (empty string when there are none).
+   */
+  docsList(endpoint: number): Promise<string>;
+  /** Removes a document and its entries from this node. */
+  docsDrop(endpoint: number, namespaceId: string): Promise<void>;
+  /**
+   * Writes `value` under `key` for `author` in the document (bytes go to the
+   * shared blob store) and resolves with the content hash (hex).
+   */
+  docsSetBytes(
+    endpoint: number,
+    namespaceId: string,
+    authorId: string,
+    key: string,
+    value: ArrayBuffer,
+  ): Promise<string>;
+  /**
+   * Resolves with the entry for `author` + `key` as a JSON object string
+   * `{ author, key, hash, size, timestamp }` (see the `DocEntry` TS type), or
+   * the JSON literal `null` if there is none (a deleted entry reads as absent).
+   * The content hash is included; the bytes are not.
+   */
+  docsGetExact(
+    endpoint: number,
+    namespaceId: string,
+    authorId: string,
+    key: string,
+  ): Promise<string>;
+  /**
+   * Resolves with a JSON array string of `DocEntry` objects matching
+   * `queryJson` (a JSON object `{ author?, keyExact?, keyPrefix? }`; empty
+   * string matches all). Each entry carries its content hash; bytes are not
+   * fetched.
+   */
+  docsGetMany(endpoint: number, namespaceId: string, queryJson: string): Promise<string>;
+  /**
+   * Deletes every entry for `author` whose key equals `prefix` OR starts with
+   * it, and resolves with the number removed. Prefix-scoped: iroh-docs has no
+   * exact-delete primitive, so this also removes any prefix-siblings.
+   */
+  docsDeletePrefix(
+    endpoint: number,
+    namespaceId: string,
+    authorId: string,
+    prefix: string,
+  ): Promise<number>;
+  /**
+   * Mints a shareable `DocTicket` string for the document. `mode` is `"read"`
+   * or `"write"`.
+   */
+  docsShare(endpoint: number, namespaceId: string, mode: string): Promise<string>;
+  /**
+   * Resolves an entry's content by its `hash` (hex), reading the bytes out of
+   * the endpoint's shared blob store as an `ArrayBuffer`. This is the opt-in
+   * content fetch: reads never pull bytes on their own.
+   */
+  docsGetContent(endpoint: number, hash: string): Promise<ArrayBuffer>;
+  /**
+   * Decodes `ticket` and returns a JSON object string
+   * `{ namespace, capability, nodeIds }` (see the `DocTicketInfo` TS type).
+   * Synchronous and side-effect-free. Throws code 6003 on a malformed ticket.
+   */
+  parseDocTicket(ticket: string): string;
 }

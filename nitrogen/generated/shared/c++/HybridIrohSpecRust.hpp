@@ -67,6 +67,22 @@ extern "C" {
   __FfiResult_void HybridIrohSpec_stream_subscribe(void* rustPtr, double streamId, void* onData, void* onClose);
   void HybridIrohSpec_stream_send(void* rustPtr, double streamId, void* data, void(*resolve)(void*), void(*reject)(void*, char*), void* userdata);
   __FfiResult_void HybridIrohSpec_stream_close(void* rustPtr, double streamId);
+  void HybridIrohSpec_authors_default(void* rustPtr, double endpoint, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_authors_create(void* rustPtr, double endpoint, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_authors_list(void* rustPtr, double endpoint, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_authors_import(void* rustPtr, double endpoint, const char* secretKey, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_create(void* rustPtr, double endpoint, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_open(void* rustPtr, double endpoint, const char* namespaceId, void(*resolve)(void*, bool), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_import(void* rustPtr, double endpoint, const char* ticket, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_list(void* rustPtr, double endpoint, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_drop(void* rustPtr, double endpoint, const char* namespaceId, void(*resolve)(void*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_set_bytes(void* rustPtr, double endpoint, const char* namespaceId, const char* authorId, const char* key, void* value, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_get_exact(void* rustPtr, double endpoint, const char* namespaceId, const char* authorId, const char* key, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_get_many(void* rustPtr, double endpoint, const char* namespaceId, const char* queryJson, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_delete_prefix(void* rustPtr, double endpoint, const char* namespaceId, const char* authorId, const char* prefix, void(*resolve)(void*, double), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_share(void* rustPtr, double endpoint, const char* namespaceId, const char* mode, void(*resolve)(void*, const char*), void(*reject)(void*, char*), void* userdata);
+  void HybridIrohSpec_docs_get_content(void* rustPtr, double endpoint, const char* hash, void(*resolve)(void*, void*), void(*reject)(void*, char*), void* userdata);
+  __FfiResult_cstr HybridIrohSpec_parse_doc_ticket(void* rustPtr, const char* ticket);
   size_t HybridIrohSpec_memory_size(void* rustPtr);
   void HybridIrohSpec_destroy(void* rustPtr);
   void __nitrogen_free_cstring(char* ptr);
@@ -186,6 +202,97 @@ namespace margelo::nitro::iroh {
           return __promise;
         }
     inline void streamClose(double streamId) override { auto __ffi = HybridIrohSpec_stream_close(_rustPtr, streamId); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } }
+    inline std::shared_ptr<Promise<std::string>> authorsDefault(double endpoint) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_authors_default(_rustPtr, endpoint, [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> authorsCreate(double endpoint) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_authors_create(_rustPtr, endpoint, [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> authorsList(double endpoint) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_authors_list(_rustPtr, endpoint, [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> authorsImport(double endpoint, const std::string& secretKey) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_authors_import(_rustPtr, endpoint, secretKey.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsCreate(double endpoint) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_create(_rustPtr, endpoint, [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<bool>> docsOpen(double endpoint, const std::string& namespaceId) override {
+          auto __promise = Promise<bool>::create();
+          auto* __userdata = new std::shared_ptr<Promise<bool>>(__promise);
+          HybridIrohSpec_docs_open(_rustPtr, endpoint, namespaceId.c_str(), [](void* __ud, bool __value) { std::unique_ptr<std::shared_ptr<Promise<bool>>> __p(static_cast<std::shared_ptr<Promise<bool>>*>(__ud)); (*__p)->resolve(__value); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<bool>>> __p(static_cast<std::shared_ptr<Promise<bool>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsImport(double endpoint, const std::string& ticket) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_import(_rustPtr, endpoint, ticket.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsList(double endpoint) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_list(_rustPtr, endpoint, [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<void>> docsDrop(double endpoint, const std::string& namespaceId) override {
+          auto __promise = Promise<void>::create();
+          auto* __userdata = new std::shared_ptr<Promise<void>>(__promise);
+          HybridIrohSpec_docs_drop(_rustPtr, endpoint, namespaceId.c_str(), [](void* __ud) { std::unique_ptr<std::shared_ptr<Promise<void>>> __p(static_cast<std::shared_ptr<Promise<void>>*>(__ud)); (*__p)->resolve(); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<void>>> __p(static_cast<std::shared_ptr<Promise<void>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsSetBytes(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& key, const std::shared_ptr<ArrayBuffer>& value) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_set_bytes(_rustPtr, endpoint, namespaceId.c_str(), authorId.c_str(), key.c_str(), [&]() -> void* { struct __NB { uint8_t* data; size_t len; void* handle; void(*release_fn)(void*); }; auto __sp = new std::shared_ptr<ArrayBuffer>(std::move(value)); return static_cast<void*>(new __NB { (*__sp)->data(), (*__sp)->size(), static_cast<void*>(__sp), [](void* __h) { delete static_cast<std::shared_ptr<ArrayBuffer>*>(__h); } }); }(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsGetExact(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& key) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_get_exact(_rustPtr, endpoint, namespaceId.c_str(), authorId.c_str(), key.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsGetMany(double endpoint, const std::string& namespaceId, const std::string& queryJson) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_get_many(_rustPtr, endpoint, namespaceId.c_str(), queryJson.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<double>> docsDeletePrefix(double endpoint, const std::string& namespaceId, const std::string& authorId, const std::string& prefix) override {
+          auto __promise = Promise<double>::create();
+          auto* __userdata = new std::shared_ptr<Promise<double>>(__promise);
+          HybridIrohSpec_docs_delete_prefix(_rustPtr, endpoint, namespaceId.c_str(), authorId.c_str(), prefix.c_str(), [](void* __ud, double __value) { std::unique_ptr<std::shared_ptr<Promise<double>>> __p(static_cast<std::shared_ptr<Promise<double>>*>(__ud)); (*__p)->resolve(__value); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<double>>> __p(static_cast<std::shared_ptr<Promise<double>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::string>> docsShare(double endpoint, const std::string& namespaceId, const std::string& mode) override {
+          auto __promise = Promise<std::string>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::string>>(__promise);
+          HybridIrohSpec_docs_share(_rustPtr, endpoint, namespaceId.c_str(), mode.c_str(), [](void* __ud, const char* __value) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); (*__p)->resolve(([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__value)); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::string>>> __p(static_cast<std::shared_ptr<Promise<std::string>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>> docsGetContent(double endpoint, const std::string& hash) override {
+          auto __promise = Promise<std::shared_ptr<ArrayBuffer>>::create();
+          auto* __userdata = new std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>>(__promise);
+          HybridIrohSpec_docs_get_content(_rustPtr, endpoint, hash.c_str(), [](void* __ud, void* __value) { std::unique_ptr<std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>>> __p(static_cast<std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>>*>(__ud)); (*__p)->resolve([&]() -> std::shared_ptr<ArrayBuffer> { struct __NB { uint8_t* data; size_t len; void* handle; void(*release_fn)(void*); }; auto __nb = static_cast<__NB*>(__value); auto __data = __nb->data; auto __len = __nb->len; auto __handle = __nb->handle; auto __release = __nb->release_fn; delete __nb; return ArrayBuffer::wrap(__data, __len, [=]() { __release(__handle); }); }()); }, [](void* __ud, char* __error) { std::unique_ptr<std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>>> __p(static_cast<std::shared_ptr<Promise<std::shared_ptr<ArrayBuffer>>>*>(__ud)); std::string __msg(__error ? __error : "unknown Rust error"); if (__error) __nitrogen_free_cstring(__error); (*__p)->reject(std::make_exception_ptr(std::runtime_error(__msg))); }, static_cast<void*>(__userdata));
+          return __promise;
+        }
+    inline std::string parseDocTicket(const std::string& ticket) override { auto __ffi = HybridIrohSpec_parse_doc_ticket(_rustPtr, ticket.c_str()); if (!__ffi.is_ok) { __throwRustError(__ffi.error); } return ([](const char* __p) -> std::string { std::string __s(__p); __nitrogen_free_cstring(const_cast<char*>(__p)); return __s; })(__ffi.value); }
 
   public:
     inline size_t getExternalMemorySize() noexcept override {

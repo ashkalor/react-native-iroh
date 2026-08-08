@@ -22,6 +22,7 @@
 pub mod android_context;
 pub mod blobs;
 mod coalesce;
+pub mod docs;
 pub mod endpoint;
 pub mod error;
 mod ffi;

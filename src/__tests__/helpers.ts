@@ -123,6 +123,13 @@ export interface GossipBroadcastCall {
   deferred: Deferred<void>;
 }
 
+/** One recorded native docs call: the method name, endpoint, and its args. */
+export interface DocsCall {
+  method: string;
+  endpoint: number;
+  args: unknown[];
+}
+
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
@@ -150,6 +157,25 @@ export interface MockBinding {
   streamSubscribes: StreamSubscribeCall[];
   streamSends: StreamSendCall[];
   closedStreams: number[];
+  /** Every recorded docs/authors native call, in order. */
+  docsCalls: DocsCall[];
+  /** Configurable return values for the docs bridge methods. */
+  docsReturns: {
+    authorsDefault: string;
+    authorsCreate: string;
+    authorsList: string;
+    authorsImport: string;
+    docsCreate: string;
+    docsOpen: boolean;
+    docsImport: string;
+    docsList: string;
+    docsGetExact: string;
+    docsGetMany: string;
+    docsDeletePrefix: number;
+    docsShare: string;
+    docsGetContent: ArrayBuffer;
+    parseDocTicket: string;
+  };
   /** When false, gossipSubscribe does not auto-fire onStart (the test drives it). */
   autoStartGossip: boolean;
   /** JSON string that {@link IrohBinding.endpointAddr} returns. */
@@ -383,6 +409,82 @@ export function createMockBinding(): MockBinding {
       streamClose: (streamId) => {
         mock.closedStreams.push(streamId);
       },
+      authorsDefault: (endpoint) => {
+        mock.docsCalls.push({ method: "authorsDefault", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.authorsDefault);
+      },
+      authorsCreate: (endpoint) => {
+        mock.docsCalls.push({ method: "authorsCreate", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.authorsCreate);
+      },
+      authorsList: (endpoint) => {
+        mock.docsCalls.push({ method: "authorsList", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.authorsList);
+      },
+      authorsImport: (endpoint, secretKey) => {
+        mock.docsCalls.push({ method: "authorsImport", endpoint, args: [secretKey] });
+        return Promise.resolve(mock.docsReturns.authorsImport);
+      },
+      docsCreate: (endpoint) => {
+        mock.docsCalls.push({ method: "docsCreate", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.docsCreate);
+      },
+      docsOpen: (endpoint, namespaceId) => {
+        mock.docsCalls.push({ method: "docsOpen", endpoint, args: [namespaceId] });
+        return Promise.resolve(mock.docsReturns.docsOpen);
+      },
+      docsImport: (endpoint, ticket) => {
+        mock.docsCalls.push({ method: "docsImport", endpoint, args: [ticket] });
+        return Promise.resolve(mock.docsReturns.docsImport);
+      },
+      docsList: (endpoint) => {
+        mock.docsCalls.push({ method: "docsList", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.docsList);
+      },
+      docsDrop: (endpoint, namespaceId) => {
+        mock.docsCalls.push({ method: "docsDrop", endpoint, args: [namespaceId] });
+        return Promise.resolve();
+      },
+      docsSetBytes: (endpoint, namespaceId, authorId, key, value) => {
+        mock.docsCalls.push({
+          method: "docsSetBytes",
+          endpoint,
+          args: [namespaceId, authorId, key, value],
+        });
+        return Promise.resolve(mock.docsReturns.docsCreate);
+      },
+      docsGetExact: (endpoint, namespaceId, authorId, key) => {
+        mock.docsCalls.push({
+          method: "docsGetExact",
+          endpoint,
+          args: [namespaceId, authorId, key],
+        });
+        return Promise.resolve(mock.docsReturns.docsGetExact);
+      },
+      docsGetMany: (endpoint, namespaceId, queryJson) => {
+        mock.docsCalls.push({ method: "docsGetMany", endpoint, args: [namespaceId, queryJson] });
+        return Promise.resolve(mock.docsReturns.docsGetMany);
+      },
+      docsDeletePrefix: (endpoint, namespaceId, authorId, prefix) => {
+        mock.docsCalls.push({
+          method: "docsDeletePrefix",
+          endpoint,
+          args: [namespaceId, authorId, prefix],
+        });
+        return Promise.resolve(mock.docsReturns.docsDeletePrefix);
+      },
+      docsShare: (endpoint, namespaceId, mode) => {
+        mock.docsCalls.push({ method: "docsShare", endpoint, args: [namespaceId, mode] });
+        return Promise.resolve(mock.docsReturns.docsShare);
+      },
+      docsGetContent: (endpoint, hash) => {
+        mock.docsCalls.push({ method: "docsGetContent", endpoint, args: [hash] });
+        return Promise.resolve(mock.docsReturns.docsGetContent);
+      },
+      parseDocTicket: (ticket) => {
+        mock.docsCalls.push({ method: "parseDocTicket", endpoint: 0, args: [ticket] });
+        return mock.docsReturns.parseDocTicket;
+      },
     },
     configs: [],
     endpointIdCalls: [],
@@ -409,6 +511,27 @@ export function createMockBinding(): MockBinding {
     streamSubscribes: [],
     streamSends: [],
     closedStreams: [],
+    docsCalls: [],
+    docsReturns: {
+      authorsDefault: "a".repeat(64),
+      authorsCreate: "b".repeat(64),
+      authorsList: `${"a".repeat(64)}\n${"b".repeat(64)}`,
+      authorsImport: "c".repeat(64),
+      docsCreate: "d".repeat(64),
+      docsOpen: true,
+      docsImport: "e".repeat(64),
+      docsList: `${"d".repeat(64)}\n${"e".repeat(64)}`,
+      docsGetExact: "null",
+      docsGetMany: "[]",
+      docsDeletePrefix: 0,
+      docsShare: `doc${"a".repeat(60)}`,
+      docsGetContent: new ArrayBuffer(0),
+      parseDocTicket: JSON.stringify({
+        namespace: "d".repeat(64),
+        capability: "write",
+        nodeIds: [],
+      }),
+    },
     autoStartGossip: true,
     addrJson: JSON.stringify({
       id: "endpoint-1",

@@ -23,6 +23,10 @@ const KIND_BY_CODE = {
   5004: "stream-closed",
   5005: "stream-frame-too-large",
   5006: "stream-overflow",
+  6000: "docs-disabled",
+  6001: "docs",
+  6002: "docs-invalid-id",
+  6003: "docs-invalid-ticket",
 } as const;
 
 type KindByCode = typeof KIND_BY_CODE;

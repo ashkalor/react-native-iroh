@@ -36,6 +36,22 @@ export type IrohBinding = Pick<
   | "streamSubscribe"
   | "streamSend"
   | "streamClose"
+  | "authorsDefault"
+  | "authorsCreate"
+  | "authorsList"
+  | "authorsImport"
+  | "docsCreate"
+  | "docsOpen"
+  | "docsImport"
+  | "docsList"
+  | "docsDrop"
+  | "docsSetBytes"
+  | "docsGetExact"
+  | "docsGetMany"
+  | "docsDeletePrefix"
+  | "docsShare"
+  | "docsGetContent"
+  | "parseDocTicket"
 >;
 
 let singleton: IrohSpec | undefined;

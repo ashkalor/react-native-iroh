@@ -8,6 +8,17 @@ import type { EndpointAddr, EndpointId, EndpointOptions, RelayMode } from "../en
 import { getIrohErrorCode, IrohError } from "../errors";
 import type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "../errors";
 import type { IrohBinding } from "../native";
+import { parseDocTicket, validateDocTicketShape } from "../docs";
+import type {
+  AuthorId,
+  Doc,
+  DocEntry,
+  DocsApi,
+  DocShareMode,
+  DocTicket,
+  DocTicketInfo,
+  NamespaceId,
+} from "../docs";
 import { parseTicket, validateTicketShape } from "../ticket";
 import type { BlobFormat, BlobTicket, TicketInfo } from "../ticket";
 import type { StreamFraming } from "../specs/iroh.nitro";
@@ -26,6 +37,8 @@ declare const options: Required<EndpointOptions>;
 declare const listener: StreamListener;
 declare const connection: Connection;
 declare const stream: Stream;
+declare const doc: Doc;
+declare const docContent: ArrayBuffer;
 
 export type Cases = [
   // Error unions are exactly the stable table.
@@ -51,6 +64,10 @@ export type Cases = [
       | 5004
       | 5005
       | 5006
+      | 6000
+      | 6001
+      | 6002
+      | 6003
     >
   >,
   Expect<
@@ -75,6 +92,10 @@ export type Cases = [
       | "stream-closed"
       | "stream-frame-too-large"
       | "stream-overflow"
+      | "docs-disabled"
+      | "docs"
+      | "docs-invalid-id"
+      | "docs-invalid-ticket"
     >
   >,
   Expect<Equal<IrohErrorCase["code"], IrohErrorCode>>,
@@ -151,6 +172,40 @@ export type Cases = [
   Expect<Equal<typeof options.blobStoreDir, string>>,
   Expect<Equal<typeof options.maxConcurrentDownloads, number>>,
   Expect<Equal<typeof options.relayMode, RelayMode>>,
+  // Docs namespace: authors + document CRUD.
+  Expect<Equal<(typeof endpoint)["docs"], DocsApi>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["create"]>, Promise<Doc>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["open"]>, Promise<Doc | null>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["import"]>, Promise<Doc>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["list"]>, Promise<NamespaceId[]>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["dropDoc"]>, Promise<void>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["authors"]["default"]>, Promise<AuthorId>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["authors"]["create"]>, Promise<AuthorId>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["authors"]["list"]>, Promise<AuthorId[]>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["docs"]["authors"]["import"]>, Promise<AuthorId>>>,
+  Expect<Equal<typeof doc.id, NamespaceId>>,
+  Expect<Equal<ReturnType<typeof doc.setBytes>, Promise<string>>>,
+  Expect<Equal<ReturnType<typeof doc.getExact>, Promise<DocEntry | null>>>,
+  Expect<Equal<ReturnType<typeof doc.getOne>, Promise<DocEntry | null>>>,
+  Expect<Equal<ReturnType<typeof doc.getMany>, Promise<DocEntry[]>>>,
+  Expect<Equal<ReturnType<typeof doc.deletePrefix>, Promise<number>>>,
+  Expect<Equal<ReturnType<typeof doc.share>, Promise<DocTicket>>>,
+  Expect<Equal<Parameters<typeof doc.getContent>[0], DocEntry>>,
+  Expect<Equal<ReturnType<typeof doc.getContent>, Promise<ArrayBuffer>>>,
+  Expect<Equal<Parameters<typeof doc.setBytes>[2], ArrayBuffer>>,
+  Expect<Equal<DocEntry["author"], AuthorId>>,
+  Expect<Equal<DocEntry["hash"], string>>,
+  Expect<Equal<DocEntry["size"], number>>,
+  Expect<Equal<DocEntry["timestamp"], number>>,
+  Expect<Equal<DocShareMode, "read" | "write">>,
+  Expect<Equal<ReturnType<typeof parseDocTicket>, DocTicketInfo>>,
+  Expect<Equal<ReturnType<typeof validateDocTicketShape>, DocTicket>>,
+  Expect<Equal<DocTicketInfo["namespace"], NamespaceId>>,
+  Expect<Equal<DocTicketInfo["capability"], DocShareMode>>,
+  Expect<NamespaceId extends string ? true : false>,
+  Expect<Equal<string extends NamespaceId ? true : false, false>>,
+  Expect<Equal<string extends AuthorId ? true : false, false>>,
+  Expect<NotAny<typeof docContent>>,
   // Nothing on the public surface degrades to `any`.
   Expect<NotAny<typeof endpoint.id>>,
   Expect<NotAny<Awaited<typeof transfer.done>>>,

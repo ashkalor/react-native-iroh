@@ -19,6 +19,7 @@ pub type Result<T> = std::result::Result<T, IrohError>;
 /// | 3xxx  | blob transfer |
 /// | 4xxx  | gossip |
 /// | 5xxx  | raw QUIC streams |
+/// | 6xxx  | docs (authors / documents) |
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum IrohError {
@@ -82,6 +83,19 @@ pub enum IrohError {
     /// the code lives here so the taxonomy stays in one place.
     #[error("stream overflow: {0}")]
     StreamOverflow(String),
+    /// A docs operation was attempted on an endpoint created without the
+    /// iroh-docs meta-protocol enabled.
+    #[error("docs are not enabled on this endpoint: {0}")]
+    DocsDisabled(String),
+    /// A docs operation (author, document, or entry access) failed.
+    #[error("docs operation failed: {0}")]
+    Docs(String),
+    /// A namespace id, author id/secret, or content hash failed to parse.
+    #[error("invalid docs identifier: {0}")]
+    DocsInvalidId(String),
+    /// A document ticket string failed to parse.
+    #[error("invalid document ticket: {0}")]
+    DocsInvalidTicket(String),
 }
 
 impl IrohError {
@@ -111,6 +125,10 @@ impl IrohError {
             IrohError::StreamClosed(_) => 5004,
             IrohError::StreamFrameTooLarge(_) => 5005,
             IrohError::StreamOverflow(_) => 5006,
+            IrohError::DocsDisabled(_) => 6000,
+            IrohError::Docs(_) => 6001,
+            IrohError::DocsInvalidId(_) => 6002,
+            IrohError::DocsInvalidTicket(_) => 6003,
         }
     }
 }
@@ -167,6 +185,10 @@ mod tests {
             (IrohError::StreamClosed("x".into()), 5004),
             (IrohError::StreamFrameTooLarge("x".into()), 5005),
             (IrohError::StreamOverflow("x".into()), 5006),
+            (IrohError::DocsDisabled("x".into()), 6000),
+            (IrohError::Docs("x".into()), 6001),
+            (IrohError::DocsInvalidId("x".into()), 6002),
+            (IrohError::DocsInvalidTicket("x".into()), 6003),
         ];
         for (err, code) in cases {
             assert_eq!(err.code(), code, "code changed for {err:?}");
