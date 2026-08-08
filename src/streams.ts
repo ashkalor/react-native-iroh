@@ -42,7 +42,7 @@ export interface StreamOptions {
  *
  * Obtain one from {@link Connection.openStream} or {@link Connection.incoming}.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Connection.html#method.open_bi
+ * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Connection.html#method.open_bi
  */
 export interface Stream {
   /**
@@ -93,7 +93,7 @@ export interface Stream {
  *
  * Obtain one from {@link Streams.connect} or {@link StreamListener.connections}.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Connection.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Connection.html
  */
 export interface Connection {
   /** The peer's endpoint id. */

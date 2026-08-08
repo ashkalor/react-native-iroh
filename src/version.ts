@@ -6,6 +6,6 @@
  * A unit test asserts this constant matches the exact version pinned in the
  * crate manifest, so it cannot drift silently.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/
+ * @see https://docs.rs/iroh/1.0.3/iroh/
  */
-export const IROH_VERSION = "1.0.2";
+export const IROH_VERSION = "1.0.3";

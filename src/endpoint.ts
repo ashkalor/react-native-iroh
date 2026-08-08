@@ -49,7 +49,7 @@ declare const EndpointIdBrand: unique symbol;
  * The identifier of an endpoint: the public key other devices use to reach
  * it. A branded string; read one from {@link Endpoint.id}.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/type.EndpointId.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/type.EndpointId.html
  */
 export type EndpointId = string & { readonly [EndpointIdBrand]: "EndpointId" };
 
@@ -63,7 +63,7 @@ export type EndpointId = string & { readonly [EndpointIdBrand]: "EndpointId" };
  * - `{ custom: [...] }`: a custom map built from the given HTTPS relay URLs
  *   (at least one required).
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/enum.RelayMode.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/enum.RelayMode.html
  */
 export type RelayMode = "default" | "disabled" | "staging" | { readonly custom: readonly string[] };
 
@@ -73,7 +73,7 @@ export type RelayMode = "default" | "disabled" | "staging" | { readonly custom: 
  * from {@link Endpoint.addr}, or observe changes via {@link Endpoint.watchAddr}
  * / {@link Endpoint.addrChanges}.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/struct.EndpointAddr.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/struct.EndpointAddr.html
  */
 export interface EndpointAddr {
   /** The endpoint's id (its public key). */
@@ -239,7 +239,7 @@ export interface Gossip {
  * when it spawns. Dialling has no such constraint: any ALPN can be dialled at
  * any time.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/protocol/index.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/protocol/index.html
  */
 export interface Streams {
   /**
@@ -366,7 +366,7 @@ export interface EndpointOptions {
    * tests or LAN-only setups where peers are reachable only via addresses
    * embedded in tickets.
    *
-   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/presets/index.html
+   * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/presets/index.html
    */
   preset?: NetworkPreset;
   /**
@@ -418,7 +418,7 @@ export interface EndpointOptions {
  * done (or bind with `await using` to close automatically). All methods
  * reject (or throw) {@link IrohError} exclusively.
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Endpoint.html
  */
 export class Endpoint {
   private readonly binding: IrohBinding;
@@ -540,7 +540,7 @@ export class Endpoint {
    * for the endpoint's lifetime; cached at creation, so reading it never
    * touches native code and stays valid after {@link close}.
    *
-   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.id
+   * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Endpoint.html#method.id
    */
   get id(): EndpointId {
     return this.cachedId;
@@ -561,7 +561,7 @@ export class Endpoint {
    * the value changes over time as relays connect and interfaces come and go
    * (observe it live with {@link watchAddr} / {@link addrChanges}).
    *
-   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.addr
+   * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Endpoint.html#method.addr
    */
   get addr(): EndpointAddr {
     try {
@@ -583,7 +583,7 @@ export class Endpoint {
    *
    * The result is a snapshot, not a live view; call again for a fresh one.
    *
-   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.remote_info
+   * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Endpoint.html#method.remote_info
    */
   async remoteInfo(remoteId: EndpointId): Promise<RemoteInfo | undefined> {
     try {
@@ -623,7 +623,7 @@ export class Endpoint {
    * relay-less endpoints (`relayMode: "disabled"`, or the `"minimal"` preset)
    * no home relay can connect, so this always rejects on timeout.
    *
-   * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/struct.Endpoint.html#method.online
+   * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/struct.Endpoint.html#method.online
    */
   async online(options: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_ONLINE_TIMEOUT_MS;
