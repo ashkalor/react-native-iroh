@@ -8,7 +8,7 @@ import type { HybridObject } from "react-native-nitro-modules";
  *   Peers are only reachable via direct addresses embedded in tickets
  *   (tests / LAN-only setups).
  *
- * @see https://docs.rs/iroh/1.0.2/iroh/endpoint/presets/index.html
+ * @see https://docs.rs/iroh/1.0.3/iroh/endpoint/presets/index.html
  */
 export type NetworkPreset = "n0" | "minimal";
 
