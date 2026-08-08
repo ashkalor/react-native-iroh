@@ -216,6 +216,7 @@ impl HybridIrohSpec for HybridIroh {
         // Path validation (absolute blob store dir) and relay-mode parsing
         // both happen in the core.
         let blob_store_dir = config.blob_store_dir.map(PathBuf::from);
+        let docs_store_dir = config.docs_store_dir.map(PathBuf::from);
         let alpns = config
             .alpns
             .as_deref()
@@ -225,6 +226,8 @@ impl HybridIrohSpec for HybridIroh {
             EndpointConfig {
                 preset,
                 blob_store_dir,
+                docs: config.docs.unwrap_or(false),
+                docs_store_dir,
                 relay_mode: config.relay_mode,
                 alpns,
             },
@@ -569,6 +572,8 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: store_dir.map(|p| p.to_string_lossy().into_owned()),
+                    docs: None,
+                    docs_store_dir: None,
                     alpns: None,
                     relay_mode: None,
                 },
@@ -603,6 +608,8 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: Some("relative/store".into()),
+                    docs: None,
+                    docs_store_dir: None,
                     alpns: None,
                     relay_mode: None,
                 },

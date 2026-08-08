@@ -39,6 +39,18 @@ export interface EndpointConfig {
    */
   blobStoreDir?: string;
   /**
+   * Enable the iroh-docs meta-protocol on this endpoint. Docs layers over the
+   * same endpoint as blobs and gossip, sharing one router. Omit (or `false`) to
+   * pay zero docs cost: no docs store, no ALPN, no background engine.
+   */
+  docs?: boolean;
+  /**
+   * Absolute directory path for the persistent docs store, used only when
+   * {@link EndpointConfig.docs} is enabled. Omit to keep docs (replicas and
+   * authors) in memory (they are lost when the endpoint closes).
+   */
+  docsStoreDir?: string;
+  /**
    * Relay configuration, carried as a single delimited string (the Phase 2
    * convention for structured bridge inputs, matching newline-joined paths):
    *

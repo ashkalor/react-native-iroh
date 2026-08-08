@@ -224,6 +224,8 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
                 struct __Struct {
                     preset: i32,
                     blobStoreDir: *mut std::ffi::c_void,
+                    docs: *mut std::ffi::c_void,
+                    docsStoreDir: *mut std::ffi::c_void,
                     relayMode: *mut std::ffi::c_void,
                     alpns: *mut std::ffi::c_void,
                 }
@@ -240,6 +242,36 @@ pub unsafe extern "C" fn HybridIrohSpec_create_endpoint(
                             value: *const std::ffi::c_char,
                         }
                         let __s = *Box::from_raw(__s.blobStoreDir as *mut __Opt);
+                        if __s.has_value != 0 {
+                            Some(
+                                std::ffi::CStr::from_ptr(__s.value)
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            )
+                        } else {
+                            None
+                        }
+                    },
+                    docs: {
+                        #[repr(C)]
+                        struct __Opt {
+                            has_value: u8,
+                            value: bool,
+                        }
+                        let __s = *Box::from_raw(__s.docs as *mut __Opt);
+                        if __s.has_value != 0 {
+                            Some(__s.value)
+                        } else {
+                            None
+                        }
+                    },
+                    docs_store_dir: {
+                        #[repr(C)]
+                        struct __Opt {
+                            has_value: u8,
+                            value: *const std::ffi::c_char,
+                        }
+                        let __s = *Box::from_raw(__s.docsStoreDir as *mut __Opt);
                         if __s.has_value != 0 {
                             Some(
                                 std::ffi::CStr::from_ptr(__s.value)

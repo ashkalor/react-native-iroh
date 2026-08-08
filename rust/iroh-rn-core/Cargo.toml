@@ -18,6 +18,11 @@ iroh_rust = { path = "../../nitrogen/generated/shared/rust" }
 iroh = "=1.0.3"
 iroh-blobs = { version = "=0.103.0", default-features = false, features = ["fs-store"] }
 iroh-gossip = { version = "=0.101.0", default-features = false, features = ["net"] }
+# Docs is a meta-protocol layered on the same endpoint over blobs + gossip. Only
+# `fs-store` is enabled: it gates `Docs::persistent` and pulls nothing beyond the
+# `iroh-blobs/fs-store` we already depend on. `rpc` (a QUIC RPC client transport),
+# `metrics`, and `redb-v2-migration` are all unused by the in-process API.
+iroh-docs = { version = "=0.101.0", default-features = false, features = ["fs-store"] }
 n0-future = "=0.3.2"
 tokio = { version = "=1.53.0", features = ["rt-multi-thread", "sync", "time", "fs", "macros"] }
 thiserror = "=2.0.18"

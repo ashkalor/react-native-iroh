@@ -39,10 +39,27 @@ pub fn create_minimal_endpoint_with_alpns(
     create_endpoint_blocking(EndpointConfig {
         preset: NetworkPreset::Minimal,
         blob_store_dir,
+        docs: false,
+        docs_store_dir: None,
         relay_mode: None,
         alpns,
     })
     .expect("endpoint created")
+}
+
+/// Creates a `Minimal`-preset endpoint with the iroh-docs meta-protocol
+/// enabled, backed by `docs_store_dir` (`None` for an in-memory docs store),
+/// panicking on failure.
+pub fn create_minimal_endpoint_with_docs(docs_store_dir: Option<PathBuf>) -> EndpointHandle {
+    create_endpoint_blocking(EndpointConfig {
+        preset: NetworkPreset::Minimal,
+        blob_store_dir: None,
+        docs: true,
+        docs_store_dir,
+        relay_mode: None,
+        alpns: Vec::new(),
+    })
+    .expect("endpoint with docs created")
 }
 
 /// Closes an endpoint, blocking until shutdown completes.

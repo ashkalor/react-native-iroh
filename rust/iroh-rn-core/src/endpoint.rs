@@ -19,6 +19,7 @@ use iroh_blobs::{
     store::{fs::FsStore, mem::MemStore},
     BlobsProtocol,
 };
+use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
 use iroh_gossip::net::Gossip;
 use n0_future::{task::AbortOnDropHandle, StreamExt};
 
@@ -69,6 +70,14 @@ pub struct EndpointConfig {
     /// Directory for the persistent blob store. `None` keeps blobs in memory
     /// (blobs are lost when the endpoint closes).
     pub blob_store_dir: Option<PathBuf>,
+    /// Whether to run the iroh-docs meta-protocol on this endpoint. When
+    /// `false` the endpoint pays no docs cost: no docs store, no `DOCS_ALPN`
+    /// accept, no background docs engine.
+    pub docs: bool,
+    /// Directory for the persistent docs store, used only when [`Self::docs`]
+    /// is enabled. `None` keeps docs (replicas and authors) in memory (lost
+    /// when the endpoint closes).
+    pub docs_store_dir: Option<PathBuf>,
     /// Relay configuration as a delimited string, or `None` to inherit the
     /// preset's default. See [`parse_relay_mode`] for the accepted syntax.
     pub relay_mode: Option<String>,
@@ -180,6 +189,14 @@ pub(crate) struct EndpointState {
     /// [`EndpointConfig::alpns`], keyed by the ALPN name that
     /// [`crate::streams::stream_listen`] attaches to.
     pub(crate) inbound_alpns: HashMap<String, InboundQueue>,
+    /// The iroh-docs meta-protocol running over this endpoint, present only when
+    /// [`EndpointConfig::docs`] was set. The [`Router`] accepts `DOCS_ALPN` into
+    /// it, and [`Router::shutdown`] cascades into its [`Docs::shutdown`], so the
+    /// close path needs no separate teardown for it.
+    // Read only by Phase 2 (doc CRUD / authors / sync). The router owns the
+    // clone that keeps the engine alive, so nothing reads this field yet.
+    #[allow(dead_code)]
+    pub(crate) docs: Option<Docs>,
     router: Router,
 }
 
@@ -210,6 +227,17 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .blob_store_dir
         .map(|dir| require_absolute(dir, "blob store dir"))
         .transpose()?;
+    // Only meaningful (and only validated) when docs are enabled, so a disabled
+    // endpoint keeps exactly today's behavior regardless of this field.
+    let docs_enabled = config.docs;
+    let docs_store_dir = if docs_enabled {
+        config
+            .docs_store_dir
+            .map(|dir| require_absolute(dir, "docs store dir"))
+            .transpose()?
+    } else {
+        None
+    };
 
     // Parse the relay override and the custom ALPNs before any async work so a
     // bad config fails fast, before sockets are bound or the store is touched.
@@ -263,9 +291,35 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     // unaffected. The gossip instance shares the endpoint and is driven by
     // `crate::gossip`.
     let gossip = Gossip::builder().spawn(endpoint.clone());
+    // Docs is a meta-protocol over the same endpoint, sharing the blob store and
+    // the gossip instance. It is built only when enabled so a docs-off endpoint
+    // spawns no docs engine and registers no extra ALPN.
+    let docs = if docs_enabled {
+        let builder = match docs_store_dir {
+            // `Docs::persistent` opens `<dir>/docs.redb` without creating `<dir>`,
+            // unlike `FsStore::load`; create it first so a fresh store dir works.
+            Some(dir) => {
+                tokio::fs::create_dir_all(&dir)
+                    .await
+                    .map_err(|e| IrohError::EndpointBind(format!("docs store dir: {e}")))?;
+                Docs::persistent(dir)
+            }
+            None => Docs::memory(),
+        };
+        let docs = builder
+            .spawn(endpoint.clone(), store.api().clone(), gossip.clone())
+            .await
+            .map_err(|e| IrohError::EndpointBind(format!("docs: {e}")))?;
+        Some(docs)
+    } else {
+        None
+    };
     let mut builder = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone());
+    if let Some(docs) = &docs {
+        builder = builder.accept(DOCS_ALPN, docs.clone());
+    }
     // Custom ALPNs are additive on the same router. Each gets a queue the
     // handler fills and a listener drains; `validate_alpns` has already refused
     // any name that would shadow the two protocols registered above.
@@ -290,6 +344,7 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         gossip,
         bootstrap_lookup,
         inbound_alpns,
+        docs,
         router,
     });
     Ok(EndpointHandle(handle))
@@ -609,6 +664,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         close_endpoint_blocking, create_endpoint_blocking, create_minimal_endpoint,
+        create_minimal_endpoint_with_docs,
     };
 
     #[test]
@@ -627,6 +683,55 @@ mod tests {
         let result = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: Some(PathBuf::from("relative/store")),
+            docs: false,
+            docs_store_dir: None,
+            relay_mode: None,
+            alpns: Vec::new(),
+        });
+        assert!(matches!(result, Err(IrohError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn create_with_docs_enabled_registers_docs_and_closes_cleanly() {
+        let mem = create_minimal_endpoint_with_docs(None);
+        assert!(
+            endpoint_state(mem).expect("live endpoint").docs.is_some(),
+            "docs enabled must register a docs handle in the endpoint state"
+        );
+        close_endpoint_blocking(mem).expect("close succeeded");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let persistent = create_minimal_endpoint_with_docs(Some(dir.path().join("docs")));
+        assert!(
+            endpoint_state(persistent)
+                .expect("live endpoint")
+                .docs
+                .is_some(),
+            "persistent docs must register a docs handle in the endpoint state"
+        );
+        close_endpoint_blocking(persistent).expect("close succeeded");
+    }
+
+    #[test]
+    fn create_with_docs_disabled_registers_no_docs() {
+        let handle = create_minimal_endpoint(None);
+        assert!(
+            endpoint_state(handle)
+                .expect("live endpoint")
+                .docs
+                .is_none(),
+            "docs disabled must leave the docs handle absent"
+        );
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    #[test]
+    fn create_rejects_relative_docs_store_dir() {
+        let result = create_endpoint_blocking(EndpointConfig {
+            preset: NetworkPreset::Minimal,
+            blob_store_dir: None,
+            docs: true,
+            docs_store_dir: Some(PathBuf::from("relative/docs")),
             relay_mode: None,
             alpns: Vec::new(),
         });
@@ -718,6 +823,8 @@ mod tests {
         let handle = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: None,
+            docs: false,
+            docs_store_dir: None,
             relay_mode: Some("disabled".into()),
             alpns: Vec::new(),
         })
