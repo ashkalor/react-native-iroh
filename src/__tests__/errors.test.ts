@@ -11,9 +11,22 @@ const KNOWN_CASES: [IrohErrorCode, IrohErrorKind][] = [
   [3001, "blob-download"],
   [3002, "blob-export"],
   [3003, "cancelled"],
+  [3004, "blob-store"],
   [4000, "gossip-subscribe"],
   [4001, "gossip-broadcast"],
   [4002, "gossip-message-too-large"],
+  [5000, "stream-listen"],
+  [5001, "stream-connect"],
+  [5002, "stream-open"],
+  [5003, "stream-send"],
+  [5004, "stream-closed"],
+  [5005, "stream-frame-too-large"],
+  [5006, "stream-overflow"],
+  [6000, "docs-disabled"],
+  [6001, "docs"],
+  [6002, "docs-invalid-id"],
+  [6003, "docs-invalid-ticket"],
+  [7000, "mdns-unavailable"],
 ];
 
 describe("IrohError.from", () => {

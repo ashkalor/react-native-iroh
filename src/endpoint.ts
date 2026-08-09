@@ -1,9 +1,21 @@
+import {
+  DocsController,
+  type DocsApi,
+  type DocsBinding,
+  type DocSubscriptionController,
+} from "./docs";
 import { IrohError } from "./errors";
 import {
   GossipSubscriptionController,
   type GossipSubscribeOptions,
   type GossipSubscription,
 } from "./gossip";
+import {
+  MdnsSubscriptionController,
+  type Mdns,
+  type MdnsSubscribeOptions,
+  type MdnsSubscription,
+} from "./mdns";
 import { getIroh, type IrohBinding } from "./native";
 import {
   ConnectionController,
@@ -13,7 +25,7 @@ import {
   type StreamOptions,
   type StreamsBinding,
 } from "./streams";
-import { validateTicketShape, type BlobTicket } from "./ticket";
+import { validateTicketShape, type BlobFormat, type BlobTicket } from "./ticket";
 import {
   CollectionTransferController,
   TransferController,
@@ -295,6 +307,85 @@ export interface DownloadOptions {
 }
 
 /**
+ * The local presence of a blob in an endpoint's store, from
+ * {@link Blobs.status}. A discriminated union on `state`:
+ *
+ * - `"notFound"`: the blob is not stored at all.
+ * - `"partial"`: some ranges are present but the blob is incomplete (an
+ *   interrupted {@link Blobs.download} left it behind; re-issuing the download
+ *   fetches only the missing ranges). `size` is the stored partial size when
+ *   known.
+ * - `"complete"`: the whole blob is present and BLAKE3-verified. `size` is its
+ *   full size.
+ *
+ * @see https://docs.rs/iroh-blobs/0.103.0/iroh_blobs/api/blobs/enum.BlobStatus.html
+ */
+export type BlobStatus =
+  | { readonly state: "notFound" }
+  | { readonly state: "partial"; readonly size?: number }
+  | { readonly state: "complete"; readonly size: number };
+
+/**
+ * One blob in an endpoint's store, from {@link Blobs.list}.
+ */
+export interface BlobInfo {
+  /** The blob's BLAKE3 content hash, 64 lowercase hex characters. */
+  readonly hash: string;
+  /** The blob's size in bytes. */
+  readonly size: number;
+}
+
+/**
+ * One tag in an endpoint's store, from {@link Tags.list}. A tag pins a blob so
+ * garbage collection keeps it (see {@link Tags}).
+ */
+export interface TagInfo {
+  /** The tag's name. */
+  readonly name: string;
+  /** The tagged blob's BLAKE3 content hash. */
+  readonly hash: string;
+  /**
+   * The format the tag protects: `"hashSeq"` also protects the sequence's
+   * children from GC, `"raw"` protects a single blob.
+   */
+  readonly format: BlobFormat;
+}
+
+/**
+ * The tag lifecycle for an endpoint's blob store, namespaced as
+ * {@link Blobs.tags}.
+ *
+ * Tags are the sanctioned retention mechanism: with garbage collection enabled
+ * ({@link EndpointOptions.gc}), a tagged blob survives while untagged blobs are
+ * reclaimed. "Removing" a blob is dropping its tag and letting GC reclaim it;
+ * there is deliberately no direct blob delete (deletion is GC-only).
+ *
+ * @see https://docs.rs/iroh-blobs/0.103.0/iroh_blobs/api/tags/struct.Tags.html
+ */
+export interface Tags {
+  /** Lists every tag in the store. */
+  list(): Promise<TagInfo[]>;
+  /**
+   * Creates (or overwrites) the tag `name`, pinning the blob `hash` (64-hex) so
+   * GC keeps it. `format` defaults to `"raw"`; pass `"hashSeq"` to also protect
+   * a hash sequence's children. Rejects (kind `"blob-store"`) on a malformed
+   * hash or format.
+   */
+  create(name: string, hash: string, format?: BlobFormat): Promise<void>;
+  /**
+   * Deletes the tag `name`. The blob it pinned is not removed here; it becomes
+   * GC-eligible and is reclaimed only if (and when) GC runs. Deleting an absent
+   * tag is not an error.
+   */
+  delete(name: string): Promise<void>;
+  /**
+   * Renames the tag `from` to `to` atomically. Rejects (kind `"blob-store"`) if
+   * `from` does not exist.
+   */
+  rename(from: string, to: string): Promise<void>;
+}
+
+/**
  * Blob transfer over an endpoint: content-addressed blobs, fetched with
  * BLAKE3-verified streaming. The iroh-blobs protocol surface, namespaced as
  * {@link Endpoint.blobs}.
@@ -322,6 +413,14 @@ export interface Blobs {
    * natively at once; additional ones wait in a FIFO queue (a queued
    * transfer's `done` settles once it has run, or immediately if it is
    * cancelled while queued).
+   *
+   * Retention: a completed download is tagged (like {@link share} and
+   * {@link addBytes}) under a tag named after the blob's root hash, so with
+   * opt-in GC ({@link EndpointOptions.gc}) enabled it is retained rather than
+   * reclaimed. GC reclaims only untagged blobs; to reclaim a downloaded blob,
+   * drop its tag with `blobs.tags.delete(hash)` (see {@link Tags}) and let a GC
+   * pass run. The blob is protected throughout the transfer, so a partially
+   * downloaded blob is never reclaimed mid-flight.
    */
   download(ticket: BlobTicket | string, destPath: string, options?: DownloadOptions): Transfer;
   /**
@@ -348,12 +447,43 @@ export interface Blobs {
    * child failure fails the whole collection and cancels the rest. `destDir`
    * must be an existing absolute directory (the native layer does not create
    * missing parents).
+   *
+   * Retention: the collection root is tagged (a `hashSeq` tag named after the
+   * root hash), which retains the root and its children under opt-in GC, and
+   * each child is additionally tagged as it downloads. Drop the root tag with
+   * `blobs.tags.delete(rootHash)` to make the collection reclaimable.
    */
   downloadCollection(
     ticket: BlobTicket | string,
     destDir: string,
     options?: DownloadOptions,
   ): CollectionTransfer;
+  /**
+   * Reports the local presence of the blob `hash` (64-hex) in this endpoint's
+   * store as a {@link BlobStatus}. A `"partial"` result means an interrupted
+   * {@link download} left ranges behind; re-issuing the download fetches only
+   * what is missing. Rejects (kind `"blob-store"`) on a malformed hash.
+   */
+  status(hash: string): Promise<BlobStatus>;
+  /**
+   * Whether the store holds the blob `hash` (64-hex) complete and
+   * BLAKE3-verified. A partially-present blob resolves `false`.
+   */
+  has(hash: string): Promise<boolean>;
+  /** Lists the complete blobs in this endpoint's store, each with its size. */
+  list(): Promise<BlobInfo[]>;
+  /**
+   * Imports the in-memory `data` into this endpoint's blob store and resolves
+   * with a shareable {@link BlobTicket}, the in-memory counterpart of
+   * {@link share}. On the `"n0"` preset it waits (bounded) for the endpoint to
+   * come online first.
+   */
+  addBytes(data: ArrayBuffer): Promise<BlobTicket>;
+  /**
+   * The tag lifecycle for this endpoint's store: the retention mechanism that
+   * decides what survives garbage collection.
+   */
+  readonly tags: Tags;
 }
 
 /**
@@ -383,6 +513,39 @@ export interface EndpointOptions {
    * blobs in memory (they are lost when the endpoint closes).
    */
   blobStoreDir?: string;
+  /**
+   * Enable the iroh-docs meta-protocol on this endpoint, exposing
+   * {@link Endpoint.docs} (author identity + document CRUD). Omit (or `false`)
+   * to pay zero docs cost: no docs store, no ALPN, no background engine, and
+   * every {@link Endpoint.docs} call rejects with kind `"docs-disabled"`.
+   */
+  docs?: boolean;
+  /**
+   * Absolute directory path for the persistent docs store (replicas and
+   * authors), used only when {@link EndpointOptions.docs} is enabled. Omit to
+   * keep docs in memory (they are lost when the endpoint closes).
+   */
+  docsStoreDir?: string;
+  /**
+   * Discovery services this endpoint runs to find peers.
+   *
+   * `mdns: true` enables mDNS LAN discovery (`_irohv1._udp.local`), so peers on
+   * the same network resolve each other by endpoint id with no relay and no
+   * seeded addresses; observe it via {@link Endpoint.mdns}. Requires a build
+   * compiled with mDNS ({@link mdnsSupported}): on a build without it (every
+   * Apple build until the consumer holds the multicast entitlement), enabling it
+   * rejects creation with kind `"mdns-unavailable"` rather than silently doing
+   * nothing.
+   */
+  discovery?: { mdns?: boolean };
+  /**
+   * Opt-in blob garbage collection. Omit to keep GC OFF (the default): nothing
+   * is ever reclaimed, exactly today's retention. When set, the store runs a
+   * mark-and-sweep loop every `intervalSecs` seconds that reclaims untagged
+   * blobs; tagged blobs ({@link Blobs.tags}) always survive. An `intervalSecs`
+   * of `0` or less is treated as off.
+   */
+  gc?: { intervalSecs: number };
   /**
    * Optional app-level throttle on concurrently active downloads for this
    * endpoint; further downloads wait in a FIFO queue. Defaults to
@@ -434,6 +597,8 @@ export class Endpoint {
   private addressWatch: Watchable<EndpointAddr> | null = null;
   private addressWatchId: number | null = null;
   private readonly gossipSubscriptions = new Set<GossipSubscriptionController>();
+  private readonly docSubscriptions = new Set<DocSubscriptionController>();
+  private readonly mdnsSubscriptions = new Set<MdnsSubscriptionController>();
   private readonly streamListeners = new Set<StreamListenerController>();
   // Every live connection, however it was obtained (dialled or accepted), so
   // closing the endpoint tears all of them down through one path.
@@ -463,6 +628,27 @@ export class Endpoint {
    */
   readonly streams: Streams;
 
+  /**
+   * The endpoint's document API ({@link DocsApi}): author identity plus
+   * document CRUD over the iroh-docs meta-protocol. Present always, but every
+   * call rejects with kind `"docs-disabled"` unless the endpoint was created
+   * with {@link EndpointOptions.docs} enabled.
+   *
+   * @see https://docs.rs/iroh-docs/0.101.0/iroh_docs/
+   */
+  readonly docs: DocsApi;
+
+  /**
+   * The endpoint's mDNS discovery API ({@link Mdns.subscribe}): peers on the
+   * same LAN resolve each other by endpoint id with no relay. Present only when
+   * the endpoint was created with `discovery: { mdns: true }` on a build that
+   * supports mDNS ({@link mdnsSupported}); otherwise `subscribe` throws kind
+   * `"mdns-unavailable"`.
+   *
+   * @see https://docs.rs/iroh-mdns-address-lookup/0.4.0/iroh_mdns_address_lookup/
+   */
+  readonly mdns: Mdns;
+
   private constructor(
     binding: IrohBinding,
     handle: number,
@@ -479,6 +665,16 @@ export class Endpoint {
       shareCollection: (paths) => this.shareCollection(paths),
       downloadCollection: (ticket, destDir, options) =>
         this.downloadCollection(ticket, destDir, options),
+      status: (hash) => this.blobStatus(hash),
+      has: (hash) => this.blobHas(hash),
+      list: () => this.blobList(),
+      addBytes: (data) => this.blobAddBytes(data),
+      tags: {
+        list: () => this.tagsList(),
+        create: (name, hash, format) => this.tagsCreate(name, hash, format ?? "raw"),
+        delete: (name) => this.tagsDelete(name),
+        rename: (from, to) => this.tagsRename(from, to),
+      },
     };
     this.gossip = {
       subscribe: (topic, options) => this.subscribeGossip(topic, options),
@@ -486,6 +682,71 @@ export class Endpoint {
     this.streams = {
       listen: (alpn, options) => this.listenStreams(alpn, options),
       connect: (peer, alpn, options) => this.connectStreams(peer, alpn, options),
+    };
+    this.docs = new DocsController(this.docsBinding());
+    this.mdns = {
+      subscribe: (options) => this.subscribeMdns(options),
+    };
+  }
+
+  /** See {@link Mdns.subscribe}; exposed as {@link Endpoint.mdns}`.subscribe`. */
+  private subscribeMdns(options?: MdnsSubscribeOptions): MdnsSubscription {
+    const endpoint = this.handle;
+    const binding = this.binding;
+    try {
+      let controller!: MdnsSubscriptionController;
+      controller = new MdnsSubscriptionController({
+        startSubscribe: (onStart, onEvent, onClose) =>
+          binding.mdnsSubscribe(endpoint, onStart, onEvent, onClose),
+        unsubscribe: (subId) => binding.mdnsUnsubscribe(subId),
+        capacity: options?.capacity,
+        onDispose: () => {
+          this.mdnsSubscriptions.delete(controller);
+        },
+      });
+      this.mdnsSubscriptions.add(controller);
+      return controller;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** Binds the native docs calls to this endpoint's handle for the docs API. */
+  private docsBinding(): DocsBinding {
+    const endpoint = this.handle;
+    const binding = this.binding;
+    return {
+      authorsDefault: () => binding.authorsDefault(endpoint),
+      authorsCreate: () => binding.authorsCreate(endpoint),
+      authorsList: () => binding.authorsList(endpoint),
+      authorsImport: (secretKey) => binding.authorsImport(endpoint, secretKey),
+      docsCreate: () => binding.docsCreate(endpoint),
+      docsOpen: (namespaceId) => binding.docsOpen(endpoint, namespaceId),
+      docsImport: (ticket) => binding.docsImport(endpoint, ticket),
+      docsList: () => binding.docsList(endpoint),
+      docsDrop: (namespaceId) => binding.docsDrop(endpoint, namespaceId),
+      docsSetBytes: (namespaceId, authorId, key, value) =>
+        binding.docsSetBytes(endpoint, namespaceId, authorId, key, value),
+      docsGetExact: (namespaceId, authorId, key) =>
+        binding.docsGetExact(endpoint, namespaceId, authorId, key),
+      docsGetMany: (namespaceId, queryJson) =>
+        binding.docsGetMany(endpoint, namespaceId, queryJson),
+      docsDeletePrefix: (namespaceId, authorId, prefix) =>
+        binding.docsDeletePrefix(endpoint, namespaceId, authorId, prefix),
+      docsShare: (namespaceId, mode) => binding.docsShare(endpoint, namespaceId, mode),
+      docsGetContent: (hash) => binding.docsGetContent(endpoint, hash),
+      docsSubscribe: (namespaceId, onStart, onEvent, onClose) =>
+        binding.docsSubscribe(endpoint, namespaceId, onStart, onEvent, onClose),
+      docsUnsubscribe: (subId) => binding.docsUnsubscribe(subId),
+      docsStartSync: (namespaceId, peers) =>
+        binding.docsStartSync(endpoint, namespaceId, peers.map(serializeEndpointAddr).join("\n")),
+      docsLeave: (namespaceId) => binding.docsLeave(endpoint, namespaceId),
+      adoptSubscription: (controller) => {
+        this.docSubscriptions.add(controller);
+      },
+      releaseSubscription: (controller) => {
+        this.docSubscriptions.delete(controller);
+      },
     };
   }
 
@@ -516,6 +777,19 @@ export class Endpoint {
     const config: EndpointConfig = { preset };
     if (options.blobStoreDir !== undefined) {
       config.blobStoreDir = options.blobStoreDir;
+    }
+    if (options.docs !== undefined) {
+      config.docs = options.docs;
+    }
+    if (options.docsStoreDir !== undefined) {
+      config.docsStoreDir = options.docsStoreDir;
+    }
+    if (options.discovery?.mdns) {
+      config.discoveryMdns = true;
+    }
+    // A non-positive interval is treated as off, so it is simply not forwarded.
+    if (options.gc !== undefined && options.gc.intervalSecs > 0) {
+      config.gcIntervalSecs = options.gc.intervalSecs;
     }
     if (options.relayMode !== undefined) {
       // Throws a typed IrohError synchronously for an empty custom list.
@@ -823,6 +1097,78 @@ export class Endpoint {
     }
   }
 
+  /** See {@link Blobs.status}. */
+  private async blobStatus(hash: string): Promise<BlobStatus> {
+    try {
+      return JSON.parse(await this.binding.blobStatus(this.handle, hash)) as BlobStatus;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Blobs.has}. */
+  private async blobHas(hash: string): Promise<boolean> {
+    try {
+      return await this.binding.blobHas(this.handle, hash);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Blobs.list}. */
+  private async blobList(): Promise<BlobInfo[]> {
+    try {
+      return JSON.parse(await this.binding.blobList(this.handle)) as BlobInfo[];
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Blobs.addBytes}. */
+  private async blobAddBytes(data: ArrayBuffer): Promise<BlobTicket> {
+    try {
+      return (await this.binding.addBytes(this.handle, data)) as BlobTicket;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Tags.list}. */
+  private async tagsList(): Promise<TagInfo[]> {
+    try {
+      return JSON.parse(await this.binding.tagsList(this.handle)) as TagInfo[];
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Tags.create}. */
+  private async tagsCreate(name: string, hash: string, format: BlobFormat): Promise<void> {
+    try {
+      await this.binding.tagsCreate(this.handle, name, hash, format);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Tags.delete}. */
+  private async tagsDelete(name: string): Promise<void> {
+    try {
+      await this.binding.tagsDelete(this.handle, name);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
+  /** See {@link Tags.rename}. */
+  private async tagsRename(from: string, to: string): Promise<void> {
+    try {
+      await this.binding.tagsRename(this.handle, from, to);
+    } catch (error) {
+      throw IrohError.from(error);
+    }
+  }
+
   /** See {@link Blobs.download}; exposed as {@link Endpoint.blobs}`.download`. */
   private downloadBlob(
     ticket: BlobTicket | string,
@@ -945,6 +1291,12 @@ export class Endpoint {
           queued.cancel();
         }
         for (const subscription of [...this.gossipSubscriptions]) {
+          subscription.unsubscribe();
+        }
+        for (const subscription of [...this.docSubscriptions]) {
+          subscription.unsubscribe();
+        }
+        for (const subscription of [...this.mdnsSubscriptions]) {
           subscription.unsubscribe();
         }
         for (const listener of [...this.streamListeners]) {

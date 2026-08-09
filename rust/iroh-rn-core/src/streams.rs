@@ -192,7 +192,13 @@ pub(crate) fn validate_alpns(alpns: &[String]) -> Result<()> {
                 "alpn {alpn:?} exceeds the 255-byte limit"
             )));
         }
-        if alpn.as_bytes() == iroh_blobs::ALPN || alpn.as_bytes() == iroh_gossip::net::GOSSIP_ALPN {
+        // The docs ALPN is reserved unconditionally, like the blobs and gossip
+        // ones: a custom accept on `/iroh-sync/1` would silently shadow doc sync
+        // whenever docs is enabled, so it is refused regardless of the docs flag.
+        if alpn.as_bytes() == iroh_blobs::ALPN
+            || alpn.as_bytes() == iroh_gossip::net::GOSSIP_ALPN
+            || alpn.as_bytes() == iroh_docs::ALPN
+        {
             return Err(IrohError::EndpointBind(format!(
                 "alpn {alpn:?} is reserved by a built-in protocol"
             )));
@@ -581,6 +587,9 @@ mod tests {
             vec![String::from_utf8(iroh_blobs::ALPN.to_vec()).expect("blobs alpn is utf-8")],
             vec![String::from_utf8(iroh_gossip::net::GOSSIP_ALPN.to_vec())
                 .expect("gossip alpn is utf-8")],
+            // The docs ALPN (`/iroh-sync/1`) is reserved too, so a custom accept
+            // cannot shadow doc sync.
+            vec![String::from_utf8(iroh_docs::ALPN.to_vec()).expect("docs alpn is utf-8")],
         ];
         for case in cases {
             assert!(

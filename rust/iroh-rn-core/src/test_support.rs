@@ -39,10 +39,93 @@ pub fn create_minimal_endpoint_with_alpns(
     create_endpoint_blocking(EndpointConfig {
         preset: NetworkPreset::Minimal,
         blob_store_dir,
+        gc: None,
+        docs: false,
+        docs_store_dir: None,
+        discovery_mdns: false,
         relay_mode: None,
         alpns,
     })
     .expect("endpoint created")
+}
+
+/// Creates a `Minimal`-preset endpoint with the iroh-docs meta-protocol
+/// enabled, backed by `docs_store_dir` (`None` for an in-memory docs store),
+/// panicking on failure.
+pub fn create_minimal_endpoint_with_docs(docs_store_dir: Option<PathBuf>) -> EndpointHandle {
+    create_endpoint_blocking(EndpointConfig {
+        preset: NetworkPreset::Minimal,
+        blob_store_dir: None,
+        gc: None,
+        docs: true,
+        docs_store_dir,
+        discovery_mdns: false,
+        relay_mode: None,
+        alpns: Vec::new(),
+    })
+    .expect("endpoint with docs created")
+}
+
+/// Creates a `Minimal`-preset endpoint whose store runs the opt-in GC loop at
+/// the given interval, backed by `blob_store_dir` (`None` for an in-memory
+/// store), panicking on failure.
+pub fn create_minimal_endpoint_with_gc(
+    blob_store_dir: Option<PathBuf>,
+    gc_interval: Duration,
+) -> EndpointHandle {
+    create_endpoint_blocking(EndpointConfig {
+        preset: NetworkPreset::Minimal,
+        blob_store_dir,
+        gc: Some(crate::endpoint::GcSettings {
+            interval: gc_interval,
+        }),
+        docs: false,
+        docs_store_dir: None,
+        discovery_mdns: false,
+        relay_mode: None,
+        alpns: Vec::new(),
+    })
+    .expect("endpoint with gc created")
+}
+
+/// Creates a `Minimal`-preset endpoint with mDNS LAN discovery enabled,
+/// panicking on failure. Only compiled with the `mdns` feature.
+#[cfg(feature = "mdns")]
+pub fn create_minimal_endpoint_with_mdns() -> EndpointHandle {
+    create_endpoint_blocking(EndpointConfig {
+        preset: NetworkPreset::Minimal,
+        blob_store_dir: None,
+        gc: None,
+        docs: false,
+        docs_store_dir: None,
+        discovery_mdns: true,
+        relay_mode: None,
+        alpns: Vec::new(),
+    })
+    .expect("endpoint with mdns created")
+}
+
+/// Creates a `Minimal`-preset endpoint with BOTH the iroh-docs meta-protocol
+/// and the opt-in GC loop enabled, so a test can prove doc content survives GC.
+/// `docs_store_dir` / `blob_store_dir` are `None` for in-memory stores.
+pub fn create_minimal_endpoint_with_docs_and_gc(
+    docs_store_dir: Option<PathBuf>,
+    blob_store_dir: Option<PathBuf>,
+    gc_interval: Duration,
+) -> EndpointHandle {
+    create_endpoint_blocking(EndpointConfig {
+        preset: NetworkPreset::Minimal,
+        blob_store_dir,
+        gc: Some(crate::endpoint::GcSettings {
+            interval: gc_interval,
+        }),
+        docs: true,
+        docs_store_dir,
+        discovery_mdns: false,
+        relay_mode: None,
+        alpns: Vec::new(),
+    })
+    .expect("endpoint with docs and gc created")
 }
 
 /// Closes an endpoint, blocking until shutdown completes.

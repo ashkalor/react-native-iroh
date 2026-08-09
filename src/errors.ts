@@ -13,6 +13,7 @@ const KIND_BY_CODE = {
   3001: "blob-download",
   3002: "blob-export",
   3003: "cancelled",
+  3004: "blob-store",
   4000: "gossip-subscribe",
   4001: "gossip-broadcast",
   4002: "gossip-message-too-large",
@@ -23,6 +24,11 @@ const KIND_BY_CODE = {
   5004: "stream-closed",
   5005: "stream-frame-too-large",
   5006: "stream-overflow",
+  6000: "docs-disabled",
+  6001: "docs",
+  6002: "docs-invalid-id",
+  6003: "docs-invalid-ticket",
+  7000: "mdns-unavailable",
 } as const;
 
 type KindByCode = typeof KIND_BY_CODE;

@@ -26,17 +26,27 @@ use iroh_rust::{
 
 use crate::{
     blobs::{
-        blob_download, blob_download_cancel, blob_share, collection_manifest, collection_share,
-        parse_ticket, CollectionEntry, TicketInfo, TransferHandle,
+        blob_add_bytes, blob_download, blob_download_cancel, blob_has, blob_list, blob_share,
+        blob_status, collection_manifest, collection_share, parse_ticket, tags_create, tags_delete,
+        tags_list, tags_rename, BlobInfo, BlobStatusInfo, CollectionEntry, TagEntry, TicketInfo,
+        TransferHandle,
     },
     coalesce::Coalescer,
+    docs::{
+        authors_create, authors_default, authors_import, authors_list, docs_create,
+        docs_delete_prefix, docs_drop, docs_get_content, docs_get_exact, docs_get_many,
+        docs_import, docs_leave, docs_list, docs_open, docs_set_bytes, docs_share, docs_start_sync,
+        docs_subscribe, docs_unsubscribe, parse_doc_ticket, DocEntryInfo, DocTicketInfo,
+        DocsSubHandle,
+    },
     endpoint::{
         endpoint_addr, endpoint_close, endpoint_create, endpoint_id, endpoint_is_open,
         endpoint_online, endpoint_remote_info, stop_watch_addr, watch_addr, EndpointAddrInfo,
-        EndpointConfig, EndpointHandle, NetworkPreset, RemoteEndpointInfo, WatchHandle,
+        EndpointConfig, EndpointHandle, GcSettings, NetworkPreset, RemoteEndpointInfo, WatchHandle,
     },
     error::IrohError,
     gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
+    mdns::{mdns_subscribe, mdns_unsubscribe, MdnsSubHandle, MDNS_SUPPORTED},
     streams::{
         stop_stream_listen, stream_close, stream_close_connection, stream_connect,
         stream_connection_subscribe, stream_listen, stream_open_stream, stream_send,
@@ -190,6 +200,61 @@ fn remote_info_to_json(info: Option<&RemoteEndpointInfo>) -> String {
     out
 }
 
+/// Serializes a [`DocEntryInfo`] as a JSON object string for the bridge.
+fn doc_entry_to_json(entry: &DocEntryInfo) -> String {
+    let mut out = String::from("{\"author\":");
+    push_json_string(&mut out, &entry.author);
+    out.push_str(",\"key\":");
+    push_json_string(&mut out, &entry.key);
+    out.push_str(",\"hash\":");
+    push_json_string(&mut out, &entry.hash);
+    out.push_str(",\"size\":");
+    out.push_str(&entry.size.to_string());
+    out.push_str(",\"timestamp\":");
+    out.push_str(&entry.timestamp.to_string());
+    out.push('}');
+    out
+}
+
+/// Serializes an optional [`DocEntryInfo`] for the bridge: the entry object, or
+/// the JSON literal `null` when the entry is absent (e.g. deleted).
+fn doc_entry_opt_to_json(entry: Option<&DocEntryInfo>) -> String {
+    match entry {
+        Some(entry) => doc_entry_to_json(entry),
+        None => String::from("null"),
+    }
+}
+
+/// Serializes a list of [`DocEntryInfo`] as a JSON array string for the bridge.
+fn doc_entries_to_json(entries: &[DocEntryInfo]) -> String {
+    let mut out = String::from("[");
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&doc_entry_to_json(entry));
+    }
+    out.push(']');
+    out
+}
+
+/// Serializes a [`DocTicketInfo`] as a JSON object string for the bridge.
+fn doc_ticket_info_to_json(info: &DocTicketInfo) -> String {
+    let mut out = String::from("{\"namespace\":");
+    push_json_string(&mut out, &info.namespace);
+    out.push_str(",\"capability\":");
+    push_json_string(&mut out, info.capability);
+    out.push_str(",\"nodeIds\":[");
+    for (i, node) in info.node_ids.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_json_string(&mut out, node);
+    }
+    out.push_str("]}");
+    out
+}
+
 /// Serializes the collection children as a JSON array string for the bridge.
 fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
     let mut out = String::from("[");
@@ -207,6 +272,58 @@ fn collection_entries_to_json(entries: &[CollectionEntry]) -> String {
     out
 }
 
+/// Serializes a [`BlobStatusInfo`] as the JSON discriminated union the bridge
+/// exposes: `{"state":"notFound"}`, `{"state":"partial","size"?:n}`, or
+/// `{"state":"complete","size":n}`.
+fn blob_status_to_json(status: &BlobStatusInfo) -> String {
+    match status {
+        BlobStatusInfo::NotFound => String::from("{\"state\":\"notFound\"}"),
+        BlobStatusInfo::Partial { size } => match size {
+            Some(size) => format!("{{\"state\":\"partial\",\"size\":{size}}}"),
+            None => String::from("{\"state\":\"partial\"}"),
+        },
+        BlobStatusInfo::Complete { size } => {
+            format!("{{\"state\":\"complete\",\"size\":{size}}}")
+        }
+    }
+}
+
+/// Serializes the store's blobs as a JSON array string for the bridge.
+fn blob_infos_to_json(infos: &[BlobInfo]) -> String {
+    let mut out = String::from("[");
+    for (i, info) in infos.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"hash\":");
+        push_json_string(&mut out, &info.hash);
+        out.push_str(",\"size\":");
+        out.push_str(&info.size.to_string());
+        out.push('}');
+    }
+    out.push(']');
+    out
+}
+
+/// Serializes the store's tags as a JSON array string for the bridge.
+fn tag_entries_to_json(entries: &[TagEntry]) -> String {
+    let mut out = String::from("[");
+    for (i, entry) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        push_json_string(&mut out, &entry.name);
+        out.push_str(",\"hash\":");
+        push_json_string(&mut out, &entry.hash);
+        out.push_str(",\"format\":");
+        push_json_string(&mut out, entry.format);
+        out.push('}');
+    }
+    out.push(']');
+    out
+}
+
 impl HybridIrohSpec for HybridIroh {
     fn create_endpoint(&self, config: BridgeEndpointConfig, promise: Completer<f64>) {
         let preset = match config.preset {
@@ -216,15 +333,28 @@ impl HybridIrohSpec for HybridIroh {
         // Path validation (absolute blob store dir) and relay-mode parsing
         // both happen in the core.
         let blob_store_dir = config.blob_store_dir.map(PathBuf::from);
+        let docs_store_dir = config.docs_store_dir.map(PathBuf::from);
         let alpns = config
             .alpns
             .as_deref()
             .map(split_joined)
             .unwrap_or_default();
+        // A non-positive (or absent) interval means GC stays off, preserving
+        // today's keep-everything retention.
+        let gc = config
+            .gc_interval_secs
+            .filter(|secs| *secs > 0.0)
+            .map(|secs| GcSettings {
+                interval: Duration::from_secs_f64(secs),
+            });
         endpoint_create(
             EndpointConfig {
                 preset,
                 blob_store_dir,
+                gc,
+                docs: config.docs.unwrap_or(false),
+                docs_store_dir,
+                discovery_mdns: config.discovery_mdns.unwrap_or(false),
                 relay_mode: config.relay_mode,
                 alpns,
             },
@@ -393,6 +523,81 @@ impl HybridIrohSpec for HybridIroh {
             .map_err(encode_error)
     }
 
+    fn blob_status(&self, endpoint: f64, hash: String, promise: Completer<String>) {
+        blob_status(endpoint_handle(endpoint), hash, move |result| {
+            promise(
+                result
+                    .map(|status| blob_status_to_json(&status))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn blob_has(&self, endpoint: f64, hash: String, promise: Completer<bool>) {
+        blob_has(endpoint_handle(endpoint), hash, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn blob_list(&self, endpoint: f64, promise: Completer<String>) {
+        blob_list(endpoint_handle(endpoint), move |result| {
+            promise(
+                result
+                    .map(|infos| blob_infos_to_json(&infos))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn add_bytes(&self, endpoint: f64, data: NitroBuffer, promise: Completer<String>) {
+        // The host's ArrayBuffer is only guaranteed valid for this call, so the
+        // bytes are copied out before the import is handed to the runtime.
+        blob_add_bytes(endpoint_handle(endpoint), data.to_vec(), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn tags_list(&self, endpoint: f64, promise: Completer<String>) {
+        tags_list(endpoint_handle(endpoint), move |result| {
+            promise(
+                result
+                    .map(|entries| tag_entries_to_json(&entries))
+                    .map_err(encode_error),
+            );
+        });
+    }
+
+    fn tags_create(
+        &self,
+        endpoint: f64,
+        name: String,
+        hash: String,
+        format: String,
+        promise: Completer<()>,
+    ) {
+        tags_create(
+            endpoint_handle(endpoint),
+            name,
+            hash,
+            format,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn tags_delete(&self, endpoint: f64, name: String, promise: Completer<()>) {
+        tags_delete(endpoint_handle(endpoint), name, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn tags_rename(&self, endpoint: f64, from: String, to: String, promise: Completer<()>) {
+        tags_rename(endpoint_handle(endpoint), from, to, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
     fn gossip_subscribe(
         &self,
         endpoint: f64,
@@ -539,6 +744,251 @@ impl HybridIrohSpec for HybridIroh {
         stream_close(StreamHandle::from_raw(stream_id as u64));
         Ok(())
     }
+
+    fn authors_default(&self, endpoint: f64, promise: Completer<String>) {
+        authors_default(endpoint_handle(endpoint), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn authors_create(&self, endpoint: f64, promise: Completer<String>) {
+        authors_create(endpoint_handle(endpoint), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn authors_list(&self, endpoint: f64, promise: Completer<String>) {
+        authors_list(endpoint_handle(endpoint), move |result| {
+            promise(result.map(|ids| ids.join("\n")).map_err(encode_error));
+        });
+    }
+
+    fn authors_import(&self, endpoint: f64, secret_key: String, promise: Completer<String>) {
+        authors_import(endpoint_handle(endpoint), secret_key, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_create(&self, endpoint: f64, promise: Completer<String>) {
+        docs_create(endpoint_handle(endpoint), move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_open(&self, endpoint: f64, namespace_id: String, promise: Completer<bool>) {
+        docs_open(endpoint_handle(endpoint), namespace_id, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_import(&self, endpoint: f64, ticket: String, promise: Completer<String>) {
+        docs_import(endpoint_handle(endpoint), ticket, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_list(&self, endpoint: f64, promise: Completer<String>) {
+        docs_list(endpoint_handle(endpoint), move |result| {
+            promise(result.map(|ids| ids.join("\n")).map_err(encode_error));
+        });
+    }
+
+    fn docs_drop(&self, endpoint: f64, namespace_id: String, promise: Completer<()>) {
+        docs_drop(endpoint_handle(endpoint), namespace_id, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn docs_set_bytes(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        author_id: String,
+        key: String,
+        value: NitroBuffer,
+        promise: Completer<String>,
+    ) {
+        // The host's ArrayBuffer is only guaranteed valid for this call, so the
+        // bytes are copied out before the write is handed to the runtime.
+        docs_set_bytes(
+            endpoint_handle(endpoint),
+            namespace_id,
+            author_id,
+            key,
+            value.to_vec(),
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_get_exact(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        author_id: String,
+        key: String,
+        promise: Completer<String>,
+    ) {
+        docs_get_exact(
+            endpoint_handle(endpoint),
+            namespace_id,
+            author_id,
+            key,
+            move |result| {
+                promise(
+                    result
+                        .map(|entry| doc_entry_opt_to_json(entry.as_ref()))
+                        .map_err(encode_error),
+                );
+            },
+        );
+    }
+
+    fn docs_get_many(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        query_json: String,
+        promise: Completer<String>,
+    ) {
+        docs_get_many(
+            endpoint_handle(endpoint),
+            namespace_id,
+            query_json,
+            move |result| {
+                promise(
+                    result
+                        .map(|entries| doc_entries_to_json(&entries))
+                        .map_err(encode_error),
+                );
+            },
+        );
+    }
+
+    fn docs_delete_prefix(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        author_id: String,
+        prefix: String,
+        promise: Completer<f64>,
+    ) {
+        docs_delete_prefix(
+            endpoint_handle(endpoint),
+            namespace_id,
+            author_id,
+            prefix,
+            move |result| {
+                promise(result.map(|removed| removed as f64).map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_share(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        mode: String,
+        promise: Completer<String>,
+    ) {
+        docs_share(
+            endpoint_handle(endpoint),
+            namespace_id,
+            mode,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_get_content(&self, endpoint: f64, hash: String, promise: Completer<NitroBuffer>) {
+        docs_get_content(endpoint_handle(endpoint), hash, move |result| {
+            promise(result.map(NitroBuffer::from_vec).map_err(encode_error));
+        });
+    }
+
+    fn docs_subscribe(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_event: Box<dyn Fn(String) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        // Set-up errors (stale endpoint, docs disabled) surface synchronously;
+        // the handle is delivered later via on_start once the stream is live.
+        docs_subscribe(
+            endpoint_handle(endpoint),
+            namespace_id,
+            move |handle| on_start(handle.raw() as f64),
+            on_event,
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map_err(encode_error)
+    }
+
+    fn docs_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
+        docs_unsubscribe(DocsSubHandle::from_raw(sub_id as u64));
+        Ok(())
+    }
+
+    fn docs_start_sync(
+        &self,
+        endpoint: f64,
+        namespace_id: String,
+        peers_joined: String,
+        promise: Completer<()>,
+    ) {
+        docs_start_sync(
+            endpoint_handle(endpoint),
+            namespace_id,
+            peers_joined,
+            move |result| {
+                promise(result.map_err(encode_error));
+            },
+        );
+    }
+
+    fn docs_leave(&self, endpoint: f64, namespace_id: String, promise: Completer<()>) {
+        docs_leave(endpoint_handle(endpoint), namespace_id, move |result| {
+            promise(result.map_err(encode_error));
+        });
+    }
+
+    fn parse_doc_ticket(&self, ticket: String) -> Result<String, String> {
+        parse_doc_ticket(&ticket)
+            .map(|info| doc_ticket_info_to_json(&info))
+            .map_err(encode_error)
+    }
+
+    fn mdns_supported(&self) -> Result<bool, String> {
+        Ok(MDNS_SUPPORTED)
+    }
+
+    fn mdns_subscribe(
+        &self,
+        endpoint: f64,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_event: Box<dyn Fn(String) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        // Set-up errors (stale endpoint, mDNS not enabled, feature compiled out)
+        // surface synchronously; the handle is delivered later via on_start once
+        // the discovery stream is live.
+        mdns_subscribe(
+            endpoint_handle(endpoint),
+            move |handle| on_start(handle.raw() as f64),
+            on_event,
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map_err(encode_error)
+    }
+
+    fn mdns_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
+        mdns_unsubscribe(MdnsSubHandle::from_raw(sub_id as u64));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -569,8 +1019,12 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: store_dir.map(|p| p.to_string_lossy().into_owned()),
+                    docs: None,
+                    docs_store_dir: None,
+                    discovery_mdns: None,
                     alpns: None,
                     relay_mode: None,
+                    gc_interval_secs: None,
                 },
                 done,
             )
@@ -603,8 +1057,12 @@ mod tests {
                 BridgeEndpointConfig {
                     preset: BridgeNetworkPreset::Minimal,
                     blob_store_dir: Some("relative/store".into()),
+                    docs: None,
+                    docs_store_dir: None,
+                    discovery_mdns: None,
                     alpns: None,
                     relay_mode: None,
+                    gc_interval_secs: None,
                 },
                 done,
             )

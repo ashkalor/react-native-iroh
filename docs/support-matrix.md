@@ -15,15 +15,19 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                                | Android                       | iOS                              |
-| ---------------------------------------------------------------------- | ----------------------------- | -------------------------------- |
-| Endpoint create / close                                                | Validated (device + emulator) | Validated (device + sim)         |
-| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator) | Validated (device + sim)         |
-| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator) | Validated (device)               |
-| Relay mode (`relayMode`)                                               | Validated (emulator)          | Validated (simulator)            |
-| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator) | Validated (device)               |
-| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)               |
-| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)          | Code-complete, roundtrip pending |
+| Feature                                                                | Android                        | iOS                                          |
+| ---------------------------------------------------------------------- | ------------------------------ | -------------------------------------------- |
+| Endpoint create / close                                                | Validated (device + emulator)  | Validated (device + sim)                     |
+| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator)  | Validated (device + sim)                     |
+| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator)  | Validated (device)                           |
+| Relay mode (`relayMode`)                                               | Validated (emulator)           | Validated (simulator)                        |
+| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator)  | Validated (device)                           |
+| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)             | Validated (device)                           |
+| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)           | Code-complete, roundtrip pending             |
+| Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)           | Not yet validated                            |
+| mDNS discovery (`discovery.mdns` / `mdns.subscribe`)                   | Pending (two-device, same LAN) | Unavailable (compiled out until entitlement) |
+| Resumable download (`blobs.status` / `has`, resume of a partial)       | Validated (emulator)           | Code-complete, resume pending                |
+| Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending  | Code-complete, device pending                |
 
 ### Raw QUIC streams
 
@@ -48,6 +52,119 @@ What is still not covered on either platform is a two-_device_ streams roundtrip
 over the relay (as opposed to the in-process loopback above): a stream between
 two separate handsets, bytes compared on arrival, the way the cross-platform
 transfer row is validated.
+
+### Docs
+
+Added in 0.2.3, validated on the Android emulator. The smoke suite creates two
+docs-enabled endpoints with relays disabled, so they can reach each other only
+through the direct addresses in a ticket. One authors an entry, writes its bytes,
+and mints a write ticket; the other imports the ticket, subscribes to the document,
+and starts sync against the author's direct address. The subscriber observes the
+remote insert (authored by the peer, not a local echo) and the content download
+completing, then reads the synced value back out of its blob store and compares it
+byte-for-byte with the origin write. On the emulator this run reports
+`SMOKE: RESULT ALL PASS` with the `docs getContent integrity` marker confirming the
+256 synced bytes equal the origin write, covering docs create / set / share /
+import / subscribe / startSync / getContent in one loopback run. iOS and a
+two-device (non-loopback) run remain pending.
+
+Also exercised off-device: the Rust core's
+`two_endpoint_loopback_sync_observes_remote_insert` test drives the same
+reconciliation between two in-process minimal-preset endpoints, and the
+TypeScript layer is covered by unit tests against a mocked bridge.
+
+What is still not covered is a two-_device_ docs sync over the relay (two separate
+handsets reconciling a document and comparing the synced bytes), and iOS has not
+run docs at all yet, which is why its cell stays "Not yet validated".
+
+### mDNS discovery
+
+Added in 0.2.3, Android-only. `discovery: { mdns: true }` at endpoint creation
+runs n0's DNS-SD `_irohv1._udp.local` service (over `swarm-discovery`) so two
+endpoints on the same LAN resolve each other by endpoint id with relays disabled
+and no seeded addresses; `endpoint.mdns.subscribe()` surfaces the live stream of
+peers appearing and expiring. The library owns the Android Wi-Fi MulticastLock
+while mDNS is active (it ships `CHANGE_WIFI_MULTICAST_STATE` in its own manifest)
+and releases it on endpoint close. Foreground-only: under Doze the OS may suspend
+multicast regardless of the lock.
+
+Bundling is behind the `mdns` Cargo feature. Android builds with the feature
+(`scripts/build-rust-android.sh` passes `--features mdns`); Apple builds are
+compiled OUT (the iOS script omits it) until the consumer holds the multicast
+entitlement. A build without the feature reports `mdnsSupported()` /
+`MDNS_SUPPORTED === false`, and requesting `discovery.mdns` or calling
+`mdns.subscribe()` fails with an `IrohError` of kind `"mdns-unavailable"` rather
+than silently doing nothing.
+
+Exercised off-device: the Rust core builds and registers the mDNS lookup and
+brings a subscription live in-process (`mdns_endpoint_builds_registers_and_
+subscription_goes_live`), and the compiled-out contract is asserted both ways
+(creating with `discovery.mdns` and subscribing without the feature both return
+`mdns-unavailable`). The TypeScript layer is covered by unit tests against a
+mocked bridge, including that a compiled-out build reports `MDNS_SUPPORTED ===
+false` and throws `mdns-unavailable`.
+
+What is NOT yet validated is the two-real-device roundtrip: two handsets on the
+same LAN discovering each other by endpoint id over multicast, with relays
+disabled and no addresses seeded, and connecting. That needs a device session
+(the in-process test cannot join real multicast in the sandbox, so the
+two-endpoint multicast test is `#[ignore]`d), and the Android MulticastLock has
+not been exercised on hardware. iOS reports the feature unavailable (compiled
+out), which is also a device/Mac assertion still to be run.
+
+### Resumable download
+
+Added in 0.2.3. A download that was interrupted (cancelled, or a network change
+mid-stream) leaves BLAKE3-verified ranges in the store, and re-issuing the same
+download resumes: `Remote::fetch` computes what is already local
+(`local_for_request` / `LocalInfo::missing`) and asks the provider for only the
+missing ranges, never the whole blob again. `blobs.status(hash)` reports this as
+`notFound` / `partial` / `complete`, and `blobs.has(hash)` is the complete-only
+predicate.
+
+Validated on the Android emulator: the smoke suite shares an 8 MiB blob, cancels
+the receiver's download at the first mid-flight progress event (leaving a genuine
+partial, `status` `partial` at 344064 of 8388608 bytes, `has` false), then
+re-issues the download and observes it complete with the second pass moving
+strictly fewer bytes than the full blob (6520832 < 8388608, so only the missing
+ranges crossed the wire), status `complete`, `has` true, and the exported file
+re-hashing to the origin content hash. This folds into `SMOKE: RESULT ALL PASS`.
+
+Exercised off-device: the Rust core's
+`interrupted_download_resumes_only_the_missing_ranges` test pre-seeds a genuine
+partial (a bounded chunk-range get), asserts the store reports `partial` with a
+size strictly below the full blob and that `LocalInfo` is incomplete, then runs a
+full `blobs.download` and asserts the second pass moves strictly fewer payload
+bytes than the whole blob (the proof that only the missing ranges crossed the
+wire) and that the final file is BLAKE3-identical to the source. The TypeScript
+layer is covered by unit tests against a mocked bridge. iOS resume is still
+pending a device run.
+
+What is still pending on both platforms is the on-device kill-and-resume: killing
+a transfer midway on a handset and re-issuing it, observing fewer bytes on the
+second pass. That is the device gate this row waits on.
+
+### Blob store management
+
+Added in 0.2.3. `blobs.list()` enumerates the store's blobs (hash + size);
+`blobs.addBytes(data)` imports an in-memory `ArrayBuffer` and mints a ticket (the
+counterpart of `blobs.share` for a file); and `blobs.tags` is the tag lifecycle
+(`list` / `create` / `rename` / `delete`). Tags are the sanctioned retention
+mechanism: garbage collection is opt-in (`gc: { intervalSecs }` at endpoint
+creation, OFF by default so retention is unchanged), and when enabled a tagged
+blob survives a GC pass while an untagged one is reclaimed. There is deliberately
+no direct blob delete: "removing" a blob is dropping its tag and letting GC
+reclaim it (deletion is GC-only, keeping the store the sole owner of every byte).
+
+Exercised off-device: the Rust core covers the full tag lifecycle
+(`tag_lifecycle_create_list_rename_delete`), the GC protect/reclaim behavior with
+a real short-interval loop (`gc_reclaims_untagged_but_keeps_tagged_blobs`), that
+GC stays off by default (`gc_off_by_default_retains_untagged_blobs`), and the
+in-memory import round-trip (`add_bytes_imports_and_is_downloadable`). The
+TypeScript layer is covered by unit tests against a mocked bridge.
+
+What is still pending is exercising these on a handset through the example app's
+smoke suite, which is why both cells stay "Code-complete, device pending".
 
 ### Cross-platform transfer
 
@@ -153,7 +270,7 @@ Gossip and discovery are unaffected and keep working across the same switch.
 ## React hooks
 
 The `react-native-iroh/hooks` layer (`useEndpoint`, `useTransfer`, `useDownload`,
-`useGossip`) is pure TypeScript over the APIs above, with no native code of its
+`useGossip`, `useDocs`, `useDoc`) is pure TypeScript over the APIs above, with no native code of its
 own. It is validated by renderer and unit tests (mocking the native binding), so
 on any given platform a hook inherits exactly the status of the feature it wraps
 from the table above.

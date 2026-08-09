@@ -7,4 +7,12 @@
          discovery quietly degrades. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- mDNS LAN discovery (the `mdns` Cargo feature, Android-only) speaks DNS-SD
+         over multicast. Android drops inbound multicast Wi-Fi packets unless an
+         app holds a MulticastLock, and taking that lock requires this permission.
+         The library owns the lock (see the Rust `multicast_lock` module) and so
+         ships the permission here, in its own manifest, rather than making every
+         consuming app declare it. Harmless when mDNS is unused. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
 </manifest>

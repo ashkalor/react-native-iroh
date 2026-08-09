@@ -29,6 +29,14 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("shareCollection", &HybridIrohSpec::shareCollection);
       prototype.registerHybridMethod("collectionManifest", &HybridIrohSpec::collectionManifest);
       prototype.registerHybridMethod("parseTicket", &HybridIrohSpec::parseTicket);
+      prototype.registerHybridMethod("blobStatus", &HybridIrohSpec::blobStatus);
+      prototype.registerHybridMethod("blobHas", &HybridIrohSpec::blobHas);
+      prototype.registerHybridMethod("blobList", &HybridIrohSpec::blobList);
+      prototype.registerHybridMethod("addBytes", &HybridIrohSpec::addBytes);
+      prototype.registerHybridMethod("tagsList", &HybridIrohSpec::tagsList);
+      prototype.registerHybridMethod("tagsCreate", &HybridIrohSpec::tagsCreate);
+      prototype.registerHybridMethod("tagsDelete", &HybridIrohSpec::tagsDelete);
+      prototype.registerHybridMethod("tagsRename", &HybridIrohSpec::tagsRename);
       prototype.registerHybridMethod("gossipSubscribe", &HybridIrohSpec::gossipSubscribe);
       prototype.registerHybridMethod("gossipBroadcast", &HybridIrohSpec::gossipBroadcast);
       prototype.registerHybridMethod("gossipUnsubscribe", &HybridIrohSpec::gossipUnsubscribe);
@@ -41,6 +49,29 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("streamSubscribe", &HybridIrohSpec::streamSubscribe);
       prototype.registerHybridMethod("streamSend", &HybridIrohSpec::streamSend);
       prototype.registerHybridMethod("streamClose", &HybridIrohSpec::streamClose);
+      prototype.registerHybridMethod("authorsDefault", &HybridIrohSpec::authorsDefault);
+      prototype.registerHybridMethod("authorsCreate", &HybridIrohSpec::authorsCreate);
+      prototype.registerHybridMethod("authorsList", &HybridIrohSpec::authorsList);
+      prototype.registerHybridMethod("authorsImport", &HybridIrohSpec::authorsImport);
+      prototype.registerHybridMethod("docsCreate", &HybridIrohSpec::docsCreate);
+      prototype.registerHybridMethod("docsOpen", &HybridIrohSpec::docsOpen);
+      prototype.registerHybridMethod("docsImport", &HybridIrohSpec::docsImport);
+      prototype.registerHybridMethod("docsList", &HybridIrohSpec::docsList);
+      prototype.registerHybridMethod("docsDrop", &HybridIrohSpec::docsDrop);
+      prototype.registerHybridMethod("docsSetBytes", &HybridIrohSpec::docsSetBytes);
+      prototype.registerHybridMethod("docsGetExact", &HybridIrohSpec::docsGetExact);
+      prototype.registerHybridMethod("docsGetMany", &HybridIrohSpec::docsGetMany);
+      prototype.registerHybridMethod("docsDeletePrefix", &HybridIrohSpec::docsDeletePrefix);
+      prototype.registerHybridMethod("docsShare", &HybridIrohSpec::docsShare);
+      prototype.registerHybridMethod("docsGetContent", &HybridIrohSpec::docsGetContent);
+      prototype.registerHybridMethod("docsSubscribe", &HybridIrohSpec::docsSubscribe);
+      prototype.registerHybridMethod("docsUnsubscribe", &HybridIrohSpec::docsUnsubscribe);
+      prototype.registerHybridMethod("docsStartSync", &HybridIrohSpec::docsStartSync);
+      prototype.registerHybridMethod("docsLeave", &HybridIrohSpec::docsLeave);
+      prototype.registerHybridMethod("parseDocTicket", &HybridIrohSpec::parseDocTicket);
+      prototype.registerHybridMethod("mdnsSupported", &HybridIrohSpec::mdnsSupported);
+      prototype.registerHybridMethod("mdnsSubscribe", &HybridIrohSpec::mdnsSubscribe);
+      prototype.registerHybridMethod("mdnsUnsubscribe", &HybridIrohSpec::mdnsUnsubscribe);
     });
   }
 

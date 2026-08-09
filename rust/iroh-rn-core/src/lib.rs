@@ -22,12 +22,16 @@
 pub mod android_context;
 pub mod blobs;
 mod coalesce;
+pub mod docs;
 pub mod endpoint;
 pub mod error;
 mod ffi;
 pub mod gossip;
 mod hybrid_iroh;
 pub mod logging;
+pub mod mdns;
+#[cfg(feature = "mdns")]
+mod multicast_lock;
 pub(crate) mod registry;
 mod runtime;
 pub mod streams;

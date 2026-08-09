@@ -9,13 +9,13 @@ use std::{path::PathBuf, sync::LazyLock, sync::Mutex};
 
 use iroh_blobs::{
     api::{
-        blobs::{AddPathOptions, ExportOptions},
+        blobs::{AddPathOptions, BlobStatus, ExportOptions},
         remote::GetProgressItem,
     },
     format::collection::Collection,
     hashseq::HashSeq,
     ticket::BlobTicket,
-    BlobFormat, HashAndFormat,
+    BlobFormat, Hash, HashAndFormat,
 };
 use n0_future::StreamExt;
 use tokio::sync::oneshot;
@@ -241,6 +241,12 @@ async fn collection_share_inner(endpoint: EndpointHandle, paths: Vec<PathBuf>) -
 /// This is the front half of a per-child collection download: the caller then
 /// downloads each returned child ticket through the ordinary [`blob_download`]
 /// machinery, so children fan out concurrently and progress/fail independently.
+///
+/// Retention: fetching the manifest tags the collection root (a HashSeq tag
+/// named after the root hash), which transitively retains the root, its
+/// metadata blob, and every present child under opt-in GC; each child is also
+/// tagged as it is downloaded. Drop the root tag with [`tags_delete`] to make
+/// the collection reclaimable.
 pub fn collection_manifest(
     endpoint: EndpointHandle,
     ticket: String,
@@ -269,6 +275,20 @@ async fn collection_manifest_inner(
         .await
         .map_err(|e| IrohError::BlobDownload(format!("connect: {}", error_chain(&e))))?;
     let remote = state.store.api().remote();
+
+    // Protect the collection root for the fetch-to-persist window (see
+    // `download_inner`). A HashSeq tag transitively protects the root, its
+    // metadata blob, and every child that is present, so tagging the root
+    // retains the whole collection under opt-in GC; each child is additionally
+    // retained by its own tag as it is downloaded via `blob_download`.
+    let root_haf = HashAndFormat::hash_seq(root);
+    let protect = state
+        .store
+        .api()
+        .tags()
+        .temp_tag(root_haf)
+        .await
+        .map_err(|e| IrohError::BlobDownload(format!("protect collection: {e}")))?;
 
     // Fetch just the HashSeq root blob (Raw, non-recursive), then read it to
     // discover the metadata blob's hash, then fetch that. With both present the
@@ -304,6 +324,18 @@ async fn collection_manifest_inner(
     let collection = Collection::load(root, state.store.api())
         .await
         .map_err(|e| IrohError::BlobDownload(format!("load collection: {}", error_chain(&e))))?;
+
+    // Persist the collection-root tag (named by the root hash) before releasing
+    // the temp tag, so the collection is retained under opt-in GC with no gap.
+    state
+        .store
+        .api()
+        .tags()
+        .set(retention_tag_name(&root_haf), root_haf)
+        .await
+        .map_err(|e| IrohError::BlobStore(format!("tag collection: {e}")))?;
+    drop(protect);
+
     let provider = ticket.addr().clone();
     let entries = collection
         .iter()
@@ -322,6 +354,13 @@ async fn collection_manifest_inner(
 /// receives the cumulative number of payload bytes fetched: values are
 /// non-decreasing and unthrottled (the bridge coalesces). `on_complete` fires
 /// exactly once with the terminal result, after which the handle is invalid.
+///
+/// Retention: on success the downloaded blob is tagged (under a tag named after
+/// the root hash), so it is retained under opt-in GC exactly like a shared or
+/// imported blob. GC reclaims only untagged blobs; to make a downloaded blob
+/// reclaimable, drop its tag with [`tags_delete`] (the tag name is the root
+/// hash) and let a GC pass run. A partially-downloaded blob is protected too:
+/// the tag is held across the fetch so a concurrent sweep cannot reclaim it.
 pub fn blob_download(
     endpoint: EndpointHandle,
     ticket: &str,
@@ -385,6 +424,316 @@ pub fn blob_download_cancel(transfer: TransferHandle) -> Result<()> {
     Ok(())
 }
 
+/// Parses a 64-hex-character BLAKE3 content hash, the shape [`Hash::to_string`]
+/// produces and every blob-store management call accepts.
+fn parse_hash(hash: &str) -> Result<Hash> {
+    hash.parse::<Hash>()
+        .map_err(|e| IrohError::BlobStore(format!("invalid blob hash {hash:?}: {e}")))
+}
+
+/// The name of the retention tag a download creates for its root blob: the
+/// root hash in hex. Deterministic (so re-downloading overwrites rather than
+/// piling up tags), discoverable via [`tags_list`], and directly droppable via
+/// [`tags_delete`] to make the blob GC-reclaimable again.
+fn retention_tag_name(haf: &HashAndFormat) -> String {
+    haf.hash.to_string()
+}
+
+/// Builds a [`HashAndFormat`] from a hash and a `"raw"` / `"hashSeq"` format
+/// tag, the two [`BlobFormat`] names the bridge uses everywhere.
+fn hash_and_format(hash: Hash, format: &str) -> Result<HashAndFormat> {
+    match format {
+        "raw" => Ok(HashAndFormat::raw(hash)),
+        "hashSeq" => Ok(HashAndFormat::hash_seq(hash)),
+        other => Err(IrohError::BlobStore(format!(
+            "unknown blob format {other:?} (expected \"raw\" or \"hashSeq\")"
+        ))),
+    }
+}
+
+/// Local presence of a blob in the store, produced by [`blob_status`].
+///
+/// Mirrors iroh-blobs' [`BlobStatus`] but owns plain data the bridge can encode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlobStatusInfo {
+    /// The blob is not present at all.
+    NotFound,
+    /// Some of the blob's ranges are present but it is incomplete.
+    Partial {
+        /// The currently stored partial size in bytes, when known.
+        size: Option<u64>,
+    },
+    /// The whole blob is present and BLAKE3-verified.
+    Complete {
+        /// The blob's full size in bytes.
+        size: u64,
+    },
+}
+
+impl From<BlobStatus> for BlobStatusInfo {
+    fn from(status: BlobStatus) -> Self {
+        match status {
+            BlobStatus::NotFound => BlobStatusInfo::NotFound,
+            BlobStatus::Partial { size } => BlobStatusInfo::Partial { size },
+            BlobStatus::Complete { size } => BlobStatusInfo::Complete { size },
+        }
+    }
+}
+
+/// Reports whether `hash` is absent, partially present, or complete in the
+/// endpoint's blob store.
+///
+/// This is what turns a resumable download into an observable one: a
+/// [`BlobStatusInfo::Partial`] means the next [`blob_download`] fetches only the
+/// missing ranges (see [`download_inner`]).
+pub fn blob_status(
+    endpoint: EndpointHandle,
+    hash: String,
+    on_complete: impl FnOnce(Result<BlobStatusInfo>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            let hash = parse_hash(&hash)?;
+            let status = state
+                .store
+                .api()
+                .blobs()
+                .status(hash)
+                .await
+                .map_err(|e| IrohError::BlobStore(format!("status: {e}")))?;
+            Ok(status.into())
+        },
+        on_complete,
+    );
+}
+
+/// Whether the endpoint's store holds `hash` complete (BLAKE3-verified). A
+/// partial blob reports `false`.
+pub fn blob_has(
+    endpoint: EndpointHandle,
+    hash: String,
+    on_complete: impl FnOnce(Result<bool>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            let hash = parse_hash(&hash)?;
+            state
+                .store
+                .api()
+                .blobs()
+                .has(hash)
+                .await
+                .map_err(|e| IrohError::BlobStore(format!("has: {e}")))
+        },
+        on_complete,
+    );
+}
+
+/// One blob in the store, as reported by [`blob_list`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobInfo {
+    /// The blob's BLAKE3 content hash, 64 lowercase hex characters.
+    pub hash: String,
+    /// The blob's size in bytes (its full size when complete, the stored
+    /// partial size otherwise, `0` when unknown).
+    pub size: u64,
+}
+
+/// Lists the complete blobs the endpoint's store holds, each with its size.
+pub fn blob_list(
+    endpoint: EndpointHandle,
+    on_complete: impl FnOnce(Result<Vec<BlobInfo>>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            let blobs = state.store.api().blobs();
+            let hashes = blobs
+                .list()
+                .hashes()
+                .await
+                .map_err(|e| IrohError::BlobStore(format!("list: {e}")))?;
+            let mut out = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                let size = match blobs.status(hash).await {
+                    Ok(BlobStatus::Complete { size }) => size,
+                    Ok(BlobStatus::Partial { size }) => size.unwrap_or(0),
+                    _ => 0,
+                };
+                out.push(BlobInfo {
+                    hash: hash.to_string(),
+                    size,
+                });
+            }
+            Ok(out)
+        },
+        on_complete,
+    );
+}
+
+/// Imports the in-memory `bytes` into the endpoint's blob store and produces a
+/// shareable ticket string, the in-memory counterpart of [`blob_share`].
+///
+/// The bytes are copied into the store (there is no borrowed-file mode to
+/// avoid), so this is unaffected by the import-mode invariant.
+pub fn blob_add_bytes(
+    endpoint: EndpointHandle,
+    bytes: Vec<u8>,
+    on_complete: impl FnOnce(Result<String>) + Send + 'static,
+) {
+    spawn_completing(add_bytes_inner(endpoint, bytes), on_complete);
+}
+
+async fn add_bytes_inner(endpoint: EndpointHandle, bytes: Vec<u8>) -> Result<String> {
+    let state = endpoint_state(endpoint)?;
+    let import = async {
+        state
+            .store
+            .api()
+            .blobs()
+            .add_bytes(bytes)
+            .await
+            .map_err(|e| IrohError::BlobImport(e.to_string()))
+    };
+    // Mirror [`share_inner`]: overlap the online wait with the import so the
+    // minted ticket carries dialable addresses on the N0 preset.
+    let wait_online = async {
+        if state.preset == NetworkPreset::N0 {
+            let _ = tokio::time::timeout(ONLINE_TIMEOUT, state.endpoint.online()).await;
+        }
+    };
+    let (tag, ()) = tokio::join!(import, wait_online);
+    let tag = tag?;
+    let ticket = BlobTicket::new(state.endpoint.addr(), tag.hash, tag.format);
+    Ok(ticket.to_string())
+}
+
+/// One tag in the store, as reported by [`tags_list`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagEntry {
+    /// The tag's name (its bytes read as UTF-8, lossily).
+    pub name: String,
+    /// The tagged blob's BLAKE3 content hash.
+    pub hash: String,
+    /// `"raw"` or `"hashSeq"`: the format the tag protects, which decides
+    /// whether GC also protects a hash sequence's children.
+    pub format: &'static str,
+}
+
+fn blob_format_name(format: BlobFormat) -> &'static str {
+    match format {
+        BlobFormat::Raw => "raw",
+        BlobFormat::HashSeq => "hashSeq",
+    }
+}
+
+/// Lists every tag in the store: the sanctioned way to see what survives GC.
+pub fn tags_list(
+    endpoint: EndpointHandle,
+    on_complete: impl FnOnce(Result<Vec<TagEntry>>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            let mut stream = state
+                .store
+                .api()
+                .tags()
+                .list()
+                .await
+                .map_err(|e| IrohError::BlobStore(format!("list tags: {e}")))?;
+            let mut out = Vec::new();
+            while let Some(item) = stream.next().await {
+                let info = item.map_err(|e| IrohError::BlobStore(format!("list tags: {e}")))?;
+                out.push(TagEntry {
+                    name: String::from_utf8_lossy(info.name.as_ref()).into_owned(),
+                    hash: info.hash.to_string(),
+                    format: blob_format_name(info.format),
+                });
+            }
+            Ok(out)
+        },
+        on_complete,
+    );
+}
+
+/// Creates (or overwrites) the tag `name`, pinning `hash` so GC keeps it. This
+/// is the retention primitive: an untagged blob is reclaimed once GC runs, a
+/// tagged one survives.
+pub fn tags_create(
+    endpoint: EndpointHandle,
+    name: String,
+    hash: String,
+    format: String,
+    on_complete: impl FnOnce(Result<()>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            let hash = parse_hash(&hash)?;
+            let value = hash_and_format(hash, &format)?;
+            state
+                .store
+                .api()
+                .tags()
+                .set(name.as_bytes(), value)
+                .await
+                .map_err(|e| IrohError::BlobStore(format!("create tag: {e}")))
+        },
+        on_complete,
+    );
+}
+
+/// Deletes the tag `name`. The blob it pinned is not removed here: it becomes
+/// GC-eligible, and (only if GC is running) is reclaimed on the next pass. This
+/// is the "remove a blob" path, deletion staying GC-only by design.
+pub fn tags_delete(
+    endpoint: EndpointHandle,
+    name: String,
+    on_complete: impl FnOnce(Result<()>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            // `delete` reports how many tags it removed; deleting an absent tag
+            // is not an error, matching the idempotent teardown callers expect.
+            state
+                .store
+                .api()
+                .tags()
+                .delete(name.as_bytes())
+                .await
+                .map(|_removed| ())
+                .map_err(|e| IrohError::BlobStore(format!("delete tag: {e}")))
+        },
+        on_complete,
+    );
+}
+
+/// Renames the tag `from` to `to` atomically. Fails if `from` does not exist.
+pub fn tags_rename(
+    endpoint: EndpointHandle,
+    from: String,
+    to: String,
+    on_complete: impl FnOnce(Result<()>) + Send + 'static,
+) {
+    spawn_completing(
+        async move {
+            let state = endpoint_state(endpoint)?;
+            state
+                .store
+                .api()
+                .tags()
+                .rename(from.as_bytes(), to.as_bytes())
+                .await
+                .map_err(|e| IrohError::BlobStore(format!("rename tag: {e}")))
+        },
+        on_complete,
+    );
+}
+
 async fn download_inner(
     endpoint: EndpointHandle,
     ticket: BlobTicket,
@@ -401,12 +750,30 @@ async fn download_inner(
         .await
         .map_err(|e| IrohError::BlobDownload(format!("connect: {}", error_chain(&e))))?;
 
-    let mut stream = state
-        .store
-        .api()
-        .remote()
-        .fetch(connection, ticket.hash_and_format())
-        .stream();
+    let store = state.store.api();
+    let haf = ticket.hash_and_format();
+
+    // Protect the blob for the whole fetch-to-persist window. `fetch` writes
+    // ranges into the store without any protection of its own, so with opt-in
+    // GC enabled a concurrent sweep could reclaim the just-written (partial or
+    // complete) blob before it is tagged. A temp tag held across the fetch, the
+    // export, and the persistent-tag creation closes that window: it is created
+    // before the first byte and dropped only after the persistent tag exists,
+    // so the root hash is protected at every instant. Symmetric with how
+    // share/add_bytes retain their imports.
+    let protect = store
+        .tags()
+        .temp_tag(haf)
+        .await
+        .map_err(|e| IrohError::BlobDownload(format!("protect download: {e}")))?;
+
+    // `fetch` is resume-aware: it calls `Remote::local_for_request` and only
+    // issues `LocalInfo::missing()` to the provider, so a re-issued download of
+    // a partially-present blob (an earlier transfer cancelled or interrupted
+    // mid-stream leaves verified ranges in the store) transfers only the ranges
+    // still missing. Progress therefore counts payload bytes of that missing
+    // request, not of the whole blob.
+    let mut stream = store.remote().fetch(connection, haf).stream();
     let mut finished = false;
     while let Some(item) = stream.next().await {
         match item {
@@ -430,9 +797,7 @@ async fn download_inner(
     // Export the verified blob out of the store to the destination path.
     clear_export_target(&dest_path).await?;
     let mode = state.store.export_mode();
-    state
-        .store
-        .api()
+    store
         .blobs()
         .export_with_opts(ExportOptions {
             hash: ticket.hash(),
@@ -441,6 +806,18 @@ async fn download_inner(
         })
         .await
         .map_err(|e| IrohError::BlobExport(error_chain(&e)))?;
+
+    // Persist a tag so the downloaded blob is retained under opt-in GC. The tag
+    // is named after the root hash so it is both discoverable (`tags_list`
+    // surfaces `name == hash`) and directly droppable (`tags_delete(hash)`) to
+    // make the blob GC-reclaimable again. Created before the temp tag is
+    // dropped, so retention never lapses.
+    store
+        .tags()
+        .set(retention_tag_name(&haf), haf)
+        .await
+        .map_err(|e| IrohError::BlobStore(format!("tag download: {e}")))?;
+    drop(protect);
     Ok(())
 }
 
@@ -487,7 +864,9 @@ mod tests {
     use iroh_blobs::Hash;
 
     use super::*;
-    use crate::test_support::{close_endpoint_blocking, create_minimal_endpoint, TIMEOUT};
+    use crate::test_support::{
+        close_endpoint_blocking, create_minimal_endpoint, create_minimal_endpoint_with_gc, TIMEOUT,
+    };
 
     fn close(handle: EndpointHandle) {
         close_endpoint_blocking(handle).expect("endpoint closed");
@@ -994,6 +1373,359 @@ mod tests {
             rx.recv_timeout(TIMEOUT).unwrap(),
             Err(IrohError::InvalidTicket(_))
         ));
+
+        close(provider);
+        close(receiver);
+    }
+
+    fn status_blocking(endpoint: EndpointHandle, hash: &str) -> BlobStatusInfo {
+        let (tx, rx) = mpsc::channel();
+        blob_status(endpoint, hash.to_owned(), move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT)
+            .expect("status completed")
+            .expect("status ok")
+    }
+
+    fn has_blocking(endpoint: EndpointHandle, hash: &str) -> bool {
+        let (tx, rx) = mpsc::channel();
+        blob_has(endpoint, hash.to_owned(), move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT)
+            .expect("has completed")
+            .expect("has ok")
+    }
+
+    #[test]
+    fn status_is_not_found_then_complete_across_a_full_download() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bytes = vec![4u8; 512 * 1024];
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let ticket = share_blocking(provider, src);
+        let hash = parse_ticket(&ticket).unwrap().hash;
+
+        // Before any transfer the receiver has nothing.
+        assert_eq!(status_blocking(receiver, &hash), BlobStatusInfo::NotFound);
+        assert!(!has_blocking(receiver, &hash));
+
+        let dest = dir.path().join("out.bin");
+        download_blocking(receiver, &ticket, &dest).expect("download");
+
+        // After a full download the blob is complete at its true size.
+        assert_eq!(
+            status_blocking(receiver, &hash),
+            BlobStatusInfo::Complete {
+                size: bytes.len() as u64
+            }
+        );
+        assert!(has_blocking(receiver, &hash));
+
+        close(provider);
+        close(receiver);
+    }
+
+    /// A partially-present blob resumes: the second pass fetches only the
+    /// ranges still missing, never the whole blob again. Deterministic (no
+    /// cancel race): the partial is pre-seeded with an explicit chunk-range get,
+    /// then a full `blob_download` completes it while its progress is watched.
+    #[test]
+    fn interrupted_download_resumes_only_the_missing_ranges() {
+        use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt, GetRequest};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Many chunk groups so a partial can sit strictly between empty and full.
+        let full_len: usize = 4 * 1024 * 1024;
+        let bytes: Vec<u8> = (0..full_len as u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let ticket_str = share_blocking(provider, src);
+        let ticket: BlobTicket = ticket_str.parse().expect("ticket parses");
+        let hash = ticket.hash();
+        let hash_hex = hash.to_string();
+
+        assert_eq!(
+            status_blocking(receiver, &hash_hex),
+            BlobStatusInfo::NotFound
+        );
+
+        // Pre-seed the first ~1.5 MiB (1536 chunks) on the receiver via a bounded
+        // range get, so the store holds a genuine partial for `hash`.
+        runtime().block_on(async {
+            let state = endpoint_state(receiver).expect("receiver live");
+            let connection = state
+                .endpoint
+                .connect(ticket.addr().clone(), iroh_blobs::ALPN)
+                .await
+                .expect("connect to provider");
+            let request = GetRequest::builder()
+                .root(ChunkRanges::chunks(..1536))
+                .build(hash);
+            let mut stream = state
+                .store
+                .api()
+                .remote()
+                .execute_get(connection, request)
+                .stream();
+            while let Some(item) = stream.next().await {
+                match item {
+                    GetProgressItem::Done(_) => break,
+                    GetProgressItem::Error(e) => panic!("pre-seed get failed: {e}"),
+                    GetProgressItem::Progress(_) => {}
+                }
+            }
+            state.store.api().wait_idle().await.expect("store idle");
+        });
+
+        // The store now reports a partial strictly smaller than the whole blob,
+        // and `local_for_request`/`missing` still has ranges to fetch.
+        let partial_status = status_blocking(receiver, &hash_hex);
+        assert!(
+            matches!(partial_status, BlobStatusInfo::Partial { .. }),
+            "expected Partial after a bounded get, got {partial_status:?}"
+        );
+        let local_bytes = runtime().block_on(async {
+            let state = endpoint_state(receiver).expect("receiver live");
+            let local = state
+                .store
+                .api()
+                .remote()
+                .local(HashAndFormat::raw(hash))
+                .await
+                .expect("local info");
+            assert!(!local.is_complete(), "pre-seeded blob must be incomplete");
+            local.local_bytes()
+        });
+        assert!(
+            local_bytes > 0 && (local_bytes as usize) < full_len,
+            "partial local_bytes {local_bytes} must lie strictly inside 0..{full_len}"
+        );
+
+        // Re-issue the full download and watch how many payload bytes it moves.
+        // A resume fetches only `missing()`; a from-scratch refetch would move
+        // the whole blob, so a max-progress strictly below the full size is the
+        // proof that only the missing ranges crossed the wire.
+        let dest = dir.path().join("out.bin");
+        let max_progress = Arc::new(AtomicUsize::new(0));
+        let max_sink = Arc::clone(&max_progress);
+        let (done_tx, done_rx) = mpsc::channel();
+        blob_download(
+            receiver,
+            &ticket_str,
+            dest.clone(),
+            move |transferred| {
+                max_sink.fetch_max(transferred as usize, Ordering::SeqCst);
+            },
+            move |result| {
+                done_tx.send(result).ok();
+            },
+        )
+        .expect("resume download started");
+        done_rx
+            .recv_timeout(TIMEOUT)
+            .unwrap()
+            .expect("resume download completed");
+
+        let observed = max_progress.load(Ordering::SeqCst);
+        assert!(
+            observed > 0 && observed < full_len,
+            "second pass moved {observed} bytes; a resume must move fewer than the full {full_len}"
+        );
+
+        // The blob is now complete at its true size and byte-identical.
+        assert_eq!(
+            status_blocking(receiver, &hash_hex),
+            BlobStatusInfo::Complete {
+                size: full_len as u64
+            }
+        );
+        assert!(has_blocking(receiver, &hash_hex));
+        assert_eq!(
+            blake3::hash(&std::fs::read(&dest).unwrap()),
+            blake3::hash(&bytes)
+        );
+
+        close(provider);
+        close(receiver);
+    }
+
+    /// `blob_add_bytes` imports in-memory bytes and mints a ticket that another
+    /// endpoint can download, byte-for-byte, through the ordinary machinery.
+    #[test]
+    fn add_bytes_imports_and_is_downloadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        let receiver = create_minimal_endpoint(Some(dir.path().join("receiver-store")));
+
+        let payload = b"in-memory payload imported without a file".to_vec();
+        let (tx, rx) = mpsc::channel();
+        blob_add_bytes(provider, payload.clone(), move |result| {
+            tx.send(result).ok();
+        });
+        let ticket = rx.recv_timeout(TIMEOUT).unwrap().expect("added bytes");
+        assert_eq!(parse_ticket(&ticket).unwrap().format, "raw");
+
+        let dest = dir.path().join("out.bin");
+        download_blocking(receiver, &ticket, &dest).expect("download");
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+
+        close(provider);
+        close(receiver);
+    }
+
+    #[test]
+    fn tag_lifecycle_create_list_rename_delete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let endpoint = create_minimal_endpoint(Some(dir.path().join("store")));
+
+        // A syntactically valid hash to pin. The tag store records the pin
+        // whether or not the blob is present, and using a synthetic hash keeps
+        // the store free of the auto-tag that importing a blob would create.
+        let hash = Hash::new(b"tag target").to_string();
+
+        let list = |endpoint: EndpointHandle| -> Vec<TagEntry> {
+            let (tx, rx) = mpsc::channel();
+            tags_list(endpoint, move |result| {
+                tx.send(result).ok();
+            });
+            rx.recv_timeout(TIMEOUT).unwrap().expect("tags listed")
+        };
+
+        assert!(list(endpoint).is_empty(), "a fresh store has no tags");
+
+        // create
+        let (tx, rx) = mpsc::channel();
+        tags_create(
+            endpoint,
+            "keep".into(),
+            hash.clone(),
+            "raw".into(),
+            move |result| {
+                tx.send(result).ok();
+            },
+        );
+        rx.recv_timeout(TIMEOUT).unwrap().expect("tag created");
+
+        let after_create = list(endpoint);
+        assert_eq!(after_create.len(), 1);
+        assert_eq!(after_create[0].name, "keep");
+        assert_eq!(after_create[0].hash, hash);
+        assert_eq!(after_create[0].format, "raw");
+
+        // rename
+        let (tx, rx) = mpsc::channel();
+        tags_rename(endpoint, "keep".into(), "renamed".into(), move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT).unwrap().expect("tag renamed");
+
+        let after_rename = list(endpoint);
+        assert_eq!(after_rename.len(), 1);
+        assert_eq!(after_rename[0].name, "renamed");
+        assert_eq!(after_rename[0].hash, hash);
+
+        // delete
+        let (tx, rx) = mpsc::channel();
+        tags_delete(endpoint, "renamed".into(), move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT).unwrap().expect("tag deleted");
+
+        assert!(list(endpoint).is_empty(), "the tag is gone after delete");
+
+        close(endpoint);
+    }
+
+    fn tags_list_blocking(endpoint: EndpointHandle) -> Vec<TagEntry> {
+        let (tx, rx) = mpsc::channel();
+        tags_list(endpoint, move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT)
+            .expect("tags listed")
+            .expect("tags ok")
+    }
+
+    fn tags_delete_blocking(endpoint: EndpointHandle, name: &str) {
+        let (tx, rx) = mpsc::channel();
+        tags_delete(endpoint, name.to_owned(), move |result| {
+            tx.send(result).ok();
+        });
+        rx.recv_timeout(TIMEOUT)
+            .expect("tag deleted")
+            .expect("delete ok");
+    }
+
+    /// A downloaded blob is auto-tagged, so it survives the opt-in GC loop; once
+    /// its tag is dropped it becomes reclaimable and the next pass sweeps it.
+    /// This is the regression lock for the download-vs-GC data-loss race: with
+    /// the download left UNTAGGED (the old behavior), the survive-assertion
+    /// below fails because a GC pass reclaims the just-downloaded blob.
+    #[test]
+    fn a_downloaded_blob_survives_gc_until_its_tag_is_dropped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bytes = vec![6u8; 512 * 1024];
+        let src = dir.path().join("payload.bin");
+        std::fs::write(&src, &bytes).expect("write");
+
+        let provider = create_minimal_endpoint(Some(dir.path().join("provider-store")));
+        // The receiver runs the opt-in GC loop at a short interval.
+        let receiver = create_minimal_endpoint_with_gc(
+            Some(dir.path().join("receiver-store")),
+            Duration::from_millis(200),
+        );
+
+        let ticket = share_blocking(provider, src);
+        let hash = parse_ticket(&ticket).unwrap().hash;
+
+        let dest = dir.path().join("out.bin");
+        download_blocking(receiver, &ticket, &dest).expect("download");
+
+        // The download created a retention tag named after the root hash.
+        let tags = tags_list_blocking(receiver);
+        assert!(
+            tags.iter().any(|t| t.name == hash && t.hash == hash),
+            "download must create a retention tag named after the root hash: {tags:?}"
+        );
+
+        // It SURVIVES GC because it is tagged. Wait well past several intervals;
+        // an untagged blob would already have been reclaimed by now.
+        std::thread::sleep(Duration::from_millis(1000));
+        assert!(
+            has_blocking(receiver, &hash),
+            "a tagged download must survive GC"
+        );
+        assert!(matches!(
+            status_blocking(receiver, &hash),
+            BlobStatusInfo::Complete { .. }
+        ));
+
+        // Drop the tag: the only protection is gone, so a GC pass reclaims it.
+        tags_delete_blocking(receiver, &hash);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if !has_blocking(receiver, &hash) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the blob was not reclaimed after its tag was dropped"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(status_blocking(receiver, &hash), BlobStatusInfo::NotFound);
 
         close(provider);
         close(receiver);

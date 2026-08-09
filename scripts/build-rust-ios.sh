@@ -52,6 +52,10 @@ export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$IPHONEOS_CLANG"
 export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$SIMULATOR_CLANG"
 export CARGO_TARGET_X86_64_APPLE_IOS_LINKER="$SIMULATOR_CLANG"
 
+# No `--features mdns` here, deliberately: the Apple staticlib ships without the
+# multicast machinery until the consumer holds the multicast entitlement. A build
+# without the feature reports MDNS_SUPPORTED === false and throws mdns-unavailable
+# if discovery.mdns is requested. The Android script builds WITH the feature.
 for triple in "${TARGETS[@]}"; do
   echo "==> Building $triple"
   cargo build --release --target "$triple"

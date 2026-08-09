@@ -16,9 +16,10 @@ use iroh::{
 };
 use iroh_blobs::{
     api::blobs::{ExportMode, ImportMode},
-    store::{fs::FsStore, mem::MemStore},
+    store::{fs::FsStore, mem::MemStore, GcConfig},
     BlobsProtocol,
 };
+use iroh_docs::{protocol::Docs, ALPN as DOCS_ALPN};
 use iroh_gossip::net::Gossip;
 use n0_future::{task::AbortOnDropHandle, StreamExt};
 
@@ -61,6 +62,18 @@ pub enum NetworkPreset {
     Minimal,
 }
 
+/// Opt-in blob garbage collection for an endpoint's store.
+///
+/// Off by default: an [`EndpointConfig`] with `gc: None` runs no GC loop, so
+/// retention is unchanged (nothing is ever reclaimed). When set, the store
+/// spawns a loop that reclaims untagged, un-temp-tagged blobs every
+/// [`Self::interval`]; tagged blobs (see [`crate::blobs::tags_create`]) survive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GcSettings {
+    /// How often the GC loop runs a mark-and-sweep pass.
+    pub interval: Duration,
+}
+
 /// Configuration for [`endpoint_create`].
 #[derive(Debug, Clone, Default)]
 pub struct EndpointConfig {
@@ -69,6 +82,23 @@ pub struct EndpointConfig {
     /// Directory for the persistent blob store. `None` keeps blobs in memory
     /// (blobs are lost when the endpoint closes).
     pub blob_store_dir: Option<PathBuf>,
+    /// Opt-in blob garbage collection. `None` (the default) runs no GC loop and
+    /// keeps every blob forever; `Some` spawns the reclaiming loop at store
+    /// load. Tagged blobs are always protected.
+    pub gc: Option<GcSettings>,
+    /// Whether to run the iroh-docs meta-protocol on this endpoint. When
+    /// `false` the endpoint pays no docs cost: no docs store, no `DOCS_ALPN`
+    /// accept, no background docs engine.
+    pub docs: bool,
+    /// Directory for the persistent docs store, used only when [`Self::docs`]
+    /// is enabled. `None` keeps docs (replicas and authors) in memory (lost
+    /// when the endpoint closes).
+    pub docs_store_dir: Option<PathBuf>,
+    /// Whether to run mDNS LAN discovery (`_irohv1._udp.local`) on this endpoint.
+    /// Requires the `mdns` Cargo feature: on a build without it, `true` fails
+    /// endpoint creation with [`IrohError::MdnsUnavailable`] rather than silently
+    /// doing nothing. See [`crate::mdns`].
+    pub discovery_mdns: bool,
     /// Relay configuration as a delimited string, or `None` to inherit the
     /// preset's default. See [`parse_relay_mode`] for the accepted syntax.
     pub relay_mode: Option<String>,
@@ -180,6 +210,23 @@ pub(crate) struct EndpointState {
     /// [`EndpointConfig::alpns`], keyed by the ALPN name that
     /// [`crate::streams::stream_listen`] attaches to.
     pub(crate) inbound_alpns: HashMap<String, InboundQueue>,
+    /// The iroh-docs meta-protocol running over this endpoint, present only when
+    /// [`EndpointConfig::docs`] was set. The [`Router`] accepts `DOCS_ALPN` into
+    /// it, and [`Router::shutdown`] cascades into its [`Docs::shutdown`], so the
+    /// close path needs no separate teardown for it.
+    // Read only by Phase 2 (doc CRUD / authors / sync). The router owns the
+    // clone that keeps the engine alive, so nothing reads this field yet.
+    #[allow(dead_code)]
+    pub(crate) docs: Option<Docs>,
+    /// The mDNS discovery running on this endpoint, present only when
+    /// [`EndpointConfig::discovery_mdns`] was set (and the `mdns` feature is
+    /// compiled in). Holds the lookup handle and, on Android, the Wi-Fi multicast
+    /// lock; both are dropped when this state drops on endpoint close. Always
+    /// `None` on a build without the feature.
+    // Read only through `crate::mdns` under the `mdns` feature; a feature-off
+    // build always stores `None` and never reads it.
+    #[cfg_attr(not(feature = "mdns"), allow(dead_code))]
+    pub(crate) mdns: Option<crate::mdns::MdnsState>,
     router: Router,
 }
 
@@ -210,6 +257,17 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .blob_store_dir
         .map(|dir| require_absolute(dir, "blob store dir"))
         .transpose()?;
+    // Only meaningful (and only validated) when docs are enabled, so a disabled
+    // endpoint keeps exactly today's behavior regardless of this field.
+    let docs_enabled = config.docs;
+    let docs_store_dir = if docs_enabled {
+        config
+            .docs_store_dir
+            .map(|dir| require_absolute(dir, "docs store dir"))
+            .transpose()?
+    } else {
+        None
+    };
 
     // Parse the relay override and the custom ALPNs before any async work so a
     // bad config fails fast, before sockets are bound or the store is touched.
@@ -234,14 +292,44 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
             .await
             .map_err(|e| IrohError::EndpointBind(e.to_string()))
     };
+    // The GC loop is spawned inside the store on load when a config is present.
+    // Blob retention is driven by tags, but doc-entry content is NOT: iroh-docs
+    // stores content via a temp tag it drops right after insert, so with both
+    // docs and GC enabled the content would be reclaimed out from under live doc
+    // entries unless iroh-docs' own protect handler feeds the live content
+    // hashes to the store's GC. That handler must exist before the store's
+    // `GcConfig` is built (its callback goes into `add_protected`), and its
+    // paired handler is then passed to the docs builder below. When GC is off
+    // nothing can be reclaimed; when docs is off there is no doc content to
+    // protect; both those paths stay exactly as before (`add_protected: None`).
+    let gc = config.gc;
+    let (docs_protect_handler, docs_protect_cb) = if docs_enabled && gc.is_some() {
+        let (handler, cb) = iroh_docs::engine::ProtectCallbackHandler::new();
+        (Some(handler), Some(cb))
+    } else {
+        (None, None)
+    };
     let load_store = async {
+        let gc_config = gc.map(|settings| GcConfig {
+            interval: settings.interval,
+            add_protected: docs_protect_cb,
+        });
         Ok(match blob_store_dir {
-            Some(dir) => BlobStore::Fs(
-                FsStore::load(dir)
-                    .await
-                    .map_err(|e| IrohError::EndpointBind(format!("blob store: {e}")))?,
-            ),
-            None => BlobStore::Mem(MemStore::new()),
+            Some(dir) => {
+                // `load` uses `<dir>/blobs.db` with default options; replicate
+                // that path so only the GC field differs from the default load.
+                let mut options = iroh_blobs::store::fs::options::Options::new(&dir);
+                options.gc = gc_config;
+                let db_path = dir.join("blobs.db");
+                BlobStore::Fs(
+                    FsStore::load_with_opts(db_path, options)
+                        .await
+                        .map_err(|e| IrohError::EndpointBind(format!("blob store: {e}")))?,
+                )
+            }
+            None => BlobStore::Mem(MemStore::new_with_opts(iroh_blobs::store::mem::Options {
+                gc_config,
+            })),
         })
     };
     // Socket binding and blob-store loading are independent; run them
@@ -263,9 +351,42 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
     // unaffected. The gossip instance shares the endpoint and is driven by
     // `crate::gossip`.
     let gossip = Gossip::builder().spawn(endpoint.clone());
+    // Docs is a meta-protocol over the same endpoint, sharing the blob store and
+    // the gossip instance. It is built only when enabled so a docs-off endpoint
+    // spawns no docs engine and registers no extra ALPN.
+    let docs = if docs_enabled {
+        let builder = match docs_store_dir {
+            // `Docs::persistent` opens `<dir>/docs.redb` without creating `<dir>`,
+            // unlike `FsStore::load`; create it first so a fresh store dir works.
+            Some(dir) => {
+                tokio::fs::create_dir_all(&dir)
+                    .await
+                    .map_err(|e| IrohError::EndpointBind(format!("docs store dir: {e}")))?;
+                Docs::persistent(dir)
+            }
+            None => Docs::memory(),
+        };
+        // Wire the GC protect handler paired with the callback that went into
+        // the store's `GcConfig` above, so live doc content is reported to GC
+        // and never reclaimed. Present only when both docs and GC are enabled.
+        let builder = match docs_protect_handler {
+            Some(handler) => builder.protect_handler(handler),
+            None => builder,
+        };
+        let docs = builder
+            .spawn(endpoint.clone(), store.api().clone(), gossip.clone())
+            .await
+            .map_err(|e| IrohError::EndpointBind(format!("docs: {e}")))?;
+        Some(docs)
+    } else {
+        None
+    };
     let mut builder = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone());
+    if let Some(docs) = &docs {
+        builder = builder.accept(DOCS_ALPN, docs.clone());
+    }
     // Custom ALPNs are additive on the same router. Each gets a queue the
     // handler fills and a listener drains; `validate_alpns` has already refused
     // any name that would shadow the two protocols registered above.
@@ -283,6 +404,12 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .map_err(|e| IrohError::EndpointBind(format!("address lookup unavailable: {e}")))?
         .add(bootstrap_lookup.clone());
 
+    // mDNS registers a second service on the same address-lookup chain. When the
+    // `mdns` feature is compiled out this fails fast (compiled-out builds must
+    // never pretend discovery is running); when mDNS was not requested it is a
+    // zero-cost `None`.
+    let mdns = crate::mdns::build_mdns(&endpoint, config.discovery_mdns)?;
+
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
@@ -290,6 +417,8 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         gossip,
         bootstrap_lookup,
         inbound_alpns,
+        docs,
+        mdns,
         router,
     });
     Ok(EndpointHandle(handle))
@@ -609,6 +738,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         close_endpoint_blocking, create_endpoint_blocking, create_minimal_endpoint,
+        create_minimal_endpoint_with_docs, create_minimal_endpoint_with_gc,
     };
 
     #[test]
@@ -627,6 +757,59 @@ mod tests {
         let result = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: Some(PathBuf::from("relative/store")),
+            gc: None,
+            docs: false,
+            docs_store_dir: None,
+            discovery_mdns: false,
+            relay_mode: None,
+            alpns: Vec::new(),
+        });
+        assert!(matches!(result, Err(IrohError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn create_with_docs_enabled_registers_docs_and_closes_cleanly() {
+        let mem = create_minimal_endpoint_with_docs(None);
+        assert!(
+            endpoint_state(mem).expect("live endpoint").docs.is_some(),
+            "docs enabled must register a docs handle in the endpoint state"
+        );
+        close_endpoint_blocking(mem).expect("close succeeded");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let persistent = create_minimal_endpoint_with_docs(Some(dir.path().join("docs")));
+        assert!(
+            endpoint_state(persistent)
+                .expect("live endpoint")
+                .docs
+                .is_some(),
+            "persistent docs must register a docs handle in the endpoint state"
+        );
+        close_endpoint_blocking(persistent).expect("close succeeded");
+    }
+
+    #[test]
+    fn create_with_docs_disabled_registers_no_docs() {
+        let handle = create_minimal_endpoint(None);
+        assert!(
+            endpoint_state(handle)
+                .expect("live endpoint")
+                .docs
+                .is_none(),
+            "docs disabled must leave the docs handle absent"
+        );
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    #[test]
+    fn create_rejects_relative_docs_store_dir() {
+        let result = create_endpoint_blocking(EndpointConfig {
+            preset: NetworkPreset::Minimal,
+            blob_store_dir: None,
+            gc: None,
+            docs: true,
+            docs_store_dir: Some(PathBuf::from("relative/docs")),
+            discovery_mdns: false,
             relay_mode: None,
             alpns: Vec::new(),
         });
@@ -718,6 +901,10 @@ mod tests {
         let handle = create_endpoint_blocking(EndpointConfig {
             preset: NetworkPreset::Minimal,
             blob_store_dir: None,
+            gc: None,
+            docs: false,
+            docs_store_dir: None,
+            discovery_mdns: false,
             relay_mode: Some("disabled".into()),
             alpns: Vec::new(),
         })
@@ -777,6 +964,114 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("online completion fired");
         assert!(matches!(result, Err(IrohError::EndpointBind(_))));
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    /// The opt-in GC loop reclaims an untagged blob while a tagged one survives.
+    /// Retention is driven entirely by tags: a named tag protects its blob, an
+    /// unprotected (temp-tag-dropped) blob is swept.
+    #[test]
+    fn gc_reclaims_untagged_but_keeps_tagged_blobs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = create_minimal_endpoint_with_gc(
+            Some(dir.path().join("store")),
+            Duration::from_millis(200),
+        );
+        let state = endpoint_state(handle).expect("live endpoint");
+
+        let (tagged_hash, untagged_hash) = runtime().block_on(async {
+            let blobs = state.store.api().blobs();
+            let tagged = blobs
+                .add_slice(vec![1u8; 4096])
+                .temp_tag()
+                .await
+                .expect("add tagged");
+            let untagged = blobs
+                .add_slice(vec![2u8; 4096])
+                .temp_tag()
+                .await
+                .expect("add untagged");
+            let tagged_hash = tagged.hash();
+            let untagged_hash = untagged.hash();
+            state
+                .store
+                .api()
+                .tags()
+                .set("keep", tagged.hash_and_format())
+                .await
+                .expect("set tag");
+            // Drop both temp tags: the named tag still protects `tagged`, while
+            // `untagged` now has no protection and becomes GC-eligible.
+            drop(tagged);
+            drop(untagged);
+            state.store.api().wait_idle().await.expect("store idle");
+            (tagged_hash, untagged_hash)
+        });
+
+        // Poll until the loop has run a pass (the untagged blob is reclaimed).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let (has_tagged, has_untagged) = runtime().block_on(async {
+                let blobs = state.store.api().blobs();
+                (
+                    blobs.has(tagged_hash).await.expect("has tagged"),
+                    blobs.has(untagged_hash).await.expect("has untagged"),
+                )
+            });
+            if !has_untagged {
+                assert!(has_tagged, "the tagged blob must survive a GC pass");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "GC did not reclaim the untagged blob within the deadline"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        close_endpoint_blocking(handle).expect("close succeeded");
+    }
+
+    /// GC is OFF by default: a store loaded without a GC config runs no loop, so
+    /// an untagged blob is retained forever (today's unchanged semantics).
+    #[test]
+    fn gc_off_by_default_retains_untagged_blobs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = create_minimal_endpoint(Some(dir.path().join("store")));
+        let state = endpoint_state(handle).expect("live endpoint");
+
+        let untagged_hash = runtime().block_on(async {
+            let tt = state
+                .store
+                .api()
+                .blobs()
+                .add_slice(vec![7u8; 4096])
+                .temp_tag()
+                .await
+                .expect("add untagged");
+            let hash = tt.hash();
+            drop(tt);
+            state.store.api().wait_idle().await.expect("store idle");
+            hash
+        });
+
+        // No loop can reclaim it; after a delay well past any GC interval it is
+        // still present.
+        std::thread::sleep(Duration::from_millis(500));
+        let present = runtime().block_on(async {
+            state
+                .store
+                .api()
+                .blobs()
+                .has(untagged_hash)
+                .await
+                .expect("has untagged")
+        });
+        assert!(
+            present,
+            "with GC off the untagged blob must be retained (unchanged semantics)"
+        );
+
         close_endpoint_blocking(handle).expect("close succeeded");
     }
 }

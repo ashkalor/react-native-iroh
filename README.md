@@ -141,14 +141,42 @@ one to be bound here.
   (`options.capacity`), the stream fails with kind `"stream-overflow"` instead
   of quietly dropping bytes and corrupting the protocol.
 
+### iroh-docs (available now)
+
+Multi-writer replicated key/value documents, namespaced under `endpoint.docs`.
+Each document is a set-reconciled replica of signed entries; entry values live
+out-of-band in the blob store, addressed by hash, so a document syncs metadata
+cheaply and content is fetched only when you ask for it.
+
+- Enable it per endpoint with `Endpoint.create({ docs: true })`. It is off by
+  default, so an endpoint that does not use documents pays no docs cost (no
+  store, no ALPN, no engine); every `endpoint.docs` call on a docs-disabled
+  endpoint rejects with kind `"docs-disabled"`.
+- `docs.create()` mints a new document; `docs.import(ticket)` registers one a
+  peer shared; `docs.open(id)`, `docs.list()`, and `docs.dropDoc(id)` manage the
+  documents this node holds.
+- Entries are signed by an author. `docs.authors.default()` is this node's
+  identity (stable across restarts on a persistent store); `create`, `list`, and
+  `import(secretKey)` manage additional authors, the last of which moves an
+  identity between devices.
+- `doc.setBytes(author, key, value)` writes an `ArrayBuffer` and returns its
+  content hash; `doc.getExact` / `doc.getOne` / `doc.getMany` read entry
+  metadata (never the bytes), and `doc.getContent(entry)` is the opt-in fetch
+  that reads a value out of the blob store.
+- `doc.subscribe()` returns a live `DocSubscription` (an async-iterable of
+  `DocLiveEvent`s plus a `started` promise); `doc.startSync(peers?)` drives set
+  reconciliation and joins the document's gossip swarm, so a subscriber sees
+  remote inserts and content-ready events as they land.
+- `doc.share(mode?)` mints a `DocTicket` (`"write"` by default, `"read"` for
+  read-only). `doc.deletePrefix(author, prefix)` is prefix-scoped, mirroring
+  upstream: it removes every key that equals or starts with `prefix`.
+- Documents persist when you pass `docsStoreDir`; omit it to keep them in memory
+  for the endpoint's lifetime.
+
 ### Roadmap
 
-Planned protocol work, honestly labeled: none of this exists yet, and no dates
-are attached.
-
-- **Docs** (`iroh-docs`): multi-writer replicated key-value documents.
-
-If a protocol matters to you, open an issue.
+No further protocols are scheduled publicly right now. If one matters to you,
+open an issue.
 
 ## Status
 
@@ -293,6 +321,10 @@ Creates an endpoint: binds sockets and loads the blob store.
 | `relayMode`              | `"default" \| "disabled" \| "staging" \| { custom: string[] }` | preset default | Overrides which relay servers the endpoint uses (discovery is left to the preset). `"disabled"` runs a LAN-only endpoint reachable only through direct addresses; `{ custom: [...] }` supplies HTTPS relay URLs (at least one). Omit to inherit the preset's relays.                                                    |
 | `blobStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                                                                                            |
 | `maxConcurrentDownloads` | `number`                                                       | `4`            | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored, and non-finite values (`NaN`, `Infinity`) fall back to the default.                                                                                          |
+| `docs`                   | `boolean`                                                      | `false`        | Enable the iroh-docs meta-protocol, exposing `endpoint.docs` (author identity + document CRUD). Omit (or `false`) to pay zero docs cost: no docs store, no ALPN, no engine, and every `endpoint.docs` call rejects with kind `"docs-disabled"`.                                                                         |
+| `docsStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent docs store (replicas and authors), used only when `docs` is enabled. Omit to keep docs in memory; they are lost when the endpoint closes.                                                                                                                                    |
+| `gc`                     | `{ intervalSecs: number }`                                     | off            | Opt-in blob garbage collection. Omit to keep GC off (nothing is reclaimed). When set, a mark-and-sweep loop every `intervalSecs` seconds reclaims untagged blobs; tagged blobs (`blobs.tags`) survive. An `intervalSecs` of `0` or less is off.                                                                         |
+| `discovery`              | `{ mdns?: boolean }`                                           | none           | Discovery services this endpoint runs. `mdns: true` enables mDNS LAN discovery (`_irohv1._udp.local`) so same-LAN peers resolve each other by id. On a build without mDNS (`mdnsSupported()` is `false`, e.g. every Apple build until the multicast entitlement) it rejects creation with kind `"mdns-unavailable"`.    |
 | `alpns`                  | `readonly string[]`                                            | none           | Custom ALPN protocol names this endpoint accepts inbound connections on (see `endpoint.streams`). Fixed here because iroh's router fixes its ALPN set when it spawns. An empty name, one over 255 bytes, a duplicate, or one shadowing the built-in blobs or gossip ALPNs rejects creation with kind `"endpoint-bind"`. |
 
 `create` also accepts a second, advanced `binding` parameter (an
@@ -400,6 +432,74 @@ containing `/`, `\`, or a `..` parent reference) fails the whole transfer with
 kind `"invalid-path"` and no file is written. A collection therefore cannot
 place a file outside `destDir`.
 
+#### `endpoint.blobs.status(hash): Promise<BlobStatus>`
+
+Reports the local presence of the blob `hash` (64 hex chars) in this endpoint's
+store as a `BlobStatus`, a discriminated union on `state`:
+
+- `{ state: "notFound" }`: the blob is not stored at all.
+- `{ state: "partial", size? }`: some ranges are present but the blob is
+  incomplete (an interrupted `download` left it behind). `size` is the stored
+  partial size when known.
+- `{ state: "complete", size }`: the whole blob is present and BLAKE3-verified.
+  `size` is its full size.
+
+Rejects with kind `"blob-store"` on a malformed hash. A `"partial"` result is the
+signal for a resumable download: re-issuing the same `download` fetches only the
+missing ranges (see [Resumable download](#resumable-download-blobsstatus--has)).
+
+#### `endpoint.blobs.has(hash): Promise<boolean>`
+
+Whether the store holds the blob `hash` (64 hex chars) complete and
+BLAKE3-verified. A partially-present blob resolves `false`; it is the
+complete-only predicate over `status`.
+
+#### `endpoint.blobs.list(): Promise<BlobInfo[]>`
+
+Lists the complete blobs in this endpoint's store, each a `BlobInfo`
+(`{ hash, size }`).
+
+#### `endpoint.blobs.addBytes(data): Promise<BlobTicket>`
+
+Imports the in-memory `data` (an `ArrayBuffer`) into this endpoint's blob store
+and resolves with a shareable `BlobTicket`, the in-memory counterpart of
+`share`. On the `n0` preset it waits (bounded) for the endpoint to come online
+first, so the ticket contains dialable addresses.
+
+#### `endpoint.blobs.tags: Tags`
+
+The tag lifecycle for this endpoint's store. Tags are the sanctioned retention
+mechanism: with garbage collection enabled (`gc: { intervalSecs }` at endpoint
+creation), a tagged blob survives while untagged blobs are reclaimed. There is
+deliberately no direct blob delete; "removing" a blob is dropping its tag and
+letting GC reclaim it.
+
+| Member                     | Type                                     | Meaning                                                                                                                                                                                |
+| -------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list()`                   | `() => Promise<TagInfo[]>`               | Every tag in the store, each a `TagInfo` (`{ name, hash, format }`); `format` is `"raw"` (one blob) or `"hashSeq"` (a sequence and its children).                                      |
+| `create(name, hash, fmt?)` | `(name, hash, format?) => Promise<void>` | Creates (or overwrites) the tag `name`, pinning the blob `hash` (64 hex) so GC keeps it. `format` defaults to `"raw"`. Rejects with kind `"blob-store"` on a malformed hash or format. |
+| `delete(name)`             | `(name) => Promise<void>`                | Deletes the tag `name`. The blob it pinned is not removed here; it becomes GC-eligible and is reclaimed only if (and when) GC runs. Deleting an absent tag is not an error.            |
+| `rename(from, to)`         | `(from, to) => Promise<void>`            | Renames the tag `from` to `to` atomically. Rejects with kind `"blob-store"` if `from` does not exist.                                                                                  |
+
+**Retention and GC.** Downloaded, shared, and imported blobs are tagged
+automatically (a tag named after the blob's root hash), so they are retained.
+Garbage collection is opt-in through the `gc: { intervalSecs }` create option and
+is **off by default**: with GC off nothing is ever reclaimed, exactly the prior
+retention. When on, a mark-and-sweep loop runs every `intervalSecs` seconds and
+reclaims untagged blobs while tagged blobs always survive. To reclaim a blob, drop
+its tag with `blobs.tags.delete(hash)` and let a GC pass run; deletion is
+GC-only, so the store stays the sole owner of every byte.
+
+#### Resumable download (`blobs.status` / `has`)
+
+A download that was interrupted (cancelled, or a network change mid-stream) leaves
+its BLAKE3-verified ranges in the store. Re-issuing the same `blobs.download`
+resumes: iroh computes what is already local and asks the provider for only the
+missing ranges, never the whole blob again. `blobs.status(hash)` reports this as
+`notFound` / `partial` / `complete`, and `blobs.has(hash)` is the complete-only
+predicate. The blob is protected throughout a transfer, so a partial is never
+reclaimed mid-flight even with GC on.
+
 #### `endpoint.gossip.subscribe(topic, options?): GossipSubscription`
 
 Subscribes to the gossip topic derived from `topic` (a free-form label; peers
@@ -502,6 +602,102 @@ Text protocols encode their own bytes: `data` always yields `Uint8Array`, and
 `send` always takes one, so nothing guesses an encoding on your behalf. Use
 `TextEncoder` / `TextDecoder` (or your own codec) at the edges.
 
+### Docs
+
+`endpoint.docs` is the document API (`DocsApi`): author identity plus document
+CRUD over the iroh-docs meta-protocol. It is present on every endpoint, but
+active only when the endpoint was created with `docs: true`; otherwise every call
+rejects with kind `"docs-disabled"`. Values persist to `docsStoreDir` when set,
+or live in memory for the endpoint's lifetime when it is omitted.
+
+`DocsApi` members:
+
+| Member           | Type                           | Meaning                                                                                                                |
+| ---------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `authors`        | `Authors`                      | Author identity (below).                                                                                               |
+| `create()`       | `() => Promise<Doc>`           | Creates a new document.                                                                                                |
+| `open(id)`       | `(id) => Promise<Doc \| null>` | Opens a document this node holds, or `null` if it does not have it.                                                    |
+| `import(ticket)` | `(ticket) => Promise<Doc>`     | Registers the document and peers a `DocTicket` names; rejects with kind `"docs-invalid-ticket"` on a malformed ticket. |
+| `list()`         | `() => Promise<NamespaceId[]>` | Every document on this node.                                                                                           |
+| `dropDoc(id)`    | `(id) => Promise<void>`        | Removes a document and all its entries from this node.                                                                 |
+
+`Authors` (`endpoint.docs.authors`): `default()` is this node's identity, created
+on first use and stable across restarts on a persistent store; `create()` makes a
+new one; `list()` returns every author this node can write as; `import(secretKey)`
+adds an author from its secret key (hex), which is how one identity moves between
+devices (rejects with kind `"docs-invalid-id"` on a malformed secret).
+
+`Doc` members:
+
+| Member                       | Type                                            | Meaning                                                                                                                                                                              |
+| ---------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                         | `NamespaceId`                                   | This document's namespace id (64 hex chars).                                                                                                                                         |
+| `setBytes(author, key, val)` | `(author, key, ArrayBuffer) => Promise<string>` | Writes `val` under `key` as `author`, stores the bytes in the blob store, and resolves with the content hash. Values are `ArrayBuffer`, so binary needs no encoding detour.          |
+| `getExact(author, key)`      | `(author, key) => Promise<DocEntry \| null>`    | The entry for `author`+`key`, or `null`. Returns metadata (including the content hash), never the bytes.                                                                             |
+| `getOne(query?)`             | `(DocQuery?) => Promise<DocEntry \| null>`      | The first entry matching `query` (all entries if omitted).                                                                                                                           |
+| `getMany(query?)`            | `(DocQuery?) => Promise<DocEntry[]>`            | Every entry matching `query`.                                                                                                                                                        |
+| `getContent(entry)`          | `(DocEntry) => Promise<ArrayBuffer>`            | The opt-in fetch: reads an entry's value out of the blob store. No read pulls content implicitly.                                                                                    |
+| `deletePrefix(author, pfx)`  | `(author, prefix) => Promise<number>`           | Deletes every entry for `author` whose key equals **or starts with** `prefix`, returning the count. See the caveat below.                                                            |
+| `share(mode?)`               | `("write" \| "read") => Promise<DocTicket>`     | Mints a shareable ticket; `"write"` (read/write) by default, `"read"` for read-only.                                                                                                 |
+| `subscribe(options?)`        | `(DocSubscribeOptions?) => DocSubscription`     | Live events for this document (below). Returns synchronously; holds the replica open for the subscription's lifetime. Subscribing does not start sync.                               |
+| `startSync(peers?)`          | `(EndpointAddr[]?) => Promise<void>`            | Starts (or refreshes) live sync: reconciles with `peers` and joins the document's gossip swarm. Omit `peers` to sync with peers already known (e.g. those an imported ticket named). |
+| `leave()`                    | `() => Promise<void>`                           | Stops live sync and leaves the gossip swarm.                                                                                                                                         |
+
+`DocSubscription` has `events` (an `AsyncIterable<DocLiveEvent>` in arrival
+order, one shared bounded stream), a `started` promise (resolves once the
+subscription is live, rejects if it fails to start), and `unsubscribe()`.
+`DocLiveEvent` is a discriminated union keyed by `type`: `insert-local`,
+`insert-remote` (carries the peer `from`, the `entry`, and a `contentStatus`),
+`content-ready` (the entry's bytes finished downloading), `sync-finished`,
+`neighbor-up` / `neighbor-down`, and `pending-content-ready`. To observe an
+imported document's first sync without missing an event, subscribe first, then
+call `startSync`.
+
+**`deletePrefix` is prefix-scoped.** iroh-docs has no exact-delete primitive, so
+`deletePrefix(author, "note")` also removes `"note-draft"` and every other key
+with `"note"` as a prefix. To delete exactly one key, ensure no other key shares
+it as a prefix. Prefix-siblings can be authored by remote peers (their content
+may not even be local), so there is no safe way to delete one key while restoring
+the rest.
+
+### mDNS discovery
+
+`endpoint.mdns` is the LAN discovery API (`Mdns`): peers on the same network
+resolve each other by endpoint id with no relay and no seeded addresses. Enable it
+per endpoint with `Endpoint.create({ discovery: { mdns: true } })` (runs the
+`_irohv1._udp.local` service). It is Android-only: Apple builds are compiled out
+of mDNS until the consumer holds the multicast entitlement, so on those builds
+enabling it, or calling `mdns.subscribe()`, fails with kind `"mdns-unavailable"`.
+
+#### `endpoint.mdns.subscribe(options?): MdnsSubscription`
+
+Subscribes to this endpoint's live discovery stream and returns an
+`MdnsSubscription` synchronously. `options.capacity` sizes the event buffer.
+Throws an `IrohError` of kind `"mdns-unavailable"` if the endpoint was not created
+with mDNS enabled, or if this build was compiled without mDNS.
+
+`MdnsSubscription` members:
+
+| Member          | Type                            | Meaning                                                                                                                                                                                                |
+| --------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `events`        | `AsyncIterable<DiscoveryEvent>` | Discovery events in arrival order. A bounded stream (see `options.capacity`): under overflow the oldest unread events are dropped. One shared stream; consuming an event removes it. Ends on teardown. |
+| `started`       | `Promise<void>`                 | Resolves once the subscription is live. Rejects with kind `"mdns-unavailable"` if it fails to start (mDNS not enabled, or compiled out) or is torn down before it started.                             |
+| `unsubscribe()` | `() => void`                    | Ends the subscription and its `events` iterator. Idempotent; also run automatically when the endpoint closes.                                                                                          |
+
+`DiscoveryEvent` is a discriminated union keyed by `type`: `"discovered"`
+(carries the peer's `endpointId`, plus any `relayUrls` / `directAddrs` it
+advertised, usually empty on a LAN) and `"expired"` (carries the `endpointId` of a
+peer that went inactive).
+
+#### `mdnsSupported(): boolean`
+
+Whether this native build supports mDNS (was compiled with the `mdns` Cargo
+feature). This is the `MDNS_SUPPORTED` runtime value: `false` on a build compiled
+out of mDNS (every Apple build until the multicast entitlement), where
+`discovery: { mdns: true }` and `mdns.subscribe()` both fail with kind
+`"mdns-unavailable"`. It is a function, not a `const`, so importing the package
+stays side-effect-free; call it once at startup and cache the result yourself.
+
 ### Transfer
 
 Handle for one download started with `blobs.download`.
@@ -550,6 +746,7 @@ Error codes are stable across releases:
 | `3001` | `blob-download`            | Download failed                                                     |
 | `3002` | `blob-export`              | Writing the downloaded blob to `destPath` failed                    |
 | `3003` | `cancelled`                | Transfer was cancelled                                              |
+| `3004` | `blob-store`               | Blob store operation (status, list, or a tag lifecycle) failed      |
 | `4000` | `gossip-subscribe`         | Subscribing to a gossip topic failed (e.g. a bad bootstrap address) |
 | `4001` | `gossip-broadcast`         | Broadcasting a gossip message failed                                |
 | `4002` | `gossip-message-too-large` | Gossip payload exceeded the 4096-byte per-message limit             |
@@ -560,6 +757,11 @@ Error codes are stable across releases:
 | `5004` | `stream-closed`            | The stream or its connection is closed                              |
 | `5005` | `stream-frame-too-large`   | Framed payload exceeded the 16 MiB frame limit                      |
 | `5006` | `stream-overflow`          | The stream consumer fell behind its buffer, so bytes would be lost  |
+| `6000` | `docs-disabled`            | A docs call on an endpoint not created with `docs: true`            |
+| `6001` | `docs`                     | A docs operation failed (sync, store, or engine error)              |
+| `6002` | `docs-invalid-id`          | A namespace, author, or secret-key string failed to parse           |
+| `6003` | `docs-invalid-ticket`      | A document ticket string failed to parse                            |
+| `7000` | `mdns-unavailable`         | mDNS requested on a build compiled without the `mdns` feature       |
 
 Exported error types: `IrohErrorCode` (union of the numeric codes),
 `IrohErrorKind` (union of the kind strings), `IrohErrorCase` (the
@@ -582,8 +784,15 @@ discriminated `code`/`kind` pairing).
 | `EndpointId`, `BlobTicket`                                                                       | types          | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `validateTicketShape` (or `blobs.share`).                                                                                                                                                                                                                               |
 | `EndpointConfig`, `NetworkPreset`                                                                | types          | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
 | `Blobs`, `DownloadOptions`, `AbortSignalLike`                                                    | types          | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
+| `BlobStatus`, `BlobInfo`, `TagInfo`, `Tags`                                                      | types          | The blob store management shapes: the `blobs.status` result union (`notFound` / `partial` / `complete`), a `blobs.list` entry (`{ hash, size }`), a tag entry (`{ name, hash, format }`), and the `endpoint.blobs.tags` lifecycle interface.                                                                                                                                                                              |
 | `Gossip`, `GossipSubscription`, `GossipMessage`, `GossipNeighborEvent`, `GossipSubscribeOptions` | types          | The `endpoint.gossip` namespace interface and its subscription, message, neighbor-event, and options types.                                                                                                                                                                                                                                                                                                               |
 | `Streams`, `StreamListener`, `Connection`, `Stream`, `StreamOptions`, `StreamFraming`            | types          | The `endpoint.streams` namespace interface and its listener, connection, stream, options, and framing types.                                                                                                                                                                                                                                                                                                              |
+| `Mdns`, `MdnsSubscription`, `DiscoveryEvent`, `MdnsSubscribeOptions`                             | types          | The `endpoint.mdns` namespace interface, its live subscription, the discovery-event union (`discovered` / `expired`), and its subscribe options.                                                                                                                                                                                                                                                                          |
+| `mdnsSupported()`                                                                                | function       | The `MDNS_SUPPORTED` runtime check: whether this native build was compiled with mDNS. `false` on a build compiled out (every Apple build until the multicast entitlement), where enabling mDNS or subscribing fails with kind `"mdns-unavailable"`.                                                                                                                                                                       |
+| `parseDocTicket(s)`, `validateDocTicketShape(s)`                                                 | functions      | Decode a document ticket into its `DocTicketInfo` (namespace, capability, peer ids), or cheaply validate its shape and return it as a `DocTicket`; both throw `IrohError` kind `"docs-invalid-ticket"` on failure.                                                                                                                                                                                                        |
+| `DocsApi`, `Authors`, `Doc`, `DocEntry`, `DocQuery`, `DocSubscription`, `DocSubscribeOptions`    | types          | The `endpoint.docs` namespace interface, its author identity and document handles, entry and query shapes, and the live subscription and its options.                                                                                                                                                                                                                                                                     |
+| `DocLiveEvent` (and its variants), `DocContentStatus`, `DocShareMode`, `DocTicketInfo`           | types          | The live document event union (`insert-local`, `insert-remote`, `content-ready`, `sync-finished`, `neighbor-up` / `neighbor-down`, `pending-content-ready`), the per-entry content availability, the share mode, and the decoded-ticket shape.                                                                                                                                                                            |
+| `NamespaceId`, `AuthorId`, `DocTicket`                                                           | types          | Branded strings: a document's namespace id, an author id, and a validated document ticket. All assignable to `string`.                                                                                                                                                                                                                                                                                                    |
 | `DEFAULT_STREAM_BACKLOG`                                                                         | `const` (`64`) | How many inbound connections (on a listener) or peer-opened streams (on a connection) are held for a consumer that has not picked them up yet; beyond this the oldest is closed.                                                                                                                                                                                                                                          |
 | `EndpointOptions`, `Transfer`, `ProgressEvent`                                                   | types          | Described above.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EndpointAddr`, `RelayMode`                                                                      | types          | The address snapshot returned by `endpoint.addr` / delivered by `watchAddr` / `addrChanges`, and the `relayMode` option's type.                                                                                                                                                                                                                                                                                           |
@@ -601,12 +810,14 @@ tears its resource down on unmount.
 import { useEndpoint, useGossip, useTransfer } from "react-native-iroh/hooks";
 ```
 
-| Hook                                   | Returns                                             | Notes                                                                                                                                                |
-| -------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `useEndpoint(options?)`                | `{ endpoint, status, error }`                       | Creates an endpoint on mount and closes it on unmount. `status` is `"creating" \| "ready" \| "error" \| "closed"`; `endpoint` is `null` until ready. |
-| `useTransfer(transfer)`                | `{ progress, files, status, error }`                | Subscribes to a `Transfer`'s progress and settles with it. Pass `null` to reset.                                                                     |
-| `useDownload(endpoint, ticket, dest?)` | `{ transfer, ...useTransfer state }`                | Starts a download when its arguments become non-null and tracks it, cancelling on unmount.                                                           |
-| `useGossip(endpoint, topic, options?)` | `{ messages, neighbors, broadcast, status, error }` | Subscribes for the component's lifetime, draining both streams into capped arrays (`options.retain`, default 500). `broadcast` is stable.            |
+| Hook                                   | Returns                                                                                    | Notes                                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `useEndpoint(options?)`                | `{ endpoint, status, error }`                                                              | Creates an endpoint on mount and closes it on unmount. `status` is `"creating" \| "ready" \| "error" \| "closed"`; `endpoint` is `null` until ready.                         |
+| `useTransfer(transfer)`                | `{ progress, files, status, error }`                                                       | Subscribes to a `Transfer`'s progress and settles with it. Pass `null` to reset.                                                                                             |
+| `useDownload(endpoint, ticket, dest?)` | `{ transfer, ...useTransfer state }`                                                       | Starts a download when its arguments become non-null and tracks it, cancelling on unmount.                                                                                   |
+| `useGossip(endpoint, topic, options?)` | `{ messages, neighbors, broadcast, status, error }`                                        | Subscribes for the component's lifetime, draining both streams into capped arrays (`options.retain`, default 500). `broadcast` is stable.                                    |
+| `useDocs(endpoint)`                    | `{ docs, create, import, open, dropDoc, refresh, error }`                                  | Lists the endpoint's documents on mount and after each mutation. The list is not push-based; call `refresh` to pick up outside changes.                                      |
+| `useDoc(doc, options?)`                | `{ entries, events, status, setBytes, deletePrefix, getContent, startSync, leave, error }` | Reflects a `Doc` as reactive state: seeds `entries` from a read and keeps them current from live events (subscribing for the component's lifetime). Pass `null` to hold off. |
 
 Pass `null` for `endpoint` while it is still being created, so a hook chain
 composes without conditional hook calls:

@@ -16,6 +16,7 @@ application and are not distributed with this package.
 
 | Crate                            | Version                        | License                                                 | Source                                                                            |
 | -------------------------------- | ------------------------------ | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| acto                             | 0.8.2                          | Apache-2.0 OR MIT                                       | https://github.com/rkuhn/acto                                                     |
 | aead                             | 0.5.2                          | MIT OR Apache-2.0                                       | https://github.com/RustCrypto/traits                                              |
 | aes-gcm                          | 0.10.3                         | Apache-2.0 OR MIT                                       | https://github.com/RustCrypto/AEADs                                               |
 | aes                              | 0.8.4                          | MIT OR Apache-2.0                                       | https://github.com/RustCrypto/block-ciphers                                       |
@@ -147,8 +148,10 @@ application and are not distributed with this package.
 | ipnet                            | 2.12.0                         | MIT OR Apache-2.0                                       | https://github.com/krisprice/ipnet                                                |
 | iroh-base                        | 1.0.3                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh                                               |
 | iroh-blobs                       | 0.103.0                        | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-blobs                                         |
+| iroh-docs                        | 0.101.0                        | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-docs                                          |
 | iroh-dns                         | 1.0.3                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh                                               |
 | iroh-io                          | 0.6.2                          | Apache-2.0 OR MIT                                       | https://github.com/n0-computer/iroh                                               |
+| iroh-mdns-address-lookup         | 0.4.0                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-address-lookups                               |
 | iroh-metrics-derive              | 1.0.1 (proc-macro)             | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-metrics                                       |
 | iroh-metrics                     | 1.0.1                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-metrics                                       |
 | iroh-relay                       | 1.0.3                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh                                               |
@@ -272,6 +275,7 @@ application and are not distributed with this package.
 | simple-dns                       | 0.11.3                         | MIT                                                     | https://github.com/balliegojr/simple-dns                                          |
 | slab                             | 0.4.12                         | MIT                                                     | https://github.com/tokio-rs/slab                                                  |
 | smallvec                         | 1.15.2                         | MIT OR Apache-2.0                                       | https://github.com/servo/rust-smallvec                                            |
+| smol_str                         | 0.1.24                         | MIT OR Apache-2.0                                       | https://github.com/rust-analyzer/smol_str                                         |
 | socket2                          | 0.6.5                          | MIT OR Apache-2.0                                       | https://github.com/rust-lang/socket2                                              |
 | sorted-index-buffer              | 0.2.1                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh                                               |
 | spez                             | 0.1.2 (proc-macro)             | BSD-2-Clause                                            | https://github.com/m-ou-se/spez                                                   |
@@ -285,6 +289,7 @@ application and are not distributed with this package.
 | sync_wrapper                     | 1.0.2                          | Apache-2.0                                              | https://github.com/Actyx/sync_wrapper                                             |
 | syn-mid                          | 0.5.4                          | Apache-2.0 OR MIT                                       | https://github.com/taiki-e/syn-mid                                                |
 | synstructure                     | 0.13.2                         | MIT                                                     | https://github.com/mystor/synstructure                                            |
+| swarm-discovery                  | 0.6.3                          | Apache-2.0                                              | https://github.com/rkuhn/swarm-discovery                                          |
 | syn                              | 1.0.109                        | MIT OR Apache-2.0                                       | https://github.com/dtolnay/syn                                                    |
 | syn                              | 2.0.119                        | MIT OR Apache-2.0                                       | https://github.com/dtolnay/syn                                                    |
 | system-configuration-sys         | 0.6.0                          | MIT OR Apache-2.0                                       | https://github.com/mullvad/system-configuration-rs                                |

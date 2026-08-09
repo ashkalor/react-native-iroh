@@ -39,6 +39,30 @@ export interface EndpointConfig {
    */
   blobStoreDir?: string;
   /**
+   * Enable the iroh-docs meta-protocol on this endpoint. Docs layers over the
+   * same endpoint as blobs and gossip, sharing one router. Omit (or `false`) to
+   * pay zero docs cost: no docs store, no ALPN, no background engine.
+   */
+  docs?: boolean;
+  /**
+   * Absolute directory path for the persistent docs store, used only when
+   * {@link EndpointConfig.docs} is enabled. Omit to keep docs (replicas and
+   * authors) in memory (they are lost when the endpoint closes).
+   */
+  docsStoreDir?: string;
+  /**
+   * Enable mDNS LAN discovery (`_irohv1._udp.local`) on this endpoint, so peers
+   * on the same network resolve each other by endpoint id with no relay and no
+   * seeded addresses. Omit (or `false`) for no mDNS.
+   *
+   * Requires a build compiled with the `mdns` Cargo feature (Android ships it;
+   * Apple builds are compiled out until the consumer holds the multicast
+   * entitlement). On a build without it, `true` rejects endpoint creation with
+   * an mDNS-unavailable error (code 7000) rather than silently doing nothing;
+   * check {@link Iroh.mdnsSupported} first.
+   */
+  discoveryMdns?: boolean;
+  /**
    * Relay configuration, carried as a single delimited string (the Phase 2
    * convention for structured bridge inputs, matching newline-joined paths):
    *
@@ -52,6 +76,14 @@ export interface EndpointConfig {
    * failures surface as an endpoint-bind error (code 2000).
    */
   relayMode?: string;
+  /**
+   * Opt-in blob garbage collection interval, in seconds. Omit (or pass a
+   * non-positive value) to keep GC OFF: nothing is ever reclaimed, exactly
+   * today's retention. When set, the store spawns a mark-and-sweep loop at this
+   * interval that reclaims untagged blobs; tagged blobs (see the tag lifecycle)
+   * always survive. Carried as a flat number to keep the bridge primitive.
+   */
+  gcIntervalSecs?: number;
   /**
    * Custom ALPN protocol names this endpoint accepts inbound connections on,
    * newline-joined (the same convention as {@link EndpointConfig.relayMode}).
@@ -73,7 +105,8 @@ export interface EndpointConfig {
  * Errors: every rejected Promise (and every thrown sync error) carries a
  * message of the form `[iroh:<code>] <detail>`, where `<code>` is a stable
  * numeric error code (1000-1003 generic, 2000 endpoint, 3000-3003 blobs,
- * 4000-4002 gossip, 5000-5006 raw streams). Parse it with `/\[iroh:(\d+)\]/`.
+ * 4000-4002 gossip, 5000-5006 raw streams, 6000-6003 docs, 7000 mDNS). Parse it
+ * with `/\[iroh:(\d+)\]/`.
  */
 // The published react-native-nitro-modules@0.36.1 types don't include "rust"
 // in PlatformSpec yet. Only the nitrogen fork's Rust codegen understands it.
@@ -196,6 +229,56 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * no network or store access. Throws (code 1002) on a malformed ticket.
    */
   parseTicket(ticket: string): string;
+  /**
+   * Reports the local presence of the blob `hash` (64-hex) in the endpoint's
+   * store as a JSON discriminated union string (see the `BlobStatus` TS type):
+   * `{"state":"notFound"}`, `{"state":"partial","size"?:number}`, or
+   * `{"state":"complete","size":number}`. A `partial` blob is one an
+   * interrupted {@link downloadBlob} left behind; re-issuing the download
+   * fetches only the missing ranges. Rejects (code 3004) on a malformed hash.
+   */
+  blobStatus(endpoint: number, hash: string): Promise<string>;
+  /**
+   * Whether the store holds the blob `hash` (64-hex) complete and
+   * BLAKE3-verified. A partially-present blob resolves `false`. Rejects
+   * (code 3004) on a malformed hash.
+   */
+  blobHas(endpoint: number, hash: string): Promise<boolean>;
+  /**
+   * Lists the complete blobs in the endpoint's store as a JSON array string of
+   * `{ hash, size }` objects (see the `BlobInfo` TS type).
+   */
+  blobList(endpoint: number): Promise<string>;
+  /**
+   * Imports the in-memory `data` into the endpoint's blob store and resolves
+   * with a shareable ticket string, the in-memory counterpart of
+   * {@link shareBlob}. On the `n0` preset it waits (bounded) for the endpoint
+   * to come online first. Rejects (code 3000) if the import fails.
+   */
+  addBytes(endpoint: number, data: ArrayBuffer): Promise<string>;
+  /**
+   * Lists every tag in the endpoint's store as a JSON array string of
+   * `{ name, hash, format }` objects (see the `TagInfo` TS type). Tags are the
+   * sanctioned retention mechanism: a tagged blob survives GC.
+   */
+  tagsList(endpoint: number): Promise<string>;
+  /**
+   * Creates (or overwrites) the tag `name`, pinning the blob `hash` (64-hex) in
+   * `format` (`"raw"` or `"hashSeq"`) so GC keeps it. Rejects (code 3004) on a
+   * malformed hash or an unknown format.
+   */
+  tagsCreate(endpoint: number, name: string, hash: string, format: string): Promise<void>;
+  /**
+   * Deletes the tag `name`. The blob it pinned is not removed here; it becomes
+   * GC-eligible and is reclaimed only if (and when) a GC loop runs. Deletion
+   * stays GC-only by design. Deleting an absent tag is not an error.
+   */
+  tagsDelete(endpoint: number, name: string): Promise<void>;
+  /**
+   * Renames the tag `from` to `to` atomically. Rejects (code 3004) if `from`
+   * does not exist.
+   */
+  tagsRename(endpoint: number, from: string, to: string): Promise<void>;
   /**
    * Subscribes to the gossip topic derived from `topic` (its BLAKE3 hash) on
    * `endpoint`. `bootstrapJoined` is a possibly-empty newline-joined list of
@@ -330,4 +413,180 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * Idempotent.
    */
   streamClose(streamId: number): void;
+  /**
+   * Returns this node's default author id (hex), creating it on first use.
+   * Rejects with code 6000 if the endpoint was created without docs enabled.
+   */
+  authorsDefault(endpoint: number): Promise<string>;
+  /** Creates a new author and resolves with its id (hex). */
+  authorsCreate(endpoint: number): Promise<string>;
+  /**
+   * Resolves with the ids (hex) of every author this node holds a secret key
+   * for, newline-joined (empty string when there are none).
+   */
+  authorsList(endpoint: number): Promise<string>;
+  /**
+   * Imports an author from its secret key (hex) and resolves with its id (hex).
+   * Rejects with code 6002 if the secret is malformed.
+   */
+  authorsImport(endpoint: number, secretKey: string): Promise<string>;
+  /** Creates a new document and resolves with its namespace id (hex). */
+  docsCreate(endpoint: number): Promise<string>;
+  /**
+   * Whether a document with `namespaceId` (hex) is known to this node. Backs
+   * `open() -> Doc | null`. Rejects with code 6002 for a malformed id.
+   */
+  docsOpen(endpoint: number, namespaceId: string): Promise<boolean>;
+  /**
+   * Imports a document from a `DocTicket` string, joining the peers it names,
+   * and resolves with its namespace id (hex). Live sync is not started here.
+   * Rejects with code 6003 for a malformed ticket.
+   */
+  docsImport(endpoint: number, ticket: string): Promise<string>;
+  /**
+   * Resolves with the namespace ids (hex) of every document on this node,
+   * newline-joined (empty string when there are none).
+   */
+  docsList(endpoint: number): Promise<string>;
+  /** Removes a document and its entries from this node. */
+  docsDrop(endpoint: number, namespaceId: string): Promise<void>;
+  /**
+   * Writes `value` under `key` for `author` in the document (bytes go to the
+   * shared blob store) and resolves with the content hash (hex).
+   */
+  docsSetBytes(
+    endpoint: number,
+    namespaceId: string,
+    authorId: string,
+    key: string,
+    value: ArrayBuffer,
+  ): Promise<string>;
+  /**
+   * Resolves with the entry for `author` + `key` as a JSON object string
+   * `{ author, key, hash, size, timestamp }` (see the `DocEntry` TS type), or
+   * the JSON literal `null` if there is none (a deleted entry reads as absent).
+   * The content hash is included; the bytes are not.
+   */
+  docsGetExact(
+    endpoint: number,
+    namespaceId: string,
+    authorId: string,
+    key: string,
+  ): Promise<string>;
+  /**
+   * Resolves with a JSON array string of `DocEntry` objects matching
+   * `queryJson` (a JSON object `{ author?, keyExact?, keyPrefix? }`; empty
+   * string matches all). Each entry carries its content hash; bytes are not
+   * fetched.
+   */
+  docsGetMany(endpoint: number, namespaceId: string, queryJson: string): Promise<string>;
+  /**
+   * Deletes every entry for `author` whose key equals `prefix` OR starts with
+   * it, and resolves with the number removed. Prefix-scoped: iroh-docs has no
+   * exact-delete primitive, so this also removes any prefix-siblings.
+   */
+  docsDeletePrefix(
+    endpoint: number,
+    namespaceId: string,
+    authorId: string,
+    prefix: string,
+  ): Promise<number>;
+  /**
+   * Mints a shareable `DocTicket` string for the document. `mode` is `"read"`
+   * or `"write"`.
+   */
+  docsShare(endpoint: number, namespaceId: string, mode: string): Promise<string>;
+  /**
+   * Resolves an entry's content by its `hash` (hex), reading the bytes out of
+   * the endpoint's shared blob store as an `ArrayBuffer`. This is the opt-in
+   * content fetch: reads never pull bytes on their own.
+   */
+  docsGetContent(endpoint: number, hash: string): Promise<ArrayBuffer>;
+  /**
+   * Subscribes to the live {@link https://docs.rs/iroh-docs/0.101.0/iroh_docs/engine/enum.LiveEvent.html LiveEvent}
+   * stream of the document `namespaceId`, holding the replica open for the
+   * subscription's lifetime.
+   *
+   * Set-up is validated synchronously (a stale endpoint handle throws code 1001;
+   * a docs-disabled endpoint throws code 6000). Once the replica is open and the
+   * stream is live, `onStart` fires once with the subscription's numeric handle
+   * (pass it to {@link docsUnsubscribe}). `onEvent` then fires per event with a
+   * JSON discriminated union `{ type, ... }` (see the `DocLiveEvent` TS type):
+   * `insert-local`, `insert-remote`, `content-ready`, `pending-content-ready`,
+   * `neighbor-up`, `neighbor-down`, `sync-finished`.
+   *
+   * `onClose` fires exactly once when the subscription ends, as the tagged line
+   * `"end"` (the stream finished, e.g. the endpoint closed) or `"error <detail>"`
+   * (opening the replica or the stream failed, in which case `onStart` never
+   * fires). Subscribing does NOT start live sync; drive sync with
+   * {@link docsStartSync}.
+   */
+  docsSubscribe(
+    endpoint: number,
+    namespaceId: string,
+    onStart: (subId: number) => void,
+    onEvent: (event: string) => void,
+    onClose: (event: string) => void,
+  ): void;
+  /**
+   * Ends a subscription started with {@link docsSubscribe}, closing the replica
+   * handle it held open. Idempotent: ending an unknown or already-ended
+   * subscription is a no-op.
+   */
+  docsUnsubscribe(subId: number): void;
+  /**
+   * Starts (or refreshes) live sync of the document `namespaceId` with the peers
+   * in `peersJoined` (a possibly-empty newline-joined list of `EndpointAddr`
+   * JSON strings, the same convention as {@link gossipSubscribe}'s
+   * bootstrap). Non-empty peers do an initial set-reconciliation with each and
+   * join the document's gossip swarm; their addresses are seeded into the
+   * endpoint's lookup so they are dialable on the `minimal` preset. An empty
+   * list syncs with already-known peers.
+   */
+  docsStartSync(endpoint: number, namespaceId: string, peersJoined: string): Promise<void>;
+  /**
+   * Stops the live sync for the document `namespaceId` and leaves its gossip
+   * swarm.
+   */
+  docsLeave(endpoint: number, namespaceId: string): Promise<void>;
+  /**
+   * Decodes `ticket` and returns a JSON object string
+   * `{ namespace, capability, nodeIds }` (see the `DocTicketInfo` TS type).
+   * Synchronous and side-effect-free. Throws code 6003 on a malformed ticket.
+   */
+  parseDocTicket(ticket: string): string;
+  /**
+   * Whether this native build was compiled with mDNS discovery (the `mdns`
+   * Cargo feature). `false` on a build compiled out of mDNS (every Apple build
+   * until the consumer holds the multicast entitlement); the JS layer surfaces
+   * this as `MDNS_SUPPORTED`. When `false`, {@link EndpointConfig.discoveryMdns}
+   * and {@link mdnsSubscribe} both fail with an mDNS-unavailable error (7000).
+   * Cheap and synchronous.
+   */
+  mdnsSupported(): boolean;
+  /**
+   * Subscribes to `endpoint`'s live mDNS discovery stream (peers on the LAN
+   * appearing and expiring). The endpoint must have been created with
+   * {@link EndpointConfig.discoveryMdns}.
+   *
+   * Set-up is validated synchronously (a stale endpoint handle throws code
+   * 1001; an endpoint without mDNS, or a build compiled without the feature,
+   * throws code 7000). Once the stream is live, `onStart` fires once with the
+   * subscription's numeric handle (pass it to {@link mdnsUnsubscribe}). `onEvent`
+   * then fires per event with a JSON discriminated union `{ type, ... }` (see the
+   * `DiscoveryEvent` TS type): `discovered` (with `endpointId`, `relayUrls`,
+   * `directAddrs`) or `expired` (with `endpointId`). `onClose` fires exactly once
+   * when the subscription ends, as `"end"` or `"error <detail>"`.
+   */
+  mdnsSubscribe(
+    endpoint: number,
+    onStart: (subId: number) => void,
+    onEvent: (event: string) => void,
+    onClose: (event: string) => void,
+  ): void;
+  /**
+   * Ends a subscription started with {@link mdnsSubscribe}. Idempotent: ending
+   * an unknown or already-ended subscription is a no-op.
+   */
+  mdnsUnsubscribe(subId: number): void;
 }

@@ -123,6 +123,32 @@ export interface GossipBroadcastCall {
   deferred: Deferred<void>;
 }
 
+/** One recorded native docs call: the method name, endpoint, and its args. */
+export interface DocsCall {
+  method: string;
+  endpoint: number;
+  args: unknown[];
+}
+
+/** One recorded native docsSubscribe call, drivable by the test. */
+export interface DocsSubscribeCall {
+  endpoint: number;
+  namespaceId: string;
+  subId: number;
+  onStart: (subId: number) => void;
+  onEvent: (event: string) => void;
+  onClose: (event: string) => void;
+}
+
+/** One recorded native mdnsSubscribe call, drivable by the test. */
+export interface MdnsSubscribeCall {
+  endpoint: number;
+  subId: number;
+  onStart: (subId: number) => void;
+  onEvent: (event: string) => void;
+  onClose: (event: string) => void;
+}
+
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
@@ -134,6 +160,24 @@ export interface MockBinding {
   shareCollectionCalls: { endpoint: number; pathsJoined: string }[];
   manifestCalls: { endpoint: number; ticket: string }[];
   parseTicketCalls: string[];
+  blobStatusCalls: { endpoint: number; hash: string }[];
+  blobHasCalls: { endpoint: number; hash: string }[];
+  blobListCalls: number[];
+  addBytesCalls: { endpoint: number; data: ArrayBuffer }[];
+  tagsListCalls: number[];
+  tagsCreateCalls: { endpoint: number; name: string; hash: string; format: string }[];
+  tagsDeleteCalls: { endpoint: number; name: string }[];
+  tagsRenameCalls: { endpoint: number; from: string; to: string }[];
+  /** JSON that {@link IrohBinding.blobStatus} resolves with. */
+  blobStatusJson: string;
+  /** Boolean that {@link IrohBinding.blobHas} resolves with. */
+  blobHasResult: boolean;
+  /** JSON that {@link IrohBinding.blobList} resolves with. */
+  blobListJson: string;
+  /** Ticket that {@link IrohBinding.addBytes} resolves with. */
+  addBytesTicket: string;
+  /** JSON that {@link IrohBinding.tagsList} resolves with. */
+  tagsListJson: string;
   addrCalls: number[];
   watches: WatchCall[];
   stoppedWatches: number[];
@@ -150,6 +194,39 @@ export interface MockBinding {
   streamSubscribes: StreamSubscribeCall[];
   streamSends: StreamSendCall[];
   closedStreams: number[];
+  /** Every recorded docs/authors native call, in order. */
+  docsCalls: DocsCall[];
+  /** Every recorded docsSubscribe call, drivable by the test. */
+  docsSubscribes: DocsSubscribeCall[];
+  /** Every subId passed to docsUnsubscribe, in order. */
+  docsUnsubscribes: number[];
+  /** When false, docsSubscribe does not auto-fire onStart (the test drives it). */
+  autoStartDocsSub: boolean;
+  /** Every recorded mdnsSubscribe call, drivable by the test. */
+  mdnsSubscribes: MdnsSubscribeCall[];
+  /** Every subId passed to mdnsUnsubscribe, in order. */
+  mdnsUnsubscribes: number[];
+  /** When false, mdnsSubscribe does not auto-fire onStart (the test drives it). */
+  autoStartMdnsSub: boolean;
+  /** Boolean that {@link IrohBinding.mdnsSupported} returns. */
+  mdnsSupportedResult: boolean;
+  /** Configurable return values for the docs bridge methods. */
+  docsReturns: {
+    authorsDefault: string;
+    authorsCreate: string;
+    authorsList: string;
+    authorsImport: string;
+    docsCreate: string;
+    docsOpen: boolean;
+    docsImport: string;
+    docsList: string;
+    docsGetExact: string;
+    docsGetMany: string;
+    docsDeletePrefix: number;
+    docsShare: string;
+    docsGetContent: ArrayBuffer;
+    parseDocTicket: string;
+  };
   /** When false, gossipSubscribe does not auto-fire onStart (the test drives it). */
   autoStartGossip: boolean;
   /** JSON string that {@link IrohBinding.endpointAddr} returns. */
@@ -176,11 +253,20 @@ export interface MockBinding {
     shareCollection?: Error;
     collectionManifest?: Error;
     parseTicket?: Error;
+    blobStatus?: Error;
+    addBytes?: Error;
+    tagsCreate?: Error;
+    tagsRename?: Error;
     gossipSubscribe?: Error;
     streamListen?: Error;
     streamConnect?: Error;
     streamSubscribe?: Error;
     streamConnectionSubscribe?: Error;
+    docsSubscribe?: Error;
+    docsStartSync?: Error;
+    docsLeave?: Error;
+    mdnsSubscribe?: Error;
+    mdnsSupported?: Error;
   };
 }
 
@@ -299,6 +385,50 @@ export function createMockBinding(): MockBinding {
         }
         return JSON.stringify(mock.ticketInfo);
       },
+      blobStatus: (endpoint, hash) => {
+        mock.blobStatusCalls.push({ endpoint, hash });
+        if (mock.failures.blobStatus !== undefined) {
+          return Promise.reject(mock.failures.blobStatus);
+        }
+        return Promise.resolve(mock.blobStatusJson);
+      },
+      blobHas: (endpoint, hash) => {
+        mock.blobHasCalls.push({ endpoint, hash });
+        return Promise.resolve(mock.blobHasResult);
+      },
+      blobList: (endpoint) => {
+        mock.blobListCalls.push(endpoint);
+        return Promise.resolve(mock.blobListJson);
+      },
+      addBytes: (endpoint, data) => {
+        mock.addBytesCalls.push({ endpoint, data });
+        if (mock.failures.addBytes !== undefined) {
+          return Promise.reject(mock.failures.addBytes);
+        }
+        return Promise.resolve(mock.addBytesTicket);
+      },
+      tagsList: (endpoint) => {
+        mock.tagsListCalls.push(endpoint);
+        return Promise.resolve(mock.tagsListJson);
+      },
+      tagsCreate: (endpoint, name, hash, format) => {
+        mock.tagsCreateCalls.push({ endpoint, name, hash, format });
+        if (mock.failures.tagsCreate !== undefined) {
+          return Promise.reject(mock.failures.tagsCreate);
+        }
+        return Promise.resolve();
+      },
+      tagsDelete: (endpoint, name) => {
+        mock.tagsDeleteCalls.push({ endpoint, name });
+        return Promise.resolve();
+      },
+      tagsRename: (endpoint, from, to) => {
+        mock.tagsRenameCalls.push({ endpoint, from, to });
+        if (mock.failures.tagsRename !== undefined) {
+          return Promise.reject(mock.failures.tagsRename);
+        }
+        return Promise.resolve();
+      },
       gossipSubscribe: (endpoint, topic, bootstrapJoined, onStart, onMessage, onNeighbor) => {
         if (mock.failures.gossipSubscribe !== undefined) {
           throw mock.failures.gossipSubscribe;
@@ -383,6 +513,138 @@ export function createMockBinding(): MockBinding {
       streamClose: (streamId) => {
         mock.closedStreams.push(streamId);
       },
+      authorsDefault: (endpoint) => {
+        mock.docsCalls.push({ method: "authorsDefault", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.authorsDefault);
+      },
+      authorsCreate: (endpoint) => {
+        mock.docsCalls.push({ method: "authorsCreate", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.authorsCreate);
+      },
+      authorsList: (endpoint) => {
+        mock.docsCalls.push({ method: "authorsList", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.authorsList);
+      },
+      authorsImport: (endpoint, secretKey) => {
+        mock.docsCalls.push({ method: "authorsImport", endpoint, args: [secretKey] });
+        return Promise.resolve(mock.docsReturns.authorsImport);
+      },
+      docsCreate: (endpoint) => {
+        mock.docsCalls.push({ method: "docsCreate", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.docsCreate);
+      },
+      docsOpen: (endpoint, namespaceId) => {
+        mock.docsCalls.push({ method: "docsOpen", endpoint, args: [namespaceId] });
+        return Promise.resolve(mock.docsReturns.docsOpen);
+      },
+      docsImport: (endpoint, ticket) => {
+        mock.docsCalls.push({ method: "docsImport", endpoint, args: [ticket] });
+        return Promise.resolve(mock.docsReturns.docsImport);
+      },
+      docsList: (endpoint) => {
+        mock.docsCalls.push({ method: "docsList", endpoint, args: [] });
+        return Promise.resolve(mock.docsReturns.docsList);
+      },
+      docsDrop: (endpoint, namespaceId) => {
+        mock.docsCalls.push({ method: "docsDrop", endpoint, args: [namespaceId] });
+        return Promise.resolve();
+      },
+      docsSetBytes: (endpoint, namespaceId, authorId, key, value) => {
+        mock.docsCalls.push({
+          method: "docsSetBytes",
+          endpoint,
+          args: [namespaceId, authorId, key, value],
+        });
+        return Promise.resolve(mock.docsReturns.docsCreate);
+      },
+      docsGetExact: (endpoint, namespaceId, authorId, key) => {
+        mock.docsCalls.push({
+          method: "docsGetExact",
+          endpoint,
+          args: [namespaceId, authorId, key],
+        });
+        return Promise.resolve(mock.docsReturns.docsGetExact);
+      },
+      docsGetMany: (endpoint, namespaceId, queryJson) => {
+        mock.docsCalls.push({ method: "docsGetMany", endpoint, args: [namespaceId, queryJson] });
+        return Promise.resolve(mock.docsReturns.docsGetMany);
+      },
+      docsDeletePrefix: (endpoint, namespaceId, authorId, prefix) => {
+        mock.docsCalls.push({
+          method: "docsDeletePrefix",
+          endpoint,
+          args: [namespaceId, authorId, prefix],
+        });
+        return Promise.resolve(mock.docsReturns.docsDeletePrefix);
+      },
+      docsShare: (endpoint, namespaceId, mode) => {
+        mock.docsCalls.push({ method: "docsShare", endpoint, args: [namespaceId, mode] });
+        return Promise.resolve(mock.docsReturns.docsShare);
+      },
+      docsGetContent: (endpoint, hash) => {
+        mock.docsCalls.push({ method: "docsGetContent", endpoint, args: [hash] });
+        return Promise.resolve(mock.docsReturns.docsGetContent);
+      },
+      docsSubscribe: (endpoint, namespaceId, onStart, onEvent, onClose) => {
+        if (mock.failures.docsSubscribe !== undefined) {
+          throw mock.failures.docsSubscribe;
+        }
+        const subId = nextSubId;
+        nextSubId += 1;
+        mock.docsSubscribes.push({ endpoint, namespaceId, subId, onStart, onEvent, onClose });
+        // Native delivers the id asynchronously once the stream is live; the mock
+        // fires it synchronously by default (opt out with autoStartDocsSub = false).
+        if (mock.autoStartDocsSub) {
+          onStart(subId);
+        }
+      },
+      docsUnsubscribe: (subId) => {
+        mock.docsUnsubscribes.push(subId);
+      },
+      docsStartSync: (endpoint, namespaceId, peersJoined) => {
+        mock.docsCalls.push({
+          method: "docsStartSync",
+          endpoint,
+          args: [namespaceId, peersJoined],
+        });
+        if (mock.failures.docsStartSync !== undefined) {
+          return Promise.reject(mock.failures.docsStartSync);
+        }
+        return Promise.resolve();
+      },
+      docsLeave: (endpoint, namespaceId) => {
+        mock.docsCalls.push({ method: "docsLeave", endpoint, args: [namespaceId] });
+        if (mock.failures.docsLeave !== undefined) {
+          return Promise.reject(mock.failures.docsLeave);
+        }
+        return Promise.resolve();
+      },
+      parseDocTicket: (ticket) => {
+        mock.docsCalls.push({ method: "parseDocTicket", endpoint: 0, args: [ticket] });
+        return mock.docsReturns.parseDocTicket;
+      },
+      mdnsSupported: () => {
+        if (mock.failures.mdnsSupported !== undefined) {
+          throw mock.failures.mdnsSupported;
+        }
+        return mock.mdnsSupportedResult;
+      },
+      mdnsSubscribe: (endpoint, onStart, onEvent, onClose) => {
+        if (mock.failures.mdnsSubscribe !== undefined) {
+          throw mock.failures.mdnsSubscribe;
+        }
+        const subId = nextSubId;
+        nextSubId += 1;
+        mock.mdnsSubscribes.push({ endpoint, subId, onStart, onEvent, onClose });
+        // Native delivers the id asynchronously once the stream is live; the mock
+        // fires it synchronously by default (opt out with autoStartMdnsSub = false).
+        if (mock.autoStartMdnsSub) {
+          onStart(subId);
+        }
+      },
+      mdnsUnsubscribe: (subId) => {
+        mock.mdnsUnsubscribes.push(subId);
+      },
     },
     configs: [],
     endpointIdCalls: [],
@@ -393,6 +655,19 @@ export function createMockBinding(): MockBinding {
     shareCollectionCalls: [],
     manifestCalls: [],
     parseTicketCalls: [],
+    blobStatusCalls: [],
+    blobHasCalls: [],
+    blobListCalls: [],
+    addBytesCalls: [],
+    tagsListCalls: [],
+    tagsCreateCalls: [],
+    tagsDeleteCalls: [],
+    tagsRenameCalls: [],
+    blobStatusJson: JSON.stringify({ state: "complete", size: 1024 }),
+    blobHasResult: true,
+    blobListJson: JSON.stringify([{ hash: "a".repeat(64), size: 1024 }]),
+    addBytesTicket: `blob${"d".repeat(56)}`,
+    tagsListJson: JSON.stringify([{ name: "keep", hash: "a".repeat(64), format: "raw" }]),
     addrCalls: [],
     watches: [],
     stoppedWatches: [],
@@ -409,6 +684,34 @@ export function createMockBinding(): MockBinding {
     streamSubscribes: [],
     streamSends: [],
     closedStreams: [],
+    docsCalls: [],
+    docsSubscribes: [],
+    docsUnsubscribes: [],
+    autoStartDocsSub: true,
+    mdnsSubscribes: [],
+    mdnsUnsubscribes: [],
+    autoStartMdnsSub: true,
+    mdnsSupportedResult: true,
+    docsReturns: {
+      authorsDefault: "a".repeat(64),
+      authorsCreate: "b".repeat(64),
+      authorsList: `${"a".repeat(64)}\n${"b".repeat(64)}`,
+      authorsImport: "c".repeat(64),
+      docsCreate: "d".repeat(64),
+      docsOpen: true,
+      docsImport: "e".repeat(64),
+      docsList: `${"d".repeat(64)}\n${"e".repeat(64)}`,
+      docsGetExact: "null",
+      docsGetMany: "[]",
+      docsDeletePrefix: 0,
+      docsShare: `doc${"a".repeat(60)}`,
+      docsGetContent: new ArrayBuffer(0),
+      parseDocTicket: JSON.stringify({
+        namespace: "d".repeat(64),
+        capability: "write",
+        nodeIds: [],
+      }),
+    },
     autoStartGossip: true,
     addrJson: JSON.stringify({
       id: "endpoint-1",
