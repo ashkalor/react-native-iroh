@@ -28,6 +28,7 @@ const KIND_BY_CODE = {
   6001: "docs",
   6002: "docs-invalid-id",
   6003: "docs-invalid-ticket",
+  7000: "mdns-unavailable",
 } as const;
 
 type KindByCode = typeof KIND_BY_CODE;

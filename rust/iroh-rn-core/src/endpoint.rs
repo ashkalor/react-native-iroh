@@ -94,6 +94,11 @@ pub struct EndpointConfig {
     /// is enabled. `None` keeps docs (replicas and authors) in memory (lost
     /// when the endpoint closes).
     pub docs_store_dir: Option<PathBuf>,
+    /// Whether to run mDNS LAN discovery (`_irohv1._udp.local`) on this endpoint.
+    /// Requires the `mdns` Cargo feature: on a build without it, `true` fails
+    /// endpoint creation with [`IrohError::MdnsUnavailable`] rather than silently
+    /// doing nothing. See [`crate::mdns`].
+    pub discovery_mdns: bool,
     /// Relay configuration as a delimited string, or `None` to inherit the
     /// preset's default. See [`parse_relay_mode`] for the accepted syntax.
     pub relay_mode: Option<String>,
@@ -213,6 +218,15 @@ pub(crate) struct EndpointState {
     // clone that keeps the engine alive, so nothing reads this field yet.
     #[allow(dead_code)]
     pub(crate) docs: Option<Docs>,
+    /// The mDNS discovery running on this endpoint, present only when
+    /// [`EndpointConfig::discovery_mdns`] was set (and the `mdns` feature is
+    /// compiled in). Holds the lookup handle and, on Android, the Wi-Fi multicast
+    /// lock; both are dropped when this state drops on endpoint close. Always
+    /// `None` on a build without the feature.
+    // Read only through `crate::mdns` under the `mdns` feature; a feature-off
+    // build always stores `None` and never reads it.
+    #[cfg_attr(not(feature = "mdns"), allow(dead_code))]
+    pub(crate) mdns: Option<crate::mdns::MdnsState>,
     router: Router,
 }
 
@@ -370,6 +384,12 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         .map_err(|e| IrohError::EndpointBind(format!("address lookup unavailable: {e}")))?
         .add(bootstrap_lookup.clone());
 
+    // mDNS registers a second service on the same address-lookup chain. When the
+    // `mdns` feature is compiled out this fails fast (compiled-out builds must
+    // never pretend discovery is running); when mDNS was not requested it is a
+    // zero-cost `None`.
+    let mdns = crate::mdns::build_mdns(&endpoint, config.discovery_mdns)?;
+
     let handle = ENDPOINTS.insert(EndpointState {
         endpoint,
         store,
@@ -378,6 +398,7 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
         bootstrap_lookup,
         inbound_alpns,
         docs,
+        mdns,
         router,
     });
     Ok(EndpointHandle(handle))
@@ -719,6 +740,7 @@ mod tests {
             gc: None,
             docs: false,
             docs_store_dir: None,
+            discovery_mdns: false,
             relay_mode: None,
             alpns: Vec::new(),
         });
@@ -767,6 +789,7 @@ mod tests {
             gc: None,
             docs: true,
             docs_store_dir: Some(PathBuf::from("relative/docs")),
+            discovery_mdns: false,
             relay_mode: None,
             alpns: Vec::new(),
         });
@@ -861,6 +884,7 @@ mod tests {
             gc: None,
             docs: false,
             docs_store_dir: None,
+            discovery_mdns: false,
             relay_mode: Some("disabled".into()),
             alpns: Vec::new(),
         })

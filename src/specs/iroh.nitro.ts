@@ -51,6 +51,18 @@ export interface EndpointConfig {
    */
   docsStoreDir?: string;
   /**
+   * Enable mDNS LAN discovery (`_irohv1._udp.local`) on this endpoint, so peers
+   * on the same network resolve each other by endpoint id with no relay and no
+   * seeded addresses. Omit (or `false`) for no mDNS.
+   *
+   * Requires a build compiled with the `mdns` Cargo feature (Android ships it;
+   * Apple builds are compiled out until the consumer holds the multicast
+   * entitlement). On a build without it, `true` rejects endpoint creation with
+   * an mDNS-unavailable error (code 7000) rather than silently doing nothing;
+   * check {@link Iroh.mdnsSupported} first.
+   */
+  discoveryMdns?: boolean;
+  /**
    * Relay configuration, carried as a single delimited string (the Phase 2
    * convention for structured bridge inputs, matching newline-joined paths):
    *
@@ -93,7 +105,8 @@ export interface EndpointConfig {
  * Errors: every rejected Promise (and every thrown sync error) carries a
  * message of the form `[iroh:<code>] <detail>`, where `<code>` is a stable
  * numeric error code (1000-1003 generic, 2000 endpoint, 3000-3003 blobs,
- * 4000-4002 gossip, 5000-5006 raw streams). Parse it with `/\[iroh:(\d+)\]/`.
+ * 4000-4002 gossip, 5000-5006 raw streams, 6000-6003 docs, 7000 mDNS). Parse it
+ * with `/\[iroh:(\d+)\]/`.
  */
 // The published react-native-nitro-modules@0.36.1 types don't include "rust"
 // in PlatformSpec yet. Only the nitrogen fork's Rust codegen understands it.
@@ -542,4 +555,38 @@ export interface Iroh extends HybridObject<{ ios: "rust"; android: "rust" }> {
    * Synchronous and side-effect-free. Throws code 6003 on a malformed ticket.
    */
   parseDocTicket(ticket: string): string;
+  /**
+   * Whether this native build was compiled with mDNS discovery (the `mdns`
+   * Cargo feature). `false` on a build compiled out of mDNS (every Apple build
+   * until the consumer holds the multicast entitlement); the JS layer surfaces
+   * this as `MDNS_SUPPORTED`. When `false`, {@link EndpointConfig.discoveryMdns}
+   * and {@link mdnsSubscribe} both fail with an mDNS-unavailable error (7000).
+   * Cheap and synchronous.
+   */
+  mdnsSupported(): boolean;
+  /**
+   * Subscribes to `endpoint`'s live mDNS discovery stream (peers on the LAN
+   * appearing and expiring). The endpoint must have been created with
+   * {@link EndpointConfig.discoveryMdns}.
+   *
+   * Set-up is validated synchronously (a stale endpoint handle throws code
+   * 1001; an endpoint without mDNS, or a build compiled without the feature,
+   * throws code 7000). Once the stream is live, `onStart` fires once with the
+   * subscription's numeric handle (pass it to {@link mdnsUnsubscribe}). `onEvent`
+   * then fires per event with a JSON discriminated union `{ type, ... }` (see the
+   * `DiscoveryEvent` TS type): `discovered` (with `endpointId`, `relayUrls`,
+   * `directAddrs`) or `expired` (with `endpointId`). `onClose` fires exactly once
+   * when the subscription ends, as `"end"` or `"error <detail>"`.
+   */
+  mdnsSubscribe(
+    endpoint: number,
+    onStart: (subId: number) => void,
+    onEvent: (event: string) => void,
+    onClose: (event: string) => void,
+  ): void;
+  /**
+   * Ends a subscription started with {@link mdnsSubscribe}. Idempotent: ending
+   * an unknown or already-ended subscription is a no-op.
+   */
+  mdnsUnsubscribe(subId: number): void;
 }

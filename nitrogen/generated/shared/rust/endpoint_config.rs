@@ -24,6 +24,7 @@ pub struct EndpointConfig {
     pub blob_store_dir: Option<String>,
     pub docs: Option<bool>,
     pub docs_store_dir: Option<String>,
+    pub discovery_mdns: Option<bool>,
     pub relay_mode: Option<String>,
     pub gc_interval_secs: Option<f64>,
     pub alpns: Option<String>,

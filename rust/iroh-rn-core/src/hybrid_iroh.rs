@@ -46,6 +46,7 @@ use crate::{
     },
     error::IrohError,
     gossip::{gossip_broadcast, gossip_subscribe, gossip_unsubscribe, GossipHandle},
+    mdns::{mdns_subscribe, mdns_unsubscribe, MdnsSubHandle, MDNS_SUPPORTED},
     streams::{
         stop_stream_listen, stream_close, stream_close_connection, stream_connect,
         stream_connection_subscribe, stream_listen, stream_open_stream, stream_send,
@@ -353,6 +354,7 @@ impl HybridIrohSpec for HybridIroh {
                 gc,
                 docs: config.docs.unwrap_or(false),
                 docs_store_dir,
+                discovery_mdns: config.discovery_mdns.unwrap_or(false),
                 relay_mode: config.relay_mode,
                 alpns,
             },
@@ -959,6 +961,34 @@ impl HybridIrohSpec for HybridIroh {
             .map(|info| doc_ticket_info_to_json(&info))
             .map_err(encode_error)
     }
+
+    fn mdns_supported(&self) -> Result<bool, String> {
+        Ok(MDNS_SUPPORTED)
+    }
+
+    fn mdns_subscribe(
+        &self,
+        endpoint: f64,
+        on_start: Box<dyn Fn(f64) + Send + Sync>,
+        on_event: Box<dyn Fn(String) + Send + Sync>,
+        on_close: Box<dyn Fn(String) + Send + Sync>,
+    ) -> Result<(), String> {
+        // Set-up errors (stale endpoint, mDNS not enabled, feature compiled out)
+        // surface synchronously; the handle is delivered later via on_start once
+        // the discovery stream is live.
+        mdns_subscribe(
+            endpoint_handle(endpoint),
+            move |handle| on_start(handle.raw() as f64),
+            on_event,
+            move |reason| on_close(encode_close(reason)),
+        )
+        .map_err(encode_error)
+    }
+
+    fn mdns_unsubscribe(&self, sub_id: f64) -> Result<(), String> {
+        mdns_unsubscribe(MdnsSubHandle::from_raw(sub_id as u64));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -991,6 +1021,7 @@ mod tests {
                     blob_store_dir: store_dir.map(|p| p.to_string_lossy().into_owned()),
                     docs: None,
                     docs_store_dir: None,
+                    discovery_mdns: None,
                     alpns: None,
                     relay_mode: None,
                     gc_interval_secs: None,
@@ -1028,6 +1059,7 @@ mod tests {
                     blob_store_dir: Some("relative/store".into()),
                     docs: None,
                     docs_store_dir: None,
+                    discovery_mdns: None,
                     alpns: None,
                     relay_mode: None,
                     gc_interval_secs: None,

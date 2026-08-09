@@ -140,6 +140,15 @@ export interface DocsSubscribeCall {
   onClose: (event: string) => void;
 }
 
+/** One recorded native mdnsSubscribe call, drivable by the test. */
+export interface MdnsSubscribeCall {
+  endpoint: number;
+  subId: number;
+  onStart: (subId: number) => void;
+  onEvent: (event: string) => void;
+  onClose: (event: string) => void;
+}
+
 export interface MockBinding {
   binding: IrohBinding;
   configs: EndpointConfig[];
@@ -193,6 +202,14 @@ export interface MockBinding {
   docsUnsubscribes: number[];
   /** When false, docsSubscribe does not auto-fire onStart (the test drives it). */
   autoStartDocsSub: boolean;
+  /** Every recorded mdnsSubscribe call, drivable by the test. */
+  mdnsSubscribes: MdnsSubscribeCall[];
+  /** Every subId passed to mdnsUnsubscribe, in order. */
+  mdnsUnsubscribes: number[];
+  /** When false, mdnsSubscribe does not auto-fire onStart (the test drives it). */
+  autoStartMdnsSub: boolean;
+  /** Boolean that {@link IrohBinding.mdnsSupported} returns. */
+  mdnsSupportedResult: boolean;
   /** Configurable return values for the docs bridge methods. */
   docsReturns: {
     authorsDefault: string;
@@ -248,6 +265,8 @@ export interface MockBinding {
     docsSubscribe?: Error;
     docsStartSync?: Error;
     docsLeave?: Error;
+    mdnsSubscribe?: Error;
+    mdnsSupported?: Error;
   };
 }
 
@@ -604,6 +623,28 @@ export function createMockBinding(): MockBinding {
         mock.docsCalls.push({ method: "parseDocTicket", endpoint: 0, args: [ticket] });
         return mock.docsReturns.parseDocTicket;
       },
+      mdnsSupported: () => {
+        if (mock.failures.mdnsSupported !== undefined) {
+          throw mock.failures.mdnsSupported;
+        }
+        return mock.mdnsSupportedResult;
+      },
+      mdnsSubscribe: (endpoint, onStart, onEvent, onClose) => {
+        if (mock.failures.mdnsSubscribe !== undefined) {
+          throw mock.failures.mdnsSubscribe;
+        }
+        const subId = nextSubId;
+        nextSubId += 1;
+        mock.mdnsSubscribes.push({ endpoint, subId, onStart, onEvent, onClose });
+        // Native delivers the id asynchronously once the stream is live; the mock
+        // fires it synchronously by default (opt out with autoStartMdnsSub = false).
+        if (mock.autoStartMdnsSub) {
+          onStart(subId);
+        }
+      },
+      mdnsUnsubscribe: (subId) => {
+        mock.mdnsUnsubscribes.push(subId);
+      },
     },
     configs: [],
     endpointIdCalls: [],
@@ -647,6 +688,10 @@ export function createMockBinding(): MockBinding {
     docsSubscribes: [],
     docsUnsubscribes: [],
     autoStartDocsSub: true,
+    mdnsSubscribes: [],
+    mdnsUnsubscribes: [],
+    autoStartMdnsSub: true,
+    mdnsSupportedResult: true,
     docsReturns: {
       authorsDefault: "a".repeat(64),
       authorsCreate: "b".repeat(64),

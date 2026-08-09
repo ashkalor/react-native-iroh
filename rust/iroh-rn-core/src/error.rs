@@ -20,6 +20,7 @@ pub type Result<T> = std::result::Result<T, IrohError>;
 /// | 4xxx  | gossip |
 /// | 5xxx  | raw QUIC streams |
 /// | 6xxx  | docs (authors / documents) |
+/// | 7xxx  | mDNS discovery |
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum IrohError {
@@ -100,6 +101,12 @@ pub enum IrohError {
     /// A document ticket string failed to parse.
     #[error("invalid document ticket: {0}")]
     DocsInvalidTicket(String),
+    /// mDNS discovery was requested (via `discovery.mdns` at endpoint creation,
+    /// or an `mdns.subscribe`) on a build that was compiled without the `mdns`
+    /// Cargo feature. Apple builds are compiled out until the consumer holds the
+    /// multicast entitlement; the JS surface reports `MDNS_SUPPORTED === false`.
+    #[error("mDNS discovery is not available in this build: {0}")]
+    MdnsUnavailable(String),
 }
 
 impl IrohError {
@@ -134,6 +141,7 @@ impl IrohError {
             IrohError::Docs(_) => 6001,
             IrohError::DocsInvalidId(_) => 6002,
             IrohError::DocsInvalidTicket(_) => 6003,
+            IrohError::MdnsUnavailable(_) => 7000,
         }
     }
 }
@@ -195,6 +203,7 @@ mod tests {
             (IrohError::Docs("x".into()), 6001),
             (IrohError::DocsInvalidId("x".into()), 6002),
             (IrohError::DocsInvalidTicket("x".into()), 6003),
+            (IrohError::MdnsUnavailable("x".into()), 7000),
         ];
         for (err, code) in cases {
             assert_eq!(err.code(), code, "code changed for {err:?}");

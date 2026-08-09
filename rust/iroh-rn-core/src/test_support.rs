@@ -42,6 +42,7 @@ pub fn create_minimal_endpoint_with_alpns(
         gc: None,
         docs: false,
         docs_store_dir: None,
+        discovery_mdns: false,
         relay_mode: None,
         alpns,
     })
@@ -58,6 +59,7 @@ pub fn create_minimal_endpoint_with_docs(docs_store_dir: Option<PathBuf>) -> End
         gc: None,
         docs: true,
         docs_store_dir,
+        discovery_mdns: false,
         relay_mode: None,
         alpns: Vec::new(),
     })
@@ -79,10 +81,28 @@ pub fn create_minimal_endpoint_with_gc(
         }),
         docs: false,
         docs_store_dir: None,
+        discovery_mdns: false,
         relay_mode: None,
         alpns: Vec::new(),
     })
     .expect("endpoint with gc created")
+}
+
+/// Creates a `Minimal`-preset endpoint with mDNS LAN discovery enabled,
+/// panicking on failure. Only compiled with the `mdns` feature.
+#[cfg(feature = "mdns")]
+pub fn create_minimal_endpoint_with_mdns() -> EndpointHandle {
+    create_endpoint_blocking(EndpointConfig {
+        preset: NetworkPreset::Minimal,
+        blob_store_dir: None,
+        gc: None,
+        docs: false,
+        docs_store_dir: None,
+        discovery_mdns: true,
+        relay_mode: None,
+        alpns: Vec::new(),
+    })
+    .expect("endpoint with mdns created")
 }
 
 /// Closes an endpoint, blocking until shutdown completes.

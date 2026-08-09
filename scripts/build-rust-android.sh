@@ -84,11 +84,15 @@ for entry in "${TARGETS[@]}"; do
   triple_upper="$(printf '%s' "$triple" | tr 'a-z-' 'A-Z_')"
 
   echo "==> Building $abi ($triple)"
+  # `--features mdns` is Android-only: mDNS ships the multicast machinery and the
+  # Wi-Fi MulticastLock here. The iOS build script deliberately omits it (the
+  # Apple staticlib carries no multicast code until the consumer has the
+  # entitlement); see scripts/build-rust-ios.sh.
   env \
     "CC=$TOOLCHAIN/clang" \
     "AR=$TOOLCHAIN/llvm-ar" \
     "CARGO_TARGET_${triple_upper}_LINKER=$TOOLCHAIN/clang" \
-    cargo build --release --target "$triple"
+    cargo build --release --features mdns --target "$triple"
 done
 
 echo ""

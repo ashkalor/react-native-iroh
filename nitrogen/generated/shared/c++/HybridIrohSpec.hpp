@@ -111,6 +111,9 @@ namespace margelo::nitro::iroh {
       virtual std::shared_ptr<Promise<void>> docsStartSync(double endpoint, const std::string& namespaceId, const std::string& peersJoined) = 0;
       virtual std::shared_ptr<Promise<void>> docsLeave(double endpoint, const std::string& namespaceId) = 0;
       virtual std::string parseDocTicket(const std::string& ticket) = 0;
+      virtual bool mdnsSupported() = 0;
+      virtual void mdnsSubscribe(double endpoint, const std::function<void(double /* subId */)>& onStart, const std::function<void(const std::string& /* event */)>& onEvent, const std::function<void(const std::string& /* event */)>& onClose) = 0;
+      virtual void mdnsUnsubscribe(double subId) = 0;
 
     protected:
       // Hybrid Setup

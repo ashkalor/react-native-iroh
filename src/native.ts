@@ -64,6 +64,9 @@ export type IrohBinding = Pick<
   | "docsStartSync"
   | "docsLeave"
   | "parseDocTicket"
+  | "mdnsSupported"
+  | "mdnsSubscribe"
+  | "mdnsUnsubscribe"
 >;
 
 let singleton: IrohSpec | undefined;

@@ -69,6 +69,9 @@ namespace margelo::nitro::iroh {
       prototype.registerHybridMethod("docsStartSync", &HybridIrohSpec::docsStartSync);
       prototype.registerHybridMethod("docsLeave", &HybridIrohSpec::docsLeave);
       prototype.registerHybridMethod("parseDocTicket", &HybridIrohSpec::parseDocTicket);
+      prototype.registerHybridMethod("mdnsSupported", &HybridIrohSpec::mdnsSupported);
+      prototype.registerHybridMethod("mdnsSubscribe", &HybridIrohSpec::mdnsSubscribe);
+      prototype.registerHybridMethod("mdnsUnsubscribe", &HybridIrohSpec::mdnsUnsubscribe);
     });
   }
 

@@ -69,6 +69,7 @@ export type Cases = [
       | 6001
       | 6002
       | 6003
+      | 7000
     >
   >,
   Expect<
@@ -98,6 +99,7 @@ export type Cases = [
       | "docs"
       | "docs-invalid-id"
       | "docs-invalid-ticket"
+      | "mdns-unavailable"
     >
   >,
   Expect<Equal<IrohErrorCase["code"], IrohErrorCode>>,

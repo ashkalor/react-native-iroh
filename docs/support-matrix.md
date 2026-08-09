@@ -15,18 +15,19 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                                | Android                       | iOS                              |
-| ---------------------------------------------------------------------- | ----------------------------- | -------------------------------- |
-| Endpoint create / close                                                | Validated (device + emulator) | Validated (device + sim)         |
-| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator) | Validated (device + sim)         |
-| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator) | Validated (device)               |
-| Relay mode (`relayMode`)                                               | Validated (emulator)          | Validated (simulator)            |
-| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator) | Validated (device)               |
-| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)            | Validated (device)               |
-| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)          | Code-complete, roundtrip pending |
-| Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)          | Not yet validated                |
-| Resumable download (`blobs.status` / `has`, resume of a partial)       | Code-complete, resume pending | Code-complete, resume pending    |
-| Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending | Code-complete, device pending    |
+| Feature                                                                | Android                        | iOS                                          |
+| ---------------------------------------------------------------------- | ------------------------------ | -------------------------------------------- |
+| Endpoint create / close                                                | Validated (device + emulator)  | Validated (device + sim)                     |
+| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator)  | Validated (device + sim)                     |
+| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator)  | Validated (device)                           |
+| Relay mode (`relayMode`)                                               | Validated (emulator)           | Validated (simulator)                        |
+| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator)  | Validated (device)                           |
+| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)             | Validated (device)                           |
+| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)           | Code-complete, roundtrip pending             |
+| Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)           | Not yet validated                            |
+| mDNS discovery (`discovery.mdns` / `mdns.subscribe`)                   | Pending (two-device, same LAN) | Unavailable (compiled out until entitlement) |
+| Resumable download (`blobs.status` / `has`, resume of a partial)       | Code-complete, resume pending  | Code-complete, resume pending                |
+| Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending  | Code-complete, device pending                |
 
 ### Raw QUIC streams
 
@@ -73,6 +74,41 @@ TypeScript layer is covered by unit tests against a mocked bridge.
 What is still not covered is a two-_device_ docs sync over the relay (two separate
 handsets reconciling a document and comparing the synced bytes), and iOS has not
 run docs at all yet, which is why its cell stays "Not yet validated".
+
+### mDNS discovery
+
+Added in 0.2.3, Android-only. `discovery: { mdns: true }` at endpoint creation
+runs n0's DNS-SD `_irohv1._udp.local` service (over `swarm-discovery`) so two
+endpoints on the same LAN resolve each other by endpoint id with relays disabled
+and no seeded addresses; `endpoint.mdns.subscribe()` surfaces the live stream of
+peers appearing and expiring. The library owns the Android Wi-Fi MulticastLock
+while mDNS is active (it ships `CHANGE_WIFI_MULTICAST_STATE` in its own manifest)
+and releases it on endpoint close. Foreground-only: under Doze the OS may suspend
+multicast regardless of the lock.
+
+Bundling is behind the `mdns` Cargo feature. Android builds with the feature
+(`scripts/build-rust-android.sh` passes `--features mdns`); Apple builds are
+compiled OUT (the iOS script omits it) until the consumer holds the multicast
+entitlement. A build without the feature reports `mdnsSupported()` /
+`MDNS_SUPPORTED === false`, and requesting `discovery.mdns` or calling
+`mdns.subscribe()` fails with an `IrohError` of kind `"mdns-unavailable"` rather
+than silently doing nothing.
+
+Exercised off-device: the Rust core builds and registers the mDNS lookup and
+brings a subscription live in-process (`mdns_endpoint_builds_registers_and_
+subscription_goes_live`), and the compiled-out contract is asserted both ways
+(creating with `discovery.mdns` and subscribing without the feature both return
+`mdns-unavailable`). The TypeScript layer is covered by unit tests against a
+mocked bridge, including that a compiled-out build reports `MDNS_SUPPORTED ===
+false` and throws `mdns-unavailable`.
+
+What is NOT yet validated is the two-real-device roundtrip: two handsets on the
+same LAN discovering each other by endpoint id over multicast, with relays
+disabled and no addresses seeded, and connecting. That needs a device session
+(the in-process test cannot join real multicast in the sandbox, so the
+two-endpoint multicast test is `#[ignore]`d), and the Android MulticastLock has
+not been exercised on hardware. iOS reports the feature unavailable (compiled
+out), which is also a device/Mac assertion still to be run.
 
 ### Resumable download
 

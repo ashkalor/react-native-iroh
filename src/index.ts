@@ -65,6 +65,15 @@ export type {
   GossipSubscribeOptions,
   GossipSubscription,
 } from "./gossip";
+export { mdnsSupported } from "./mdns";
+export type {
+  DiscoveryEvent,
+  Mdns,
+  MdnsDiscoveredEvent,
+  MdnsExpiredEvent,
+  MdnsSubscribeOptions,
+  MdnsSubscription,
+} from "./mdns";
 export type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "./errors";
 export type { IrohBinding } from "./native";
 export type {

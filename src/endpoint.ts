@@ -10,6 +10,12 @@ import {
   type GossipSubscribeOptions,
   type GossipSubscription,
 } from "./gossip";
+import {
+  MdnsSubscriptionController,
+  type Mdns,
+  type MdnsSubscribeOptions,
+  type MdnsSubscription,
+} from "./mdns";
 import { getIroh, type IrohBinding } from "./native";
 import {
   ConnectionController,
@@ -521,6 +527,18 @@ export interface EndpointOptions {
    */
   docsStoreDir?: string;
   /**
+   * Discovery services this endpoint runs to find peers.
+   *
+   * `mdns: true` enables mDNS LAN discovery (`_irohv1._udp.local`), so peers on
+   * the same network resolve each other by endpoint id with no relay and no
+   * seeded addresses; observe it via {@link Endpoint.mdns}. Requires a build
+   * compiled with mDNS ({@link mdnsSupported}): on a build without it (every
+   * Apple build until the consumer holds the multicast entitlement), enabling it
+   * rejects creation with kind `"mdns-unavailable"` rather than silently doing
+   * nothing.
+   */
+  discovery?: { mdns?: boolean };
+  /**
    * Opt-in blob garbage collection. Omit to keep GC OFF (the default): nothing
    * is ever reclaimed, exactly today's retention. When set, the store runs a
    * mark-and-sweep loop every `intervalSecs` seconds that reclaims untagged
@@ -580,6 +598,7 @@ export class Endpoint {
   private addressWatchId: number | null = null;
   private readonly gossipSubscriptions = new Set<GossipSubscriptionController>();
   private readonly docSubscriptions = new Set<DocSubscriptionController>();
+  private readonly mdnsSubscriptions = new Set<MdnsSubscriptionController>();
   private readonly streamListeners = new Set<StreamListenerController>();
   // Every live connection, however it was obtained (dialled or accepted), so
   // closing the endpoint tears all of them down through one path.
@@ -619,6 +638,17 @@ export class Endpoint {
    */
   readonly docs: DocsApi;
 
+  /**
+   * The endpoint's mDNS discovery API ({@link Mdns.subscribe}): peers on the
+   * same LAN resolve each other by endpoint id with no relay. Present only when
+   * the endpoint was created with `discovery: { mdns: true }` on a build that
+   * supports mDNS ({@link mdnsSupported}); otherwise `subscribe` throws kind
+   * `"mdns-unavailable"`.
+   *
+   * @see https://docs.rs/iroh-mdns-address-lookup/0.4.0/iroh_mdns_address_lookup/
+   */
+  readonly mdns: Mdns;
+
   private constructor(
     binding: IrohBinding,
     handle: number,
@@ -654,6 +684,31 @@ export class Endpoint {
       connect: (peer, alpn, options) => this.connectStreams(peer, alpn, options),
     };
     this.docs = new DocsController(this.docsBinding());
+    this.mdns = {
+      subscribe: (options) => this.subscribeMdns(options),
+    };
+  }
+
+  /** See {@link Mdns.subscribe}; exposed as {@link Endpoint.mdns}`.subscribe`. */
+  private subscribeMdns(options?: MdnsSubscribeOptions): MdnsSubscription {
+    const endpoint = this.handle;
+    const binding = this.binding;
+    try {
+      let controller!: MdnsSubscriptionController;
+      controller = new MdnsSubscriptionController({
+        startSubscribe: (onStart, onEvent, onClose) =>
+          binding.mdnsSubscribe(endpoint, onStart, onEvent, onClose),
+        unsubscribe: (subId) => binding.mdnsUnsubscribe(subId),
+        capacity: options?.capacity,
+        onDispose: () => {
+          this.mdnsSubscriptions.delete(controller);
+        },
+      });
+      this.mdnsSubscriptions.add(controller);
+      return controller;
+    } catch (error) {
+      throw IrohError.from(error);
+    }
   }
 
   /** Binds the native docs calls to this endpoint's handle for the docs API. */
@@ -728,6 +783,9 @@ export class Endpoint {
     }
     if (options.docsStoreDir !== undefined) {
       config.docsStoreDir = options.docsStoreDir;
+    }
+    if (options.discovery?.mdns) {
+      config.discoveryMdns = true;
     }
     // A non-positive interval is treated as off, so it is simply not forwarded.
     if (options.gc !== undefined && options.gc.intervalSecs > 0) {
@@ -1236,6 +1294,9 @@ export class Endpoint {
           subscription.unsubscribe();
         }
         for (const subscription of [...this.docSubscriptions]) {
+          subscription.unsubscribe();
+        }
+        for (const subscription of [...this.mdnsSubscriptions]) {
           subscription.unsubscribe();
         }
         for (const listener of [...this.streamListeners]) {
