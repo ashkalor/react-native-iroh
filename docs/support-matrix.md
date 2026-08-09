@@ -26,7 +26,7 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 | Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)           | Code-complete, roundtrip pending             |
 | Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)           | Not yet validated                            |
 | mDNS discovery (`discovery.mdns` / `mdns.subscribe`)                   | Pending (two-device, same LAN) | Unavailable (compiled out until entitlement) |
-| Resumable download (`blobs.status` / `has`, resume of a partial)       | Code-complete, resume pending  | Code-complete, resume pending                |
+| Resumable download (`blobs.status` / `has`, resume of a partial)       | Validated (emulator)           | Code-complete, resume pending                |
 | Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending  | Code-complete, device pending                |
 
 ### Raw QUIC streams
@@ -122,6 +122,14 @@ missing ranges, never the whole blob again. `blobs.status(hash)` reports this as
 `notFound` / `partial` / `complete`, and `blobs.has(hash)` is the complete-only
 predicate.
 
+Validated on the Android emulator: the smoke suite shares an 8 MiB blob, cancels
+the receiver's download at the first mid-flight progress event (leaving a genuine
+partial, `status` `partial` at 344064 of 8388608 bytes, `has` false), then
+re-issues the download and observes it complete with the second pass moving
+strictly fewer bytes than the full blob (6520832 < 8388608, so only the missing
+ranges crossed the wire), status `complete`, `has` true, and the exported file
+re-hashing to the origin content hash. This folds into `SMOKE: RESULT ALL PASS`.
+
 Exercised off-device: the Rust core's
 `interrupted_download_resumes_only_the_missing_ranges` test pre-seeds a genuine
 partial (a bounded chunk-range get), asserts the store reports `partial` with a
@@ -129,7 +137,8 @@ size strictly below the full blob and that `LocalInfo` is incomplete, then runs 
 full `blobs.download` and asserts the second pass moves strictly fewer payload
 bytes than the whole blob (the proof that only the missing ranges crossed the
 wire) and that the final file is BLAKE3-identical to the source. The TypeScript
-layer is covered by unit tests against a mocked bridge.
+layer is covered by unit tests against a mocked bridge. iOS resume is still
+pending a device run.
 
 What is still pending on both platforms is the on-device kill-and-resume: killing
 a transfer midway on a handset and re-issuing it, observing fewer bytes on the

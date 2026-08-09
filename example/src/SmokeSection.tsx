@@ -8,7 +8,7 @@ import type {
   EndpointAddr,
   Stream,
 } from "react-native-iroh";
-import { smokeAborted, smokeReport, smokeResult } from "./markers";
+import { smokeAborted, smokeReport, smokeResult, smokeSkip } from "./markers";
 import { SYSTEM_FILE_CANDIDATES, resetSmokeDir, shareFirstReadable } from "./paths";
 import { sectionStyles } from "./theme";
 
@@ -56,6 +56,18 @@ async function firstWithin<T>(
       throw new Error(`${label} ended before yielding`);
     }
     return result.value;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout waiting for ${label}`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -245,6 +257,157 @@ async function runDocsSmoke(check: CheckFn, smokeDir: string): Promise<void> {
   } finally {
     await alice.close();
     await bob.close();
+  }
+}
+
+/** How long any single resume download is allowed to run before it counts as a hang. */
+const RESUME_DOWNLOAD_TIMEOUT_MS = 30000;
+
+/**
+ * Starts a download and cancels it at the first progress event that reports
+ * some-but-not-all bytes, leaving a genuine partial in the receiver's store.
+ * Returns the cumulative bytes observed at the cancel point (0 if the download
+ * ever reached a terminal event before a mid-flight one, i.e. the blob moved in
+ * a single progress window and no partial could be forced). The download's own
+ * settlement is deadline-bound so a stuck transfer fails the suite, not hangs
+ * it.
+ */
+async function attemptInterruptedDownload(
+  receiver: Endpoint,
+  ticket: string,
+  destPath: string,
+  fullSize: number,
+): Promise<number> {
+  const transfer = receiver.blobs.download(ticket, destPath);
+  let cancelledAt = 0;
+  const unsubscribe = transfer.onProgress((event) => {
+    if (cancelledAt === 0 && event.bytesReceived > 0 && event.bytesReceived < fullSize) {
+      cancelledAt = event.bytesReceived;
+      transfer.cancel();
+    }
+  });
+  await withDeadline(
+    transfer.done.then(
+      () => undefined,
+      () => undefined,
+    ),
+    RESUME_DOWNLOAD_TIMEOUT_MS,
+    "interrupted download to settle",
+  );
+  unsubscribe();
+  return cancelledAt;
+}
+
+/**
+ * Phase 5a resume, in process on-device: a provider shares a large blob; the
+ * receiver starts downloading it and cancels mid-flight so its store holds a
+ * strict partial; then it re-issues the same download and proves the resume
+ * completes while moving fewer bytes than the whole blob (only the missing
+ * ranges cross the wire). Mirrors the Rust core's
+ * `interrupted_download_resumes_only_the_missing_ranges` test.
+ *
+ * GC stays off (the default), so the cancelled partial survives to the resume.
+ * The blob is sized large enough (8 MiB) that a loopback download emits several
+ * progress events, so cancelling on the first mid-flight one reliably lands a
+ * partial; the interrupt is retried once and, only if it still races to a
+ * terminal state, reported as a SKIP rather than a false pass.
+ */
+async function runResumeSmoke(check: CheckFn, smokeDir: string): Promise<void> {
+  const fullSize = 8 * 1024 * 1024;
+  const provider = await Endpoint.create({
+    preset: "minimal",
+    relayMode: "disabled",
+    blobStoreDir: `${smokeDir}/resume-provider-store`,
+  });
+  const receiver = await Endpoint.create({
+    preset: "minimal",
+    relayMode: "disabled",
+    blobStoreDir: `${smokeDir}/resume-receiver-store`,
+  });
+  try {
+    check(
+      "resume endpoints",
+      provider.isOpen && receiver.isOpen,
+      "provider and receiver (relay disabled) open for resume",
+    );
+
+    const payload = rampBytes(fullSize);
+    const ticket = await provider.blobs.addBytes(payload.buffer as ArrayBuffer);
+    const hash = parseTicket(ticket).hash;
+    check(
+      "resume share",
+      hash.length === 64,
+      `provider shared ${fullSize} byte blob, hash ${hash.slice(0, 16)}...`,
+    );
+
+    const clean = await receiver.blobs.status(hash);
+    check(
+      "resume clean start",
+      clean.state === "notFound",
+      `receiver store has no ${hash.slice(0, 12)}... before download`,
+    );
+
+    const destPath = `${smokeDir}/resume-download.bin`;
+    let cancelledAt = 0;
+    let partialSize: number | undefined;
+    let landedPartial = false;
+    for (let attempt = 0; attempt < 2 && !landedPartial; attempt += 1) {
+      cancelledAt = await attemptInterruptedDownload(receiver, ticket, destPath, fullSize);
+      const status = await receiver.blobs.status(hash);
+      if (status.state === "partial" && cancelledAt > 0 && cancelledAt < fullSize) {
+        landedPartial = true;
+        partialSize = status.size;
+      }
+    }
+
+    if (!landedPartial) {
+      smokeSkip(
+        "resume partial",
+        `download raced past the mid-flight cancel; no partial forced for ${hash.slice(0, 12)}... (cancelledAt=${cancelledAt})`,
+      );
+      return;
+    }
+
+    const hasAfterCancel = await receiver.blobs.has(hash);
+    check(
+      "resume partial",
+      !hasAfterCancel && cancelledAt > 0 && cancelledAt < fullSize,
+      `partial ${cancelledAt} of ${fullSize} bytes, store size=${partialSize ?? "unknown"}, has=${hasAfterCancel}`,
+    );
+
+    let secondPassMax = 0;
+    const resume = receiver.blobs.download(ticket, destPath);
+    const unsubscribe = resume.onProgress((event) => {
+      if (event.bytesReceived > secondPassMax) {
+        secondPassMax = event.bytesReceived;
+      }
+    });
+    await withDeadline(resume.done, RESUME_DOWNLOAD_TIMEOUT_MS, "resume download to complete");
+    unsubscribe();
+
+    const complete = await receiver.blobs.status(hash);
+    const hasAfterResume = await receiver.blobs.has(hash);
+    check(
+      "resume complete",
+      complete.state === "complete" && complete.size === fullSize && hasAfterResume,
+      `status ${complete.state}${complete.state === "complete" ? ` at ${complete.size} bytes` : ""}, has=${hasAfterResume}`,
+    );
+
+    check(
+      "resume fewer bytes",
+      secondPassMax > 0 && secondPassMax < fullSize,
+      `(2nd pass ${secondPassMax} < full ${fullSize})`,
+    );
+
+    const receiverTicket = await receiver.blobs.share(destPath);
+    check(
+      "resume integrity",
+      parseTicket(receiverTicket).hash === hash,
+      `exported download re-hashes to the provider's content hash ${hash.slice(0, 16)}...`,
+    );
+  } finally {
+    await provider.close();
+    await receiver.close();
   }
 }
 
@@ -473,6 +636,7 @@ async function runSmokeSuite(report: (result: CheckResult) => void): Promise<voi
   );
 
   await runDocsSmoke(check, smokeDir);
+  await runResumeSmoke(check, smokeDir);
 }
 
 type SuiteStatus = "idle" | "running" | "all-pass" | "failed";

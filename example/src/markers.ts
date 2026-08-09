@@ -115,6 +115,16 @@ export function smokeReport(name: string, ok: boolean, detail: string): void {
   emit(`SMOKE: ${ok ? "PASS" : "FAIL"} ${name} - ${detail}`);
 }
 
+/**
+ * `SMOKE: SKIP <name> - <detail>` - a check could not run its assertion this
+ * time (e.g. a timing-dependent setup did not reproduce). Distinct from PASS so
+ * it never reads as a real assertion, and from FAIL so it does not fail the
+ * suite.
+ */
+export function smokeSkip(name: string, detail: string): void {
+  emit(`SMOKE: SKIP ${name} - ${detail}`);
+}
+
 /** `SMOKE: RESULT ALL PASS` / `SMOKE: RESULT FAILED` suite verdict. */
 export function smokeResult(allPass: boolean): void {
   emit(`SMOKE: RESULT ${allPass ? "ALL PASS" : "FAILED"}`);
