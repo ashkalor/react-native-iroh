@@ -817,7 +817,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         close_endpoint_blocking, create_minimal_endpoint, create_minimal_endpoint_with_docs,
-        TIMEOUT,
+        create_minimal_endpoint_with_docs_and_gc, TIMEOUT,
     };
 
     /// Drives a callback-completed docs op to its result, blocking the test.
@@ -950,6 +950,50 @@ mod tests {
             !after_drop.contains(&namespace),
             "dropped namespace is gone"
         );
+
+        close_endpoint_blocking(endpoint).expect("close");
+    }
+
+    /// Cross-phase regression lock: with BOTH docs and the opt-in GC loop
+    /// enabled, doc-entry content must survive garbage collection. iroh-docs
+    /// stores content via a temp tag it drops right after insert, so the content
+    /// is untagged in the blob store; only iroh-docs' own protect handler (wired
+    /// into the store's `GcConfig`) keeps a live doc's content alive. Without
+    /// that wiring a GC pass reclaims it and `docs_get_content` fails with
+    /// "entity not found".
+    #[test]
+    fn doc_content_survives_gc_when_docs_and_gc_are_both_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let endpoint = create_minimal_endpoint_with_docs_and_gc(
+            Some(dir.path().join("docs")),
+            Some(dir.path().join("blobs")),
+            std::time::Duration::from_millis(200),
+        );
+
+        let author = block_on(|done| authors_default(endpoint, done)).expect("author");
+        let namespace = block_on(|done| docs_create(endpoint, done)).expect("create doc");
+        let value = b"doc content that must survive the gc sweep".to_vec();
+        let hash = block_on(|done| {
+            docs_set_bytes(
+                endpoint,
+                namespace.clone(),
+                author.clone(),
+                "k".into(),
+                value.clone(),
+                done,
+            )
+        })
+        .expect("set bytes");
+
+        // Wait through several GC intervals (200ms each). An unprotected content
+        // blob would be reclaimed within this window.
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // The content is still resolvable and byte-identical: the docs protect
+        // handler reported it as live, so GC left it alone.
+        let content = block_on(|done| docs_get_content(endpoint, hash.clone(), done))
+            .expect("doc content survives GC");
+        assert_eq!(content, value, "doc content must be intact after GC passes");
 
         close_endpoint_blocking(endpoint).expect("close");
     }

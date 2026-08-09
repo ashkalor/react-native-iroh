@@ -292,14 +292,27 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
             .await
             .map_err(|e| IrohError::EndpointBind(e.to_string()))
     };
-    // The GC loop is spawned inside the store on load when a config is present;
-    // `add_protected` stays `None` because retention is driven entirely by tags
-    // (a JS-side ProtectCb is a documented follow-up, not wired here).
+    // The GC loop is spawned inside the store on load when a config is present.
+    // Blob retention is driven by tags, but doc-entry content is NOT: iroh-docs
+    // stores content via a temp tag it drops right after insert, so with both
+    // docs and GC enabled the content would be reclaimed out from under live doc
+    // entries unless iroh-docs' own protect handler feeds the live content
+    // hashes to the store's GC. That handler must exist before the store's
+    // `GcConfig` is built (its callback goes into `add_protected`), and its
+    // paired handler is then passed to the docs builder below. When GC is off
+    // nothing can be reclaimed; when docs is off there is no doc content to
+    // protect; both those paths stay exactly as before (`add_protected: None`).
     let gc = config.gc;
+    let (docs_protect_handler, docs_protect_cb) = if docs_enabled && gc.is_some() {
+        let (handler, cb) = iroh_docs::engine::ProtectCallbackHandler::new();
+        (Some(handler), Some(cb))
+    } else {
+        (None, None)
+    };
     let load_store = async {
         let gc_config = gc.map(|settings| GcConfig {
             interval: settings.interval,
-            add_protected: None,
+            add_protected: docs_protect_cb,
         });
         Ok(match blob_store_dir {
             Some(dir) => {
@@ -352,6 +365,13 @@ async fn create_inner(config: EndpointConfig) -> Result<EndpointHandle> {
                 Docs::persistent(dir)
             }
             None => Docs::memory(),
+        };
+        // Wire the GC protect handler paired with the callback that went into
+        // the store's `GcConfig` above, so live doc content is reported to GC
+        // and never reclaimed. Present only when both docs and GC are enabled.
+        let builder = match docs_protect_handler {
+            Some(handler) => builder.protect_handler(handler),
+            None => builder,
         };
         let docs = builder
             .spawn(endpoint.clone(), store.api().clone(), gossip.clone())
