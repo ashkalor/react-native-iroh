@@ -119,6 +119,9 @@ mod android {
             .new_global_ref(&lock)
             .map_err(|e| format!("retain lock: {e}"))?;
         tracing::debug!("acquired Wi-Fi multicast lock for mDNS");
+        // Detach before moving `vm` into `Held`: the `AttachGuard` borrows `vm`,
+        // and the global ref already outlives this thread's attachment.
+        drop(env);
         Ok(Held { vm, lock })
     }
 
