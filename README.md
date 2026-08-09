@@ -321,6 +321,10 @@ Creates an endpoint: binds sockets and loads the blob store.
 | `relayMode`              | `"default" \| "disabled" \| "staging" \| { custom: string[] }` | preset default | Overrides which relay servers the endpoint uses (discovery is left to the preset). `"disabled"` runs a LAN-only endpoint reachable only through direct addresses; `{ custom: [...] }` supplies HTTPS relay URLs (at least one). Omit to inherit the preset's relays.                                                    |
 | `blobStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent blob store. Omit to keep blobs in memory; they are lost when the endpoint closes.                                                                                                                                                                                            |
 | `maxConcurrentDownloads` | `number`                                                       | `4`            | Cap on concurrently active downloads for this endpoint; further downloads wait in a FIFO queue. Values below 1 are clamped to 1, non-integers are floored, and non-finite values (`NaN`, `Infinity`) fall back to the default.                                                                                          |
+| `docs`                   | `boolean`                                                      | `false`        | Enable the iroh-docs meta-protocol, exposing `endpoint.docs` (author identity + document CRUD). Omit (or `false`) to pay zero docs cost: no docs store, no ALPN, no engine, and every `endpoint.docs` call rejects with kind `"docs-disabled"`.                                                                         |
+| `docsStoreDir`           | `string`                                                       | in-memory      | Absolute directory path for the persistent docs store (replicas and authors), used only when `docs` is enabled. Omit to keep docs in memory; they are lost when the endpoint closes.                                                                                                                                    |
+| `gc`                     | `{ intervalSecs: number }`                                     | off            | Opt-in blob garbage collection. Omit to keep GC off (nothing is reclaimed). When set, a mark-and-sweep loop every `intervalSecs` seconds reclaims untagged blobs; tagged blobs (`blobs.tags`) survive. An `intervalSecs` of `0` or less is off.                                                                         |
+| `discovery`              | `{ mdns?: boolean }`                                           | none           | Discovery services this endpoint runs. `mdns: true` enables mDNS LAN discovery (`_irohv1._udp.local`) so same-LAN peers resolve each other by id. On a build without mDNS (`mdnsSupported()` is `false`, e.g. every Apple build until the multicast entitlement) it rejects creation with kind `"mdns-unavailable"`.    |
 | `alpns`                  | `readonly string[]`                                            | none           | Custom ALPN protocol names this endpoint accepts inbound connections on (see `endpoint.streams`). Fixed here because iroh's router fixes its ALPN set when it spawns. An empty name, one over 255 bytes, a duplicate, or one shadowing the built-in blobs or gossip ALPNs rejects creation with kind `"endpoint-bind"`. |
 
 `create` also accepts a second, advanced `binding` parameter (an
@@ -427,6 +431,74 @@ before anything is written: a name that is not a single path segment (one
 containing `/`, `\`, or a `..` parent reference) fails the whole transfer with
 kind `"invalid-path"` and no file is written. A collection therefore cannot
 place a file outside `destDir`.
+
+#### `endpoint.blobs.status(hash): Promise<BlobStatus>`
+
+Reports the local presence of the blob `hash` (64 hex chars) in this endpoint's
+store as a `BlobStatus`, a discriminated union on `state`:
+
+- `{ state: "notFound" }`: the blob is not stored at all.
+- `{ state: "partial", size? }`: some ranges are present but the blob is
+  incomplete (an interrupted `download` left it behind). `size` is the stored
+  partial size when known.
+- `{ state: "complete", size }`: the whole blob is present and BLAKE3-verified.
+  `size` is its full size.
+
+Rejects with kind `"blob-store"` on a malformed hash. A `"partial"` result is the
+signal for a resumable download: re-issuing the same `download` fetches only the
+missing ranges (see [Resumable download](#resumable-download-blobsstatus--has)).
+
+#### `endpoint.blobs.has(hash): Promise<boolean>`
+
+Whether the store holds the blob `hash` (64 hex chars) complete and
+BLAKE3-verified. A partially-present blob resolves `false`; it is the
+complete-only predicate over `status`.
+
+#### `endpoint.blobs.list(): Promise<BlobInfo[]>`
+
+Lists the complete blobs in this endpoint's store, each a `BlobInfo`
+(`{ hash, size }`).
+
+#### `endpoint.blobs.addBytes(data): Promise<BlobTicket>`
+
+Imports the in-memory `data` (an `ArrayBuffer`) into this endpoint's blob store
+and resolves with a shareable `BlobTicket`, the in-memory counterpart of
+`share`. On the `n0` preset it waits (bounded) for the endpoint to come online
+first, so the ticket contains dialable addresses.
+
+#### `endpoint.blobs.tags: Tags`
+
+The tag lifecycle for this endpoint's store. Tags are the sanctioned retention
+mechanism: with garbage collection enabled (`gc: { intervalSecs }` at endpoint
+creation), a tagged blob survives while untagged blobs are reclaimed. There is
+deliberately no direct blob delete; "removing" a blob is dropping its tag and
+letting GC reclaim it.
+
+| Member                     | Type                                     | Meaning                                                                                                                                                                                |
+| -------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list()`                   | `() => Promise<TagInfo[]>`               | Every tag in the store, each a `TagInfo` (`{ name, hash, format }`); `format` is `"raw"` (one blob) or `"hashSeq"` (a sequence and its children).                                      |
+| `create(name, hash, fmt?)` | `(name, hash, format?) => Promise<void>` | Creates (or overwrites) the tag `name`, pinning the blob `hash` (64 hex) so GC keeps it. `format` defaults to `"raw"`. Rejects with kind `"blob-store"` on a malformed hash or format. |
+| `delete(name)`             | `(name) => Promise<void>`                | Deletes the tag `name`. The blob it pinned is not removed here; it becomes GC-eligible and is reclaimed only if (and when) GC runs. Deleting an absent tag is not an error.            |
+| `rename(from, to)`         | `(from, to) => Promise<void>`            | Renames the tag `from` to `to` atomically. Rejects with kind `"blob-store"` if `from` does not exist.                                                                                  |
+
+**Retention and GC.** Downloaded, shared, and imported blobs are tagged
+automatically (a tag named after the blob's root hash), so they are retained.
+Garbage collection is opt-in through the `gc: { intervalSecs }` create option and
+is **off by default**: with GC off nothing is ever reclaimed, exactly the prior
+retention. When on, a mark-and-sweep loop runs every `intervalSecs` seconds and
+reclaims untagged blobs while tagged blobs always survive. To reclaim a blob, drop
+its tag with `blobs.tags.delete(hash)` and let a GC pass run; deletion is
+GC-only, so the store stays the sole owner of every byte.
+
+#### Resumable download (`blobs.status` / `has`)
+
+A download that was interrupted (cancelled, or a network change mid-stream) leaves
+its BLAKE3-verified ranges in the store. Re-issuing the same `blobs.download`
+resumes: iroh computes what is already local and asks the provider for only the
+missing ranges, never the whole blob again. `blobs.status(hash)` reports this as
+`notFound` / `partial` / `complete`, and `blobs.has(hash)` is the complete-only
+predicate. The blob is protected throughout a transfer, so a partial is never
+reclaimed mid-flight even with GC on.
 
 #### `endpoint.gossip.subscribe(topic, options?): GossipSubscription`
 
@@ -588,6 +660,44 @@ it as a prefix. Prefix-siblings can be authored by remote peers (their content
 may not even be local), so there is no safe way to delete one key while restoring
 the rest.
 
+### mDNS discovery
+
+`endpoint.mdns` is the LAN discovery API (`Mdns`): peers on the same network
+resolve each other by endpoint id with no relay and no seeded addresses. Enable it
+per endpoint with `Endpoint.create({ discovery: { mdns: true } })` (runs the
+`_irohv1._udp.local` service). It is Android-only: Apple builds are compiled out
+of mDNS until the consumer holds the multicast entitlement, so on those builds
+enabling it, or calling `mdns.subscribe()`, fails with kind `"mdns-unavailable"`.
+
+#### `endpoint.mdns.subscribe(options?): MdnsSubscription`
+
+Subscribes to this endpoint's live discovery stream and returns an
+`MdnsSubscription` synchronously. `options.capacity` sizes the event buffer.
+Throws an `IrohError` of kind `"mdns-unavailable"` if the endpoint was not created
+with mDNS enabled, or if this build was compiled without mDNS.
+
+`MdnsSubscription` members:
+
+| Member          | Type                            | Meaning                                                                                                                                                                                                |
+| --------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `events`        | `AsyncIterable<DiscoveryEvent>` | Discovery events in arrival order. A bounded stream (see `options.capacity`): under overflow the oldest unread events are dropped. One shared stream; consuming an event removes it. Ends on teardown. |
+| `started`       | `Promise<void>`                 | Resolves once the subscription is live. Rejects with kind `"mdns-unavailable"` if it fails to start (mDNS not enabled, or compiled out) or is torn down before it started.                             |
+| `unsubscribe()` | `() => void`                    | Ends the subscription and its `events` iterator. Idempotent; also run automatically when the endpoint closes.                                                                                          |
+
+`DiscoveryEvent` is a discriminated union keyed by `type`: `"discovered"`
+(carries the peer's `endpointId`, plus any `relayUrls` / `directAddrs` it
+advertised, usually empty on a LAN) and `"expired"` (carries the `endpointId` of a
+peer that went inactive).
+
+#### `mdnsSupported(): boolean`
+
+Whether this native build supports mDNS (was compiled with the `mdns` Cargo
+feature). This is the `MDNS_SUPPORTED` runtime value: `false` on a build compiled
+out of mDNS (every Apple build until the multicast entitlement), where
+`discovery: { mdns: true }` and `mdns.subscribe()` both fail with kind
+`"mdns-unavailable"`. It is a function, not a `const`, so importing the package
+stays side-effect-free; call it once at startup and cache the result yourself.
+
 ### Transfer
 
 Handle for one download started with `blobs.download`.
@@ -636,6 +746,7 @@ Error codes are stable across releases:
 | `3001` | `blob-download`            | Download failed                                                     |
 | `3002` | `blob-export`              | Writing the downloaded blob to `destPath` failed                    |
 | `3003` | `cancelled`                | Transfer was cancelled                                              |
+| `3004` | `blob-store`               | Blob store operation (status, list, or a tag lifecycle) failed      |
 | `4000` | `gossip-subscribe`         | Subscribing to a gossip topic failed (e.g. a bad bootstrap address) |
 | `4001` | `gossip-broadcast`         | Broadcasting a gossip message failed                                |
 | `4002` | `gossip-message-too-large` | Gossip payload exceeded the 4096-byte per-message limit             |
@@ -650,6 +761,7 @@ Error codes are stable across releases:
 | `6001` | `docs`                     | A docs operation failed (sync, store, or engine error)              |
 | `6002` | `docs-invalid-id`          | A namespace, author, or secret-key string failed to parse           |
 | `6003` | `docs-invalid-ticket`      | A document ticket string failed to parse                            |
+| `7000` | `mdns-unavailable`         | mDNS requested on a build compiled without the `mdns` feature       |
 
 Exported error types: `IrohErrorCode` (union of the numeric codes),
 `IrohErrorKind` (union of the kind strings), `IrohErrorCase` (the
@@ -672,8 +784,11 @@ discriminated `code`/`kind` pairing).
 | `EndpointId`, `BlobTicket`                                                                       | types          | Branded strings: an endpoint's public key and a validated blob ticket. Both are assignable to `string`; plain strings only become tickets through `validateTicketShape` (or `blobs.share`).                                                                                                                                                                                                                               |
 | `EndpointConfig`, `NetworkPreset`                                                                | types          | The raw bridge's endpoint configuration types (`NetworkPreset` is `"n0" \| "minimal"`).                                                                                                                                                                                                                                                                                                                                   |
 | `Blobs`, `DownloadOptions`, `AbortSignalLike`                                                    | types          | The `endpoint.blobs` namespace interface and its download options (`AbortSignalLike` is the structural subset of `AbortSignal` the option accepts).                                                                                                                                                                                                                                                                       |
+| `BlobStatus`, `BlobInfo`, `TagInfo`, `Tags`                                                      | types          | The blob store management shapes: the `blobs.status` result union (`notFound` / `partial` / `complete`), a `blobs.list` entry (`{ hash, size }`), a tag entry (`{ name, hash, format }`), and the `endpoint.blobs.tags` lifecycle interface.                                                                                                                                                                              |
 | `Gossip`, `GossipSubscription`, `GossipMessage`, `GossipNeighborEvent`, `GossipSubscribeOptions` | types          | The `endpoint.gossip` namespace interface and its subscription, message, neighbor-event, and options types.                                                                                                                                                                                                                                                                                                               |
 | `Streams`, `StreamListener`, `Connection`, `Stream`, `StreamOptions`, `StreamFraming`            | types          | The `endpoint.streams` namespace interface and its listener, connection, stream, options, and framing types.                                                                                                                                                                                                                                                                                                              |
+| `Mdns`, `MdnsSubscription`, `DiscoveryEvent`, `MdnsSubscribeOptions`                             | types          | The `endpoint.mdns` namespace interface, its live subscription, the discovery-event union (`discovered` / `expired`), and its subscribe options.                                                                                                                                                                                                                                                                          |
+| `mdnsSupported()`                                                                                | function       | The `MDNS_SUPPORTED` runtime check: whether this native build was compiled with mDNS. `false` on a build compiled out (every Apple build until the multicast entitlement), where enabling mDNS or subscribing fails with kind `"mdns-unavailable"`.                                                                                                                                                                       |
 | `parseDocTicket(s)`, `validateDocTicketShape(s)`                                                 | functions      | Decode a document ticket into its `DocTicketInfo` (namespace, capability, peer ids), or cheaply validate its shape and return it as a `DocTicket`; both throw `IrohError` kind `"docs-invalid-ticket"` on failure.                                                                                                                                                                                                        |
 | `DocsApi`, `Authors`, `Doc`, `DocEntry`, `DocQuery`, `DocSubscription`, `DocSubscribeOptions`    | types          | The `endpoint.docs` namespace interface, its author identity and document handles, entry and query shapes, and the live subscription and its options.                                                                                                                                                                                                                                                                     |
 | `DocLiveEvent` (and its variants), `DocContentStatus`, `DocShareMode`, `DocTicketInfo`           | types          | The live document event union (`insert-local`, `insert-remote`, `content-ready`, `sync-finished`, `neighbor-up` / `neighbor-down`, `pending-content-ready`), the per-entry content availability, the share mode, and the decoded-ticket shape.                                                                                                                                                                            |

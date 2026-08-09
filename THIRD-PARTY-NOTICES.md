@@ -148,6 +148,7 @@ application and are not distributed with this package.
 | ipnet                            | 2.12.0                         | MIT OR Apache-2.0                                       | https://github.com/krisprice/ipnet                                                |
 | iroh-base                        | 1.0.3                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh                                               |
 | iroh-blobs                       | 0.103.0                        | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-blobs                                         |
+| iroh-docs                        | 0.101.0                        | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-docs                                          |
 | iroh-dns                         | 1.0.3                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh                                               |
 | iroh-io                          | 0.6.2                          | Apache-2.0 OR MIT                                       | https://github.com/n0-computer/iroh                                               |
 | iroh-mdns-address-lookup         | 0.4.0                          | MIT OR Apache-2.0                                       | https://github.com/n0-computer/iroh-address-lookups                               |

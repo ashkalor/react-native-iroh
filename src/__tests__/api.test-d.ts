@@ -4,9 +4,20 @@
  * match the test runner's `*.test.ts` pattern) and is excluded from builds.
  */
 import { Endpoint } from "../endpoint";
-import type { EndpointAddr, EndpointId, EndpointOptions, RelayMode } from "../endpoint";
+import type {
+  BlobInfo,
+  BlobStatus,
+  EndpointAddr,
+  EndpointId,
+  EndpointOptions,
+  RelayMode,
+  TagInfo,
+  Tags,
+} from "../endpoint";
 import { getIrohErrorCode, IrohError } from "../errors";
 import type { IrohErrorCase, IrohErrorCode, IrohErrorKind } from "../errors";
+import { mdnsSupported } from "../mdns";
+import type { DiscoveryEvent, Mdns, MdnsSubscription } from "../mdns";
 import type { IrohBinding } from "../native";
 import { parseDocTicket, validateDocTicketShape } from "../docs";
 import type {
@@ -39,6 +50,7 @@ declare const connection: Connection;
 declare const stream: Stream;
 declare const doc: Doc;
 declare const docContent: ArrayBuffer;
+declare const mdnsSub: MdnsSubscription;
 
 export type Cases = [
   // Error unions are exactly the stable table.
@@ -124,6 +136,37 @@ export type Cases = [
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["download"]>, Transfer>>,
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["shareCollection"]>, Promise<BlobTicket>>>,
   Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["downloadCollection"]>, CollectionTransfer>>,
+  // Blob store management: status/has/list/addBytes plus the tag lifecycle.
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["status"]>, Promise<BlobStatus>>>,
+  Expect<Equal<Parameters<(typeof endpoint)["blobs"]["status"]>[0], string>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["has"]>, Promise<boolean>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["list"]>, Promise<BlobInfo[]>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["addBytes"]>, Promise<BlobTicket>>>,
+  Expect<Equal<Parameters<(typeof endpoint)["blobs"]["addBytes"]>[0], ArrayBuffer>>,
+  Expect<Equal<(typeof endpoint)["blobs"]["tags"], Tags>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["tags"]["list"]>, Promise<TagInfo[]>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["tags"]["create"]>, Promise<void>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["tags"]["delete"]>, Promise<void>>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["blobs"]["tags"]["rename"]>, Promise<void>>>,
+  // BlobStatus is a discriminated union on `state`.
+  Expect<Equal<BlobStatus["state"], "notFound" | "partial" | "complete">>,
+  Expect<Equal<Extract<BlobStatus, { state: "complete" }>["size"], number>>,
+  Expect<Equal<Extract<BlobStatus, { state: "partial" }>["size"], number | undefined>>,
+  Expect<Equal<BlobInfo["hash"], string>>,
+  Expect<Equal<BlobInfo["size"], number>>,
+  Expect<Equal<TagInfo["name"], string>>,
+  Expect<Equal<TagInfo["hash"], string>>,
+  Expect<Equal<TagInfo["format"], BlobFormat>>,
+  // mDNS discovery namespace and support probe.
+  Expect<Equal<(typeof endpoint)["mdns"], Mdns>>,
+  Expect<Equal<ReturnType<(typeof endpoint)["mdns"]["subscribe"]>, MdnsSubscription>>,
+  Expect<Equal<typeof mdnsSub.events, AsyncIterable<DiscoveryEvent>>>,
+  Expect<Equal<typeof mdnsSub.started, Promise<void>>>,
+  Expect<Equal<ReturnType<typeof mdnsSub.unsubscribe>, void>>,
+  Expect<Equal<DiscoveryEvent["type"], "discovered" | "expired">>,
+  Expect<Equal<Extract<DiscoveryEvent, { type: "discovered" }>["endpointId"], EndpointId>>,
+  Expect<Equal<Extract<DiscoveryEvent, { type: "expired" }>["endpointId"], EndpointId>>,
+  Expect<Equal<ReturnType<typeof mdnsSupported>, boolean>>,
   // Raw streams namespace: listener -> connection -> stream.
   Expect<Equal<ReturnType<(typeof endpoint)["streams"]["listen"]>, StreamListener>>,
   Expect<Equal<ReturnType<(typeof endpoint)["streams"]["connect"]>, Promise<Connection>>>,
