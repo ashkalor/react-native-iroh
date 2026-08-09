@@ -15,19 +15,19 @@ compiles. (This is the iroh-ffi lesson: untested does not mean working.)
 
 ## Features
 
-| Feature                                                                | Android                         | iOS                                          |
-| ---------------------------------------------------------------------- | ------------------------------- | -------------------------------------------- |
-| Endpoint create / close                                                | Validated (device + emulator)   | Validated (device + sim)                     |
-| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator)   | Validated (device + sim)                     |
-| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator)   | Validated (device)                           |
-| Relay mode (`relayMode`)                                               | Validated (emulator)            | Validated (simulator)                        |
-| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator)   | Validated (device)                           |
-| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)              | Validated (device)                           |
-| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)            | Code-complete, roundtrip pending             |
-| Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Code-complete, emulator pending | Not yet validated                            |
-| mDNS discovery (`discovery.mdns` / `mdns.subscribe`)                   | Pending (two-device, same LAN)  | Unavailable (compiled out until entitlement) |
-| Resumable download (`blobs.status` / `has`, resume of a partial)       | Code-complete, resume pending   | Code-complete, resume pending                |
-| Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending   | Code-complete, device pending                |
+| Feature                                                                | Android                        | iOS                                          |
+| ---------------------------------------------------------------------- | ------------------------------ | -------------------------------------------- |
+| Endpoint create / close                                                | Validated (device + emulator)  | Validated (device + sim)                     |
+| Blob share / download (`blobs.share` / `.download`)                    | Validated (device + emulator)  | Validated (device + sim)                     |
+| Collections (`shareCollection` / `downloadCollection`)                 | Validated (device + emulator)  | Validated (device)                           |
+| Relay mode (`relayMode`)                                               | Validated (emulator)           | Validated (simulator)                        |
+| Address observability (`addr` / `watchAddr` / `online` / `remoteInfo`) | Validated (device + emulator)  | Validated (device)                           |
+| Gossip (`gossip.subscribe` / `broadcast`)                              | Validated (device)             | Validated (device)                           |
+| Raw QUIC streams (`streams.listen` / `streams.connect`)                | Validated (emulator)           | Code-complete, roundtrip pending             |
+| Docs (`docs.create` / `set` / `getContent` / `subscribe`)              | Validated (emulator)           | Not yet validated                            |
+| mDNS discovery (`discovery.mdns` / `mdns.subscribe`)                   | Pending (two-device, same LAN) | Unavailable (compiled out until entitlement) |
+| Resumable download (`blobs.status` / `has`, resume of a partial)       | Code-complete, resume pending  | Code-complete, resume pending                |
+| Blob store mgmt (`blobs.list` / `addBytes` / `tags.*` / GC opt-in)     | Code-complete, device pending  | Code-complete, device pending                |
 
 ### Raw QUIC streams
 
@@ -55,19 +55,18 @@ transfer row is validated.
 
 ### Docs
 
-Added in 0.2.3. On Android the smoke suite is wired to exercise docs on-device,
-but that emulator run has not happened yet (it is deferred to a device session),
-which is why the Android cell reads "Code-complete, emulator pending". The wired
-flow creates two docs-enabled endpoints with relays disabled, so they can reach
-each other only through the direct addresses in a ticket. One authors an entry,
-writes its bytes, and mints a write ticket; the other imports the ticket,
-subscribes to the document, and starts sync against the author's direct address.
-The subscriber is expected to observe the remote insert (authored by the peer, not
-a local echo) and the content download completing, then read the synced value back
-out of its blob store and compare it byte-for-byte with the origin write. Once
-that run happens it folds into the suite's `SMOKE: RESULT ALL PASS`, covering docs
-create / set / share / import / subscribe / startSync / getContent in one loopback
-run.
+Added in 0.2.3, validated on the Android emulator. The smoke suite creates two
+docs-enabled endpoints with relays disabled, so they can reach each other only
+through the direct addresses in a ticket. One authors an entry, writes its bytes,
+and mints a write ticket; the other imports the ticket, subscribes to the document,
+and starts sync against the author's direct address. The subscriber observes the
+remote insert (authored by the peer, not a local echo) and the content download
+completing, then reads the synced value back out of its blob store and compares it
+byte-for-byte with the origin write. On the emulator this run reports
+`SMOKE: RESULT ALL PASS` with the `docs getContent integrity` marker confirming the
+256 synced bytes equal the origin write, covering docs create / set / share /
+import / subscribe / startSync / getContent in one loopback run. iOS and a
+two-device (non-loopback) run remain pending.
 
 Also exercised off-device: the Rust core's
 `two_endpoint_loopback_sync_observes_remote_insert` test drives the same
