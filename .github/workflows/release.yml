@@ -45,7 +45,7 @@ jobs:
       # The @semantic-release/npm plugin shells out to npm, which needs
       # npm >= 11.5.1 on Node >= 22.14 for OIDC exchange.
       - name: Setup Node for OIDC publish
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Ensure OIDC-capable npm
